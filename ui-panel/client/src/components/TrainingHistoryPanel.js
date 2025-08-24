@@ -156,7 +156,7 @@ const TrainingHistoryPanel = () => {
       
       syncForm.setFieldsValue({
         sync_config: syncConfigJson,
-        experiment_id: mlflowConfig.experiment_id
+        experiment_name: mlflowConfig.experiment_name || mlflowConfig.experiment_id  // 兼容旧配置
       });
     }
     
@@ -165,10 +165,11 @@ const TrainingHistoryPanel = () => {
 
   // 同步到共享MLflow服务器
   const syncToSharedMLflow = async (values) => {
-    // 阻止表单的默认提交行为
+    console.log('Sync function called with values:', values);
     setSyncLoading(true);
     
     try {
+      console.log('Sending sync request...');
       const response = await fetch('/api/mlflow-sync', {
         method: 'POST',
         headers: {
@@ -176,17 +177,20 @@ const TrainingHistoryPanel = () => {
         },
         body: JSON.stringify({
           sync_config: values.sync_config,
-          experiment_name: values.experiment_id  // 注意：这里实际是experiment name
+          experiment_name: values.experiment_name
         }),
       });
       
       const result = await response.json();
+      console.log('Sync response:', result);
       
       if (result.success) {
         message.success('Successfully synced to shared MLflow server');
+        console.log('Sync successful:', result);
         syncForm.resetFields();
       } else {
         message.error(`Sync failed: ${result.error}`);
+        console.error('Sync failed:', result);
       }
     } catch (error) {
       console.error('Error syncing to shared MLflow:', error);
@@ -973,21 +977,27 @@ const TrainingHistoryPanel = () => {
               </Form.Item>
 
               <Form.Item
-                label="Experiment ID"
-                name="experiment_id"
+                label="Experiment Name"
+                name="experiment_name"
                 rules={[
-                  { required: true, message: 'Please enter the experiment ID to sync' }
+                  { required: true, message: 'Please enter the experiment name to sync' }
                 ]}
-                extra="The experiment ID from your MLflow server to sync"
+                extra="The experiment name from your MLflow server to sync (e.g., hz-lmf-ds3-bs, torchrecipe-4)"
               >
-                <Input placeholder="torchrecipe-4 or 123456789" />
+                <Input placeholder="hz-lmf-ds3-bs" />
               </Form.Item>
 
               <Form.Item style={{ marginBottom: 0 }}>
                 <Button 
                   type="primary" 
-                  htmlType="submit" 
                   loading={syncLoading}
+                  onClick={() => {
+                    syncForm.validateFields().then(values => {
+                      syncToSharedMLflow(values);
+                    }).catch(errorInfo => {
+                      console.log('Sync form validation failed:', errorInfo);
+                    });
+                  }}
                   style={{ 
                     backgroundColor: '#1890ff',
                     borderColor: '#1890ff'

@@ -1819,7 +1819,7 @@ app.post('/api/mlflow-sync', async (req, res) => {
     const currentConfig = readMlflowConfig();
     const updatedConfig = {
       ...currentConfig,
-      experiment_id: experimentIdentifier,
+      experiment_name: experimentIdentifier,  // 改为experiment_name
       sync_configs: {
         ...configObj,
         last_sync: new Date().toISOString()

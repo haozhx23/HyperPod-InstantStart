@@ -1,5 +1,5 @@
 {
-  "trainingJobName": "lmf-v2",
+  "trainingJobName": "lmf-v1",
   "instanceType": "ml.g6.12xlarge",
   "dockerImage": "633205212955.dkr.ecr.us-west-2.amazonaws.com/sm-training-op-torch26-smhp-op-v2:latest",
   "nprocPerNode": 4,

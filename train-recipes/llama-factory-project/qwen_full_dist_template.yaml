@@ -16,7 +16,7 @@ dataset_dir: customized_dataset
 dataset: longconv2k
 
 template: qwen
-cutoff_len: 2048
+cutoff_len: 4096
 max_samples: 1000
 overwrite_cache: true
 preprocessing_num_workers: 16
@@ -30,11 +30,11 @@ plot_loss: true
 overwrite_output_dir: true
 save_only_model: false
 report_to: mlflow  # choices: [none, wandb, tensorboard, swanlab, mlflow]
-run_name: qwen3-06b-test1
+run_name: qwen3-06b-bs
 
 ### train
-per_device_train_batch_size: 1
-gradient_accumulation_steps: 1
+per_device_train_batch_size: 2
+gradient_accumulation_steps: 4
 learning_rate: 1.0e-5
 num_train_epochs: 1.0
 lr_scheduler_type: cosine

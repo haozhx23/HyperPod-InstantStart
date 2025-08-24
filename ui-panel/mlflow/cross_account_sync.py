@@ -82,8 +82,16 @@ def sync_experiment(config, experiment_identifier):
         # 创建或获取目标实验
         try:
             target_exp = target_client.get_experiment_by_name(target_exp_name)
-            target_exp_id = target_exp.experiment_id
-            print(f"Target experiment already exists: {target_exp_name} (ID: {target_exp_id})")
+            # 检查实验是否被删除
+            if target_exp.lifecycle_stage == 'deleted':
+                print(f"Target experiment {target_exp_name} was deleted, restoring it...")
+                # 恢复已删除的实验
+                target_client.restore_experiment(target_exp.experiment_id)
+                target_exp_id = target_exp.experiment_id
+                print(f"Restored target experiment: {target_exp_name} (ID: {target_exp_id})")
+            else:
+                target_exp_id = target_exp.experiment_id
+                print(f"Target experiment already exists: {target_exp_name} (ID: {target_exp_id})")
         except:
             target_exp_id = target_client.create_experiment(
                 name=target_exp_name,

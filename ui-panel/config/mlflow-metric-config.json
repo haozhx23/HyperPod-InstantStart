@@ -1,6 +1,6 @@
 {
-  "tracking_uri": "arn:aws:sagemaker:us-west-2:633205212955:mlflow-tracking-server/pdx-mlflow",
-  "experiment_id": "hz-torchrecipe-1",
+  "tracking_uri": "arn:aws:sagemaker:us-west-2:633205212955:mlflow-tracking-server/mlflow-server-hypd-instrt-0824-p1s",
+  "experiment_name": "hz-lmf-ds3-bs",
   "sync_configs": {
     "contributor_name": "hzcontrib",
     "source_mlflow_arn": "arn:aws:sagemaker:us-west-2:633205212955:mlflow-tracking-server/mlflow-server-hypd-instrt-0824-p1s",
@@ -8,7 +8,7 @@
     "shared_aws_region": "us-west-2",
     "cross_account_role_arn": "arn:aws:iam::633205212955:role/MLflowSync-CrossAccount-hzcontrib",
     "shared_mlflow_arn": "arn:aws:sagemaker:us-west-2:633205212955:mlflow-tracking-server/pdx-mlflow",
-    "setup_date": "2025-08-24T14:00:27.152Z",
-    "last_sync": "2025-08-24T14:00:27.152Z"
+    "setup_date": "2025-08-24T16:30:25.083Z",
+    "last_sync": "2025-08-24T16:30:25.083Z"
   }
 }
