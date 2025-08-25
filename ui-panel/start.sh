@@ -72,10 +72,10 @@ sleep 3
 # 检查并清理占用关键端口的进程
 echo "🔍 Checking port usage..."
 
-# 检查端口3000 (前端)
-if lsof -ti :3000 >/dev/null 2>&1; then
-    echo "⚠️  Port 3000 is occupied, killing processes..."
-    lsof -ti :3000 | xargs kill -9 2>/dev/null || true
+# 检查端口3099 (前端 - 现在直接监听公网)
+if lsof -ti :3099 >/dev/null 2>&1; then
+    echo "⚠️  Port 3099 is occupied, killing processes..."
+    lsof -ti :3099 | xargs kill -9 2>/dev/null || true
     sleep 1
 fi
 
@@ -95,7 +95,7 @@ fi
 
 # 最终确认端口状态
 PORTS_CLEAR=true
-for port in 3000 3001 8081; do
+for port in 3099 3001 8081; do
     if lsof -ti :$port >/dev/null 2>&1; then
         echo "❌ Port $port is still occupied"
         PORTS_CLEAR=false
@@ -103,63 +103,19 @@ for port in 3000 3001 8081; do
 done
 
 if [ "$PORTS_CLEAR" = true ]; then
-    echo "✅ All required ports (3000, 3001, 8081) are now available"
+    echo "✅ All required ports (3099, 3001, 8081) are now available"
 else
     echo "⚠️  Some ports are still occupied, but continuing..."
 fi
 
-# SSM端口转发设置
-echo "🔗 Setting up SSM port forwarding..."
-
-# 获取当前实例的region和instance ID
-REGION=$(aws configure get region 2>/dev/null)
+# 获取公网IP用于显示访问地址
 TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
-INSTANCE_ID=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null)
+PUBLIC_IP=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null)
 
-if [ -z "$REGION" ] || [ -z "$INSTANCE_ID" ]; then
-    echo "⚠️  Failed to get region or instance ID, skipping SSM setup"
-    echo "   Region: $REGION, Instance ID: $INSTANCE_ID"
+if [ -n "$PUBLIC_IP" ]; then
+    echo "🌐 Application will be accessible at: http://$PUBLIC_IP:$LOCAL_FORWARD_PORT"
 else
-    echo "📍 Region: $REGION, Instance ID: $INSTANCE_ID"
-    
-    # 检查是否已有SSM端口转发在运行
-    SSM_RUNNING=false
-    if pgrep -f "start-session.*$INSTANCE_ID.*$LOCAL_FORWARD_PORT" > /dev/null; then
-        echo "✅ SSM port forwarding already running on port $LOCAL_FORWARD_PORT"
-        SSM_RUNNING=true
-    elif lsof -ti :$LOCAL_FORWARD_PORT >/dev/null 2>&1; then
-        echo "⚠️  Port $LOCAL_FORWARD_PORT is occupied by another process, cleaning up..."
-        lsof -ti :$LOCAL_FORWARD_PORT | xargs kill -9 2>/dev/null || true
-        sleep 2
-    fi
-    
-    # 如果没有运行，启动SSM端口转发
-    if [ "$SSM_RUNNING" = false ]; then
-        echo "🚀 Starting SSM port forwarding (3000 -> $LOCAL_FORWARD_PORT)..."
-        
-        # 检查session-manager-plugin是否可用
-        if command -v session-manager-plugin >/dev/null 2>&1; then
-            # 在后台启动SSM端口转发
-            nohup aws ssm start-session --target "$INSTANCE_ID" \
-                --document-name AWS-StartPortForwardingSession \
-                --parameters "{\"portNumber\":[\"3000\"],\"localPortNumber\":[\"$LOCAL_FORWARD_PORT\"]}" \
-                --region "$REGION" \
-                > logs/ssm-tunnel-$LOCAL_FORWARD_PORT.log 2>&1 &
-            
-            # 等待一下确认启动
-            sleep 3
-            
-            if pgrep -f "start-session.*$INSTANCE_ID.*$LOCAL_FORWARD_PORT" > /dev/null; then
-                echo "✅ SSM port forwarding started successfully"
-                echo "🌐 Access your app from external browser at: http://localhost:$LOCAL_FORWARD_PORT"
-            else
-                echo "⚠️  SSM port forwarding may have failed, check logs/ssm-tunnel-$LOCAL_FORWARD_PORT.log"
-            fi
-        else
-            echo "⚠️  session-manager-plugin not found, skipping SSM setup"
-            echo "   Install with: sudo dpkg -i session-manager-plugin.deb"
-        fi
-    fi
+    echo "🌐 Application will be accessible at: http://localhost:$LOCAL_FORWARD_PORT"
 fi
 
 # 检查依赖是否已安装
@@ -195,7 +151,11 @@ wait $SERVER_PID 2>/dev/null
 sleep 1
 
 echo "🌟 Starting services..."
-echo "📊 Dashboard will be available at: http://localhost:$LOCAL_FORWARD_PORT"
+if [ -n "$PUBLIC_IP" ]; then
+    echo "📊 Dashboard will be available at: http://$PUBLIC_IP:$LOCAL_FORWARD_PORT"
+else
+    echo "📊 Dashboard will be available at: http://localhost:$LOCAL_FORWARD_PORT"
+fi
 echo "🔌 API server will run on: http://localhost:3001"
 echo "🔄 WebSocket server will run on: ws://localhost:8081"
 echo ""

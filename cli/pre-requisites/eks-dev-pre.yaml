@@ -81,12 +81,8 @@ Resources:
           ToPort: 22
           CidrIp: 0.0.0.0/0
         - IpProtocol: tcp
-          FromPort: 8000
-          ToPort: 10000
-          CidrIp: 0.0.0.0/0
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
+          FromPort: 3099
+          ToPort: 3099
           CidrIp: 0.0.0.0/0
 
   # EC2 Instance with IAM Role attached, custom EBS volume, and UserData for dependency installation
