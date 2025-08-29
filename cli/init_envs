@@ -1,9 +1,9 @@
-export CLUSTER_TAG=hypd-instrt-0824-p1s
+export CLUSTER_TAG=hypd-inst-0801
 export AWS_REGION=us-west-2
 # export FTP_NAME=your-ftp-name
 export GPU_CAPACITY_AZ=us-west-2c
 export GPU_INSTANCE_TYPE=ml.g6.12xlarge
-export GPU_INSTANCE_COUNT=1
+export GPU_INSTANCE_COUNT=2
 
 # Automatic fill
 export CLOUD_FORMATION_FULL_STACK_NAME=full-stack-$CLUSTER_TAG
