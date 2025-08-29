@@ -7,5 +7,5 @@
   "efaCount": 1,
   "lmfRecipeRunPath": "/s3/train-recipes/llama-factory-project/",
   "lmfRecipeYamlFile": "qwen_full_dist_template.yaml",
-  "mlflowTrackingUri": "arn:aws:sagemaker:us-west-2:633205212955:mlflow-tracking-server/pdx-mlflow"
+  "mlflowTrackingUri": ""
 }

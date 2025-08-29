@@ -152,22 +152,16 @@ class MultiClusterAPIs {
       const config = req.body;
       console.log('Saving cluster configuration:', config);
 
-      // 构建环境变量内容
-      const envContent = `export CLUSTER_TAG=${config.clusterTag}
-export AWS_REGION=${config.awsRegion}
-${config.enableFtp && config.ftpName ? `export FTP_NAME=${config.ftpName}` : '# export FTP_NAME=your-ftp-name'}
-export GPU_CAPACITY_AZ=${config.gpuCapacityAz}
-export GPU_INSTANCE_TYPE=${config.gpuInstanceType}
-export GPU_INSTANCE_COUNT=${config.gpuInstanceCount}
+      // 读取现有的 init_envs 文件内容
+      const cliInitEnvs = path.join(this.clusterManager.cliDir, 'init_envs');
+      let existingContent = '';
+      
+      if (fs.existsSync(cliInitEnvs)) {
+        existingContent = fs.readFileSync(cliInitEnvs, 'utf8');
+      }
 
-# Automatic fill
-export CLOUD_FORMATION_FULL_STACK_NAME=full-stack-$CLUSTER_TAG
-export EKS_CLUSTER_NAME=eks-cluster-$CLUSTER_TAG
-export HP_CLUSTER_NAME=hp-cluster-$CLUSTER_TAG
-export DEPLOY_MODEL_S3_BUCKET=cluster-mount-$CLUSTER_TAG
-export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-export STACK_ID=$CLOUD_FORMATION_FULL_STACK_NAME
-export AWS_AZ=$(aws ec2 describe-availability-zones --region $AWS_REGION --query "AvailabilityZones[?ZoneName=='$GPU_CAPACITY_AZ'].ZoneId" --output text)`;
+      // 更新指定的环境变量，保留其他内容
+      const envContent = this.updateEnvVariables(existingContent, config);
 
       // 提取集群标识
       const clusterTag = config.clusterTag;
@@ -180,8 +174,7 @@ export AWS_AZ=$(aws ec2 describe-availability-zones --region $AWS_REGION --query
       const clusterInitEnvs = path.join(clusterConfigDir, 'init_envs');
       await fs.writeFile(clusterInitEnvs, envContent);
       
-      // 更新 CLI 目录的 init_envs (用于执行脚本)
-      const cliInitEnvs = path.join(this.clusterManager.cliDir, 'init_envs');
+      // 更新 CLI 目录的 init_envs (用于执行脚本) - 重用已声明的变量
       
       // 备份原文件
       if (fs.existsSync(cliInitEnvs)) {
@@ -218,6 +211,48 @@ export AWS_AZ=$(aws ec2 describe-availability-zones --region $AWS_REGION --query
         error: error.message
       });
     }
+  }
+
+  // 更新环境变量，保留用户自定义内容
+  updateEnvVariables(existingContent, config) {
+    // 只更新前端可配置的变量
+    const updates = {
+      'CLUSTER_TAG': config.clusterTag,
+      'AWS_REGION': config.awsRegion,
+      'GPU_CAPACITY_AZ': config.gpuCapacityAz,
+      'GPU_INSTANCE_TYPE': config.gpuInstanceType,
+      'GPU_INSTANCE_COUNT': config.gpuInstanceCount
+    };
+
+    // 处理FTP_NAME的特殊逻辑
+    if (config.enableFtp && config.ftpName) {
+      updates['FTP_NAME'] = config.ftpName;
+    }
+
+    let content = existingContent;
+
+    // 更新每个可配置的变量
+    for (const [key, value] of Object.entries(updates)) {
+      const regex = new RegExp(`^(#\\s*)?export\\s+${key}=.*$`, 'm');
+      const newLine = `export ${key}=${value}`;
+      
+      if (regex.test(content)) {
+        content = content.replace(regex, newLine);
+      } else {
+        // 如果变量不存在，添加到文件开头
+        content = `${newLine}\n${content}`;
+      }
+    }
+
+    // 处理FTP_NAME禁用时的注释
+    if (!config.enableFtp || !config.ftpName) {
+      const ftpRegex = /^export\s+FTP_NAME=.*$/m;
+      if (ftpRegex.test(content)) {
+        content = content.replace(ftpRegex, '# export FTP_NAME=your-ftp-name');
+      }
+    }
+
+    return content;
   }
 
   // 从 CLI 目录自动初始化多集群结构

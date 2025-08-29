@@ -3631,6 +3631,8 @@ app.get('/api/cluster/mlflow-info', (req, res) => {
 // 获取 Step 1 状态 API
 
 // 获取日志内容 API
+// 旧的日志API - 已被多集群API替代
+/*
 app.get('/api/cluster/logs/:step', (req, res) => {
   try {
     const { step } = req.params;
@@ -3667,6 +3669,7 @@ app.get('/api/cluster/logs/:step', (req, res) => {
     });
   }
 });
+*/
 
 // 获取历史日志列表
 app.get('/api/cluster/logs-history', (req, res) => {

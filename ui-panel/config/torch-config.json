@@ -7,5 +7,5 @@
   "efaCount": 1,
   "entryPythonScriptPath": "/s3/train-recipes/torch-project-gpt-ddp/trainer_gpt_ddp.py",
   "pythonScriptParameters": "    --model_name_or_path /s3/openai-community-gpt2-medium/ \\\n    --dataset_name wikitext \\\n    --dataset_config_name wikitext-2-raw-v1 \\\n    --output_dir /ckpt-path \\\n    --num_train_epochs 1 \\\n    --per_device_train_batch_size 4 \\\n    --gradient_accumulation_steps 8 \\\n    --max_steps 100 \\\n    --max_context_width 2048 \\\n    --learning_rate 5e-5 \\\n    --save_steps 100 \\\n    --report_to mlflow \\\n    --run_name gpt2_medium_wiki_train",
-  "mlflowTrackingUri": "arn:aws:sagemaker:us-west-2:633205212955:mlflow-tracking-server/mlflow-server-hypd-instrt-0824-p1s"
+  "mlflowTrackingUri": ""
 }
