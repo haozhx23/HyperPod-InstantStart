@@ -896,7 +896,7 @@ const TrainingHistoryPanel = () => {
             extra="Enter the MLflow tracking server URI. For AWS SageMaker, use ARN format."
           >
             <Input
-              placeholder="arn:aws:sagemaker:us-west-2:633205212955:mlflow-tracking-server/pdx-mlflow3"
+              placeholder=""
             />
           </Form.Item>
           

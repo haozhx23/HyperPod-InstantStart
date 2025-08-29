@@ -3,7 +3,7 @@ export AWS_REGION=us-west-2
 # export FTP_NAME=your-ftp-name
 export GPU_CAPACITY_AZ=us-west-2c
 export GPU_INSTANCE_TYPE=ml.g6.12xlarge
-export GPU_INSTANCE_COUNT=1
+export GPU_INSTANCE_COUNT=2
 
 # Automatic fill
 export CLOUD_FORMATION_FULL_STACK_NAME=full-stack-$CLUSTER_TAG
@@ -18,3 +18,5 @@ export AWS_AZ=$(aws ec2 describe-availability-zones --region $AWS_REGION --query
 export CURRENT_ROLE_ARN=$(aws sts get-caller-identity --query Arn --output text)
 export CURRENT_ROLE_NAME=$(echo "$CURRENT_ROLE_ARN" | sed 's/.*role\///g' | sed 's/\/.*//g')
 export IAM_ROLE_ARN=arn:aws:iam::$ACCOUNT_ID:role/$CURRENT_ROLE_NAME
+
+# export TEST=1

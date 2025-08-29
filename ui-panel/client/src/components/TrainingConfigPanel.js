@@ -324,7 +324,7 @@ const TrainingConfigPanel = ({ onLaunch, deploymentStatus }) => {
           ]}
           extra="Leave empty to disable MLFlow tracking for this training job"
         >
-          <Input placeholder="arn:aws:sagemaker:us-west-2:633205212955:mlflow-tracking-server/pdx-mlflow" />
+          <Input placeholder="" />
         </Form.Item>
 
         {/* 高级配置 - 可折叠 */}
