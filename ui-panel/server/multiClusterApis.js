@@ -442,7 +442,6 @@ class MultiClusterAPIs {
       helmDependencies: false,
       nlbController: false,
       s3CsiDriver: false,
-      kuberayOperator: false,
       certManager: false
     };
 
@@ -454,10 +453,6 @@ class MultiClusterAPIs {
       // 检测 S3 CSI Driver
       const s3Result = await this.execCommand('kubectl get daemonset -n kube-system s3-csi-node --no-headers 2>/dev/null');
       components.s3CsiDriver = s3Result.success && s3Result.output.includes('s3-csi-node');
-
-      // 检测 KubeRay Operator
-      const kuberayResult = await this.execCommand('kubectl get deployment -n kuberay-operator kuberay-operator --no-headers 2>/dev/null');
-      components.kuberayOperator = kuberayResult.success && kuberayResult.output.includes('kuberay-operator');
 
       // 检测 Cert Manager
       const certResult = await this.execCommand('kubectl get pods -n cert-manager --no-headers 2>/dev/null');

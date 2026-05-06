@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from 'react';
-import { Card, List, Button, Space, Typography, Spin, Empty, Tag, message, Tooltip } from 'antd';
-import { ReloadOutlined, FolderOutlined, FileOutlined, CloudOutlined, InfoCircleOutlined } from '@ant-design/icons';
+import React, { useState, useEffect, forwardRef, useImperativeHandle } from 'react';
+import { List, Space, Typography, Spin, Empty, Tag, message } from 'antd';
+import { FolderOutlined, FileOutlined } from '@ant-design/icons';
 
-const { Text, Title } = Typography;
+const { Text } = Typography;
 
-const S3StoragePanel = ({ selectedStorage = 'default' }) => {
+const S3StoragePanel = forwardRef(({ selectedStorage = 'default', onLoadingChange }, ref) => {
   const [loading, setLoading] = useState(false);
   const [s3Data, setS3Data] = useState([]);
   const [bucketInfo, setBucketInfo] = useState(null);
@@ -13,6 +13,7 @@ const S3StoragePanel = ({ selectedStorage = 'default' }) => {
   const fetchS3Data = async () => {
     try {
       setLoading(true);
+      if (onLoadingChange) onLoadingChange(true);
       console.log(`Fetching S3 storage data for: ${selectedStorage}`);
       
       const controller = new AbortController();
@@ -51,8 +52,13 @@ const S3StoragePanel = ({ selectedStorage = 'default' }) => {
       }
     } finally {
       setLoading(false);
+      if (onLoadingChange) onLoadingChange(false);
     }
   };
+
+  useImperativeHandle(ref, () => ({
+    refresh: fetchS3Data,
+  }));
 
   useEffect(() => {
     fetchS3Data();
@@ -105,51 +111,29 @@ const S3StoragePanel = ({ selectedStorage = 'default' }) => {
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', padding: '16px' }}>
-      {/* Header with bucket info and refresh button */}
-      <div style={{ marginBottom: '16px', flexShrink: 0 }}>
-        <Space direction="vertical" style={{ width: '100%' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <Space>
-              <CloudOutlined style={{ color: '#1890ff', fontSize: '16px' }} />
-              <Title level={5} style={{ margin: 0 }}>S3 Storage Contents</Title>
-              {bucketInfo && (
-                <Tooltip title={`Bucket: ${bucketInfo.bucket}`}>
-                  <InfoCircleOutlined style={{ color: '#1890ff' }} />
-                </Tooltip>
+      {/* Bucket info 信息条（仅在有数据时显示） */}
+      {bucketInfo && (
+        <div style={{ marginBottom: '16px', flexShrink: 0 }}>
+          <div style={{ backgroundColor: '#f0f9ff', border: '1px solid #91d5ff', borderRadius: '4px', padding: '8px 12px' }}>
+            <Space split={<span style={{ color: '#d9d9d9' }}>|</span>} wrap>
+              <Text>
+                <strong>Bucket:</strong> <span style={{ color: '#1890ff' }}>{bucketInfo.bucket}</span>
+              </Text>
+              <Text>
+                <strong>Region:</strong> {bucketInfo.region || 'Unknown'}
+              </Text>
+              <Text>
+                <strong>Items:</strong> {s3Data.length}
+              </Text>
+              {lastRefresh && (
+                <Text>
+                  <strong>Refresh:</strong> {lastRefresh}
+                </Text>
               )}
             </Space>
-            <Button
-              icon={<ReloadOutlined />}
-              onClick={fetchS3Data}
-              loading={loading}
-              size="small"
-            >
-              Refresh
-            </Button>
           </div>
-          
-          {bucketInfo && (
-            <div style={{ backgroundColor: '#f0f9ff', border: '1px solid #91d5ff', borderRadius: '4px', padding: '8px 12px' }}>
-              <Space split={<span style={{ color: '#d9d9d9' }}>|</span>} wrap>
-                <Text>
-                  <strong>Bucket:</strong> <span style={{ color: '#1890ff' }}>{bucketInfo.bucket}</span>
-                </Text>
-                <Text>
-                  <strong>Region:</strong> {bucketInfo.region || 'Unknown'}
-                </Text>
-                <Text>
-                  <strong>Items:</strong> {s3Data.length}
-                </Text>
-                {lastRefresh && (
-                  <Text>
-                    <strong>Refresh:</strong> {lastRefresh}
-                  </Text>
-                )}
-              </Space>
-            </div>
-          )}
-        </Space>
-      </div>
+        </div>
+      )}
 
       {/* S3 Contents List */}
       <div style={{ flex: 1, overflow: 'hidden' }}>
@@ -222,6 +206,6 @@ const S3StoragePanel = ({ selectedStorage = 'default' }) => {
       </div>
     </div>
   );
-};
+});
 
 export default S3StoragePanel;

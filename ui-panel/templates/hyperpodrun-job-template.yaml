@@ -1,0 +1,87 @@
+# HyperPod Job (generic): 通用 .sh 入口，不绑定任何 recipe。
+# 用户在自己的脚本里自行调用 hyperpodrun（NNODES / NPROC_PER_NODE 由 operator 注入）。
+apiVersion: sagemaker.amazonaws.com/v1
+kind: HyperPodPyTorchJob
+metadata:
+  labels:
+    app.kubernetes.io/name: HyperPod
+    app.kubernetes.io/managed-by: kustomize
+    app: "${JOB_NAME}"
+  name: "${JOB_NAME}"
+spec:
+  nprocPerNode: "${NPROC_PER_NODE}"
+  replicaSpecs:
+    - name: pods
+      replicas: ${REPLICAS}
+      template:
+        metadata:
+          labels:
+            hami.io/webhook: ignore
+        spec:
+          nodeSelector:
+            beta.kubernetes.io/instance-type: "${INSTANCE_TYPE}"
+          containers:
+            - name: pytorch
+              image: "${DOCKER_IMAGE}"
+              imagePullPolicy: Always
+              ports:
+                - containerPort: 8080    # HyperPodElasticAgent port
+              resources:
+                requests:
+                  nvidia.com/gpu: ${NPROC_PER_NODE}
+                  vpc.amazonaws.com/efa: ${EFA_PER_NODE}
+                limits:
+                  nvidia.com/gpu: ${NPROC_PER_NODE}
+                  vpc.amazonaws.com/efa: ${EFA_PER_NODE}
+              env:
+                - name: LOGLEVEL
+                  value: "INFO"
+                - name: SERVER_LOG_LEVEL
+                  value: "warning"
+                - name: FI_PROVIDER
+                  value: "efa"
+                - name: NCCL_DEBUG
+                  value: "INFO"
+                - name: NCCL_SOCKET_IFNAME
+                  value: "eth0"
+              command: ["bash", "${ENTRY_SCRIPT_PATH}"]
+              volumeMounts:
+                - name: persistent-storage-s3
+                  mountPath: /s3
+                  readOnly: false
+                - name: persistent-storage-fsx
+                  mountPath: /fsx
+                - name: shmem
+                  mountPath: /dev/shm
+                - name: local
+                  mountPath: /local
+                - name: inst-nvme
+                  mountPath: /nvme
+                - name: local-cache
+                  mountPath: /root/.cache
+          volumes:
+            - name: shmem
+              hostPath:
+                path: /dev/shm
+            - name: local
+              hostPath:
+                path: /mnt/k8s-disks/0
+            - name: local-cache
+              hostPath:
+                path: /opt/dlami/nvme/.cache
+            - name: inst-nvme
+              hostPath:
+                path: /opt/dlami/nvme/
+            - name: persistent-storage-s3
+              persistentVolumeClaim:
+                claimName: s3-claim
+            - name: persistent-storage-fsx
+              persistentVolumeClaim:
+                claimName: fsx-claim
+  runPolicy:
+    jobMaxRetryCount: 5
+    restartPolicy:
+      numRestartBeforeFullJobRestart: 3
+      evalPeriodSeconds: 21600
+      maxFullJobRestarts: 1
+    cleanPodPolicy: "All"

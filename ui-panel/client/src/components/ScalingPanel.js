@@ -32,7 +32,7 @@ const { Option } = Select;
 const { Text, Title } = Typography;
 const { TextArea } = Input;
 
-const ScalingPanel = ({ onDeploy, deploymentStatus }) => {
+const ScalingPanel = ({ onDeploy }) => {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [previewVisible, setPreviewVisible] = useState(false);

@@ -1,0 +1,14 @@
+{
+  "eks": {
+    "kubernetesVersion": "1.34",
+    "prefixDelegation": {
+      "enabled": true
+    }
+  },
+  "hyperpodHelmChart": {
+    "enabled": true,
+    "cliVersion": "v3.8.0",
+    "efaDevicePluginImageTag": ""
+  },
+  "kuberayOperatorChartVersion": "1.6.1"
+}

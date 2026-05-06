@@ -4,38 +4,31 @@
   "mcpServers": {
     "hypd-inst": {
       "command": "docker",
-      "args": ["exec", "-i", "ui-panel-dev", "python3", "/app/mcp-server/server.py"],
+      "args": ["exec", "-i", "ui-panel-prod", "python3", "/app/mcp-server/server.py"],
       "env": {
         "PYTHONUNBUFFERED": "1"
-      }
+      },
+      "autoApprove": ["*"]
     }
   },
-  "tools": [
-    "read",
-    "write",
-    "shell",
-    "aws",
-    "@hypd-inst"
-  ],
+  "tools": ["*"],
   "allowedTools": [
     "read",
-    "@hypd-inst/cluster_get_status",
-    "@hypd-inst/cluster_list_all",
-    "@hypd-inst/cluster_get_eks_creation_status",
-    "@hypd-inst/cluster_get_dependency_status",
-    "@hypd-inst/cluster_get_available_instances",
-    "@hypd-inst/cluster_get_availability_zones",
-    "@hypd-inst/hyperpod_get_creation_status",
-    "@hypd-inst/hyperpod_get_advanced_features",
-    "@hypd-inst/inference_list_services",
-    "@hypd-inst/inference_list_public_services",
-    "@hypd-inst/job_get_status",
-    "@hypd-inst/job_list_all",
-    "@hypd-inst/s3_storage_list_contents",
-    "@hypd-inst/wait_seconds",
-    "@hypd-inst/karpenter_get_status"
+    "write",
+    "glob",
+    "grep",
+    "code",
+    "shell",
+    "aws",
+    "web_search",
+    "web_fetch",
+    "introspect",
+    "todo_list",
+    "subagent",
+    "@hypd-inst"
   ],
   "resources": [
+    "file://.kiro/steering/*.md",
     "skill://.kiro/skills/**/SKILL.md"
   ],
   "toolsSettings": {
@@ -44,15 +37,18 @@
       "autoAllowReadonly": true
     },
     "shell": {
-      "allowedCommands": ["kubectl get.*", "kubectl describe.*", "kubectl logs.*", "kubectl top.*", "kubectl cluster-info.*", "docker ps.*", "docker logs.*", "curl.*localhost.*", "grep.*", "cat.*", "ls.*", "find.*", "head.*", "tail.*", "wc.*", "echo.*", "which.*", "whoami", "pwd", "env", "printenv.*", "hostname", "date", "uname.*", "df.*", "du.*", "ps.*", "id"],
-      "deniedCommands": ["kubectl (apply|delete|create|patch|replace|edit|scale|drain|cordon|taint).*"],
+      "allowedCommands": [
+        "kubectl get *", "kubectl describe *", "kubectl logs *", "kubectl top *", "kubectl cluster-info *",
+        "docker ps *", "docker logs *",
+        "cat *", "ls *", "head *", "tail *", "wc *", "find *",
+        "grep", "echo", "which", "whoami", "pwd", "env", "printenv *",
+        "hostname", "date", "uname *", "df *", "du *", "ps *", "id"
+      ],
+      "deniedCommands": [],
       "autoAllowReadonly": true
-    },
-    "write": {
-      "allowedPaths": [".kiro/**", "hypd-inst-mcp/**"]
     }
   },
-  "keyboardShortcut": "ctrl+h",
+  "keyboardShortcut": "ctrl+shift+h",
   "welcomeMessage": "HyperPod InstantStart agent ready. What would you like to do?",
   "includeMcpJson": true
 }

@@ -2,7 +2,7 @@
  * Training Job Manager
  *
  * 管理所有训练相关的 API：
- * - 训练启动 (Torch/SageMaker/LlamaFactory/MS-Swift/Script/VERL)
+ * - 训练启动 (Torch/SageMaker/LlamaFactory/MS-Swift/Script)
  * - 配置保存/加载
  * - 作业查询 (HyperPod Jobs/RayJobs)
  *
@@ -14,6 +14,15 @@ const express = require('express');
 const router = express.Router();
 const fs = require('fs-extra');
 const path = require('path');
+const { promisify } = require('util');
+const execAsync = promisify(require('child_process').exec);
+const { renderTemplate } = require('./utils/renderTemplate');
+const {
+  formatPythonParams,
+  mlflowPatches,
+  logMonitoringPatch,
+  appendEnvPatches,
+} = require('./utils/trainingPatches');
 
 // 依赖注入
 let broadcast = null;
@@ -177,50 +186,27 @@ router.post('/launch-torch-training', async (req, res) => {
       });
     }
 
-    // 读取Torch训练任务模板
+    // 渲染训练任务模板
     const templatePath = path.join(__dirname, '../templates/hyperpod-training-torch-template.yaml');
-    const templateContent = await fs.readFile(templatePath, 'utf8');
+    const extraPatches = [
+      ...mlflowPatches(mlflowTrackingUri),
+      logMonitoringPatch(logMonitoringConfig),
+    ].filter(Boolean);
 
-    // 处理日志监控配置
-    let logMonitoringConfigYaml = '';
-    if (logMonitoringConfig && logMonitoringConfig.trim() !== '') {
-      const indentedConfig = logMonitoringConfig
-        .split('\n')
-        .map(line => line.trim() ? `    ${line}` : line)
-        .join('\n');
-      logMonitoringConfigYaml = `
-    logMonitoringConfiguration:
-${indentedConfig}`;
-    }
-
-    // 处理Python脚本参数
-    let formattedPythonParams = pythonScriptParameters;
-    if (pythonScriptParameters.includes('\\')) {
-      formattedPythonParams = pythonScriptParameters
-        .replace(/\\\s*\n\s*/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-    }
-
-    // 根据MLFlow URI决定serviceAccount配置
-    let serviceAccountConfig = '';
-    if (mlflowTrackingUri && mlflowTrackingUri.trim() !== '') {
-      serviceAccountConfig = 'serviceAccountName: mlflow-service-account';
-    }
-
-    // 替换模板中的占位符
-    const newYamlContent = templateContent
-      .replace(/TRAINING_JOB_NAME/g, trainingJobName)
-      .replace(/DOCKER_IMAGE/g, dockerImage)
-      .replace(/INSTANCE_TYPE/g, instanceType)
-      .replace(/NPROC_PER_NODE/g, nprocPerNode.toString())
-      .replace(/REPLICAS_COUNT/g, replicas.toString())
-      .replace(/EFA_PER_NODE/g, efaCount.toString())
-      .replace(/TORCH_RECIPE_PYPATH_PH/g, entryPythonScriptPath)
-      .replace(/TORCH_RECIPE_PYPARAMS_PH/g, formattedPythonParams)
-      .replace(/SM_MLFLOW_ARN/g, mlflowTrackingUri)
-      .replace(/SERVICE_ACCOUNT_CONFIG/g, serviceAccountConfig)
-      .replace(/LOG_MONITORING_CONFIG/g, logMonitoringConfigYaml);
+    const newYamlContent = renderTemplate(templatePath, {
+      values: {
+        JOB_NAME: trainingJobName,
+        DOCKER_IMAGE: dockerImage,
+        INSTANCE_TYPE: instanceType,
+        NPROC_PER_NODE: nprocPerNode,
+        REPLICAS: replicas,
+        EFA_PER_NODE: efaCount,
+        TORCH_RECIPE_PY_PATH: entryPythonScriptPath,
+        TORCH_RECIPE_PY_PARAMS: formatPythonParams(pythonScriptParameters),
+        MLFLOW_TRACKING_URI: mlflowTrackingUri && mlflowTrackingUri.trim() ? mlflowTrackingUri : null,
+      },
+      patches: extraPatches,
+    });
 
     console.log('Generated torch training YAML content:', newYamlContent);
 
@@ -367,10 +353,6 @@ router.post('/launch-sagemaker-job', async (req, res) => {
       });
     }
 
-    // 读取SageMaker作业模板
-    const templatePath = path.join(__dirname, '../templates/sagemaker-job-template.yaml');
-    const templateContent = await fs.readFile(templatePath, 'utf8');
-
     // 动态获取AWS资源信息
     const awsHelpers = require('./utils/awsHelpers');
     const bucketName = awsHelpers.getCurrentS3Bucket();
@@ -378,30 +360,24 @@ router.post('/launch-sagemaker-job', async (req, res) => {
 
     console.log('Dynamic AWS resources:', { bucketName, devAdminRoleArn });
 
-    // 处理Python脚本参数
-    let formattedPythonParams = pythonScriptParameters;
-    if (pythonScriptParameters.includes('\\')) {
-      formattedPythonParams = pythonScriptParameters
-        .replace(/\\\s*\n\s*/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-    }
-
-    // 替换模板中的占位符
-    let newYamlContent = templateContent
-      .replace(/TRAINING_JOB_NAME/g, trainingJobName)
-      .replace(/DOCKER_IMAGE/g, dockerImage)
-      .replace(/INSTANCE_TYPE/g, instanceType)
-      .replace(/REPLICAS_COUNT/g, replicas.toString())
-      .replace(/NUM_REPLICAS/g, `"${replicas.toString()}"`)
-      .replace(/SAGEMAKER_JOB_DIR/g, smJobDir)
-      .replace(/ENTRY_PYTHON_PATH/g, entryPythonScriptPath)
-      .replace(/GPU_PER_NODE/g, `"${nprocPerNode.toString()}"`)
-      .replace(/PYTHON_SCRIPT_PARAMS/g, formattedPythonParams)
-      .replace(/FUSE_S3_PATH/g, bucketName)
-      .replace(/SAGEMAKER_DEV_ROLE/g, devAdminRoleArn)
-      .replace(/SPOT_TRAINING_ENABLED/g, enableSpotTraining.toString())
-      .replace(/SPOT_MAX_WAIT_TIME/g, maxWaitTimeInSeconds.toString());
+    // 渲染SageMaker作业模板
+    const templatePath = path.join(__dirname, '../templates/sagemaker-job-template.yaml');
+    const newYamlContent = renderTemplate(templatePath, {
+      values: {
+        JOB_NAME: trainingJobName,
+        DOCKER_IMAGE: dockerImage,
+        INSTANCE_TYPE: instanceType,
+        REPLICAS: replicas,
+        NPROC_PER_NODE: nprocPerNode,
+        ENTRY_PYTHON_PATH: entryPythonScriptPath,
+        PYTHON_SCRIPT_PARAMS: formatPythonParams(pythonScriptParameters),
+        S3_BUCKET: bucketName,
+        SAGEMAKER_JOB_DIR: smJobDir,
+        SAGEMAKER_DEV_ROLE: devAdminRoleArn,
+        ENABLE_SPOT: enableSpotTraining,
+        MAX_WAIT_SECONDS: maxWaitTimeInSeconds,
+      },
+    });
 
     console.log('Generated SageMaker job YAML content:', newYamlContent);
 
@@ -543,41 +519,27 @@ router.post('/launch-training', async (req, res) => {
       });
     }
 
-    // 读取训练任务模板
+    // 渲染训练任务模板
     const templatePath = path.join(__dirname, '../templates/hyperpod-training-lmf-template.yaml');
-    const templateContent = await fs.readFile(templatePath, 'utf8');
+    const extraPatches = [
+      ...mlflowPatches(mlflowTrackingUri),
+      logMonitoringPatch(logMonitoringConfig),
+    ].filter(Boolean);
 
-    // 处理日志监控配置
-    let logMonitoringConfigYaml = '';
-    if (logMonitoringConfig && logMonitoringConfig.trim() !== '') {
-      const indentedConfig = logMonitoringConfig
-        .split('\n')
-        .map(line => line.trim() ? `    ${line}` : line)
-        .join('\n');
-      logMonitoringConfigYaml = `
-    logMonitoringConfiguration:
-${indentedConfig}`;
-    }
-
-    // 根据MLFlow URI决定serviceAccount配置
-    let serviceAccountConfig = '';
-    if (mlflowTrackingUri && mlflowTrackingUri.trim() !== '') {
-      serviceAccountConfig = 'serviceAccountName: mlflow-service-account';
-    }
-
-    // 替换模板中的占位符
-    const newYamlContent = templateContent
-      .replace(/TRAINING_JOB_NAME/g, trainingJobName)
-      .replace(/DOCKER_IMAGE/g, dockerImage)
-      .replace(/INSTANCE_TYPE/g, instanceType)
-      .replace(/NPROC_PER_NODE/g, nprocPerNode.toString())
-      .replace(/REPLICAS_COUNT/g, replicas.toString())
-      .replace(/EFA_PER_NODE/g, efaCount.toString())
-      .replace(/LMF_RECIPE_RUNPATH_PH/g, lmfRecipeRunPath)
-      .replace(/LMF_RECIPE_YAMLFILE_PH/g, lmfRecipeYamlFile)
-      .replace(/SM_MLFLOW_ARN/g, mlflowTrackingUri)
-      .replace(/SERVICE_ACCOUNT_CONFIG/g, serviceAccountConfig)
-      .replace(/LOG_MONITORING_CONFIG/g, logMonitoringConfigYaml);
+    const newYamlContent = renderTemplate(templatePath, {
+      values: {
+        JOB_NAME: trainingJobName,
+        DOCKER_IMAGE: dockerImage,
+        INSTANCE_TYPE: instanceType,
+        NPROC_PER_NODE: nprocPerNode,
+        REPLICAS: replicas,
+        EFA_PER_NODE: efaCount,
+        LMF_RECIPE_RUN_PATH: lmfRecipeRunPath,
+        LMF_RECIPE_YAML_FILE: lmfRecipeYamlFile,
+        MLFLOW_TRACKING_URI: mlflowTrackingUri && mlflowTrackingUri.trim() ? mlflowTrackingUri : null,
+      },
+      patches: extraPatches,
+    });
 
     console.log('Generated training YAML content:', newYamlContent);
 
@@ -714,37 +676,26 @@ router.post('/launch-msswift-training', async (req, res) => {
     }
 
     const templatePath = path.join(__dirname, '../templates/hyperpod-training-msswift-template.yaml');
-    const templateContent = await fs.readFile(templatePath, 'utf8');
+    const extraPatches = [
+      ...mlflowPatches(mlflowTrackingUri),
+      logMonitoringPatch(logMonitoringConfig),
+    ].filter(Boolean);
 
-    let logMonitoringConfigYaml = '';
-    if (logMonitoringConfig && logMonitoringConfig.trim() !== '') {
-      const indentedConfig = logMonitoringConfig
-        .split('\n')
-        .map(line => line.trim() ? `    ${line}` : line)
-        .join('\n');
-      logMonitoringConfigYaml = `
-    logMonitoringConfiguration:
-${indentedConfig}`;
-    }
-
-    let serviceAccountConfig = '';
-    if (mlflowTrackingUri && mlflowTrackingUri.trim() !== '') {
-      serviceAccountConfig = 'serviceAccountName: mlflow-service-account';
-    }
-
-    const newYamlContent = templateContent
-      .replace(/TRAINING_JOB_NAME/g, trainingJobName)
-      .replace(/DOCKER_IMAGE/g, dockerImage)
-      .replace(/INSTANCE_TYPE/g, instanceType)
-      .replace(/NPROC_PER_NODE/g, nprocPerNode.toString())
-      .replace(/REPLICAS_COUNT/g, replicas.toString())
-      .replace(/EFA_PER_NODE/g, efaCount.toString())
-      .replace(/MSSWIFT_RECIPE_RUNPATH_PH/g, msswiftRecipeRunPath)
-      .replace(/MSSWIFT_COMMAND_TYPE_PH/g, msswiftCommandType)
-      .replace(/MSSWIFT_RECIPE_YAMLFILE_PH/g, msswiftRecipeYamlFile)
-      .replace(/SM_MLFLOW_ARN/g, mlflowTrackingUri)
-      .replace(/SERVICE_ACCOUNT_CONFIG/g, serviceAccountConfig)
-      .replace(/LOG_MONITORING_CONFIG/g, logMonitoringConfigYaml);
+    const newYamlContent = renderTemplate(templatePath, {
+      values: {
+        JOB_NAME: trainingJobName,
+        DOCKER_IMAGE: dockerImage,
+        INSTANCE_TYPE: instanceType,
+        NPROC_PER_NODE: nprocPerNode,
+        REPLICAS: replicas,
+        EFA_PER_NODE: efaCount,
+        MSSWIFT_RECIPE_RUN_PATH: msswiftRecipeRunPath,
+        MSSWIFT_COMMAND_TYPE: msswiftCommandType,
+        MSSWIFT_RECIPE_YAML_FILE: msswiftRecipeYamlFile,
+        MLFLOW_TRACKING_URI: mlflowTrackingUri && mlflowTrackingUri.trim() ? mlflowTrackingUri : null,
+      },
+      patches: extraPatches,
+    });
 
     const timestamp = Date.now();
 
@@ -867,41 +818,27 @@ router.post('/launch-script-training', async (req, res) => {
       });
     }
 
-    // 读取Script训练任务模板
+    // 渲染Script训练任务模板
     const templatePath = path.join(__dirname, '../templates/hyperpod-training-script-template.yaml');
-    const templateContent = await fs.readFile(templatePath, 'utf8');
+    const extraPatches = [
+      ...mlflowPatches(mlflowTrackingUri),
+      logMonitoringPatch(logMonitoringConfig),
+    ].filter(Boolean);
 
-    // 处理日志监控配置
-    let logMonitoringConfigYaml = '';
-    if (logMonitoringConfig && logMonitoringConfig.trim() !== '') {
-      const indentedConfig = logMonitoringConfig
-        .split('\n')
-        .map(line => line.trim() ? `    ${line}` : line)
-        .join('\n');
-      logMonitoringConfigYaml = `
-    logMonitoringConfiguration:
-${indentedConfig}`;
-    }
-
-    // 根据MLFlow URI决定serviceAccount配置
-    let serviceAccountConfig = '';
-    if (mlflowTrackingUri && mlflowTrackingUri.trim() !== '') {
-      serviceAccountConfig = 'serviceAccountName: mlflow-service-account';
-    }
-
-    // 替换模板中的占位符
-    const newYamlContent = templateContent
-      .replace(/TRAINING_JOB_NAME/g, trainingJobName)
-      .replace(/DOCKER_IMAGE/g, dockerImage)
-      .replace(/INSTANCE_TYPE/g, instanceType)
-      .replace(/NPROC_PER_NODE/g, nprocPerNode.toString())
-      .replace(/REPLICAS_COUNT/g, replicas.toString())
-      .replace(/EFA_PER_NODE/g, efaCount.toString())
-      .replace(/SCRIPT_RECIPE_PROJECTPATH_PH/g, projectPath)
-      .replace(/SCRIPT_RECIPE_ENTRYPATH_PH/g, entryPath)
-      .replace(/SM_MLFLOW_ARN/g, mlflowTrackingUri)
-      .replace(/SERVICE_ACCOUNT_CONFIG/g, serviceAccountConfig)
-      .replace(/LOG_MONITORING_CONFIG/g, logMonitoringConfigYaml);
+    const newYamlContent = renderTemplate(templatePath, {
+      values: {
+        JOB_NAME: trainingJobName,
+        DOCKER_IMAGE: dockerImage,
+        INSTANCE_TYPE: instanceType,
+        NPROC_PER_NODE: nprocPerNode,
+        REPLICAS: replicas,
+        EFA_PER_NODE: efaCount,
+        SCRIPT_RECIPE_PROJECT_PATH: projectPath,
+        SCRIPT_RECIPE_ENTRY_PATH: entryPath,
+        MLFLOW_TRACKING_URI: mlflowTrackingUri && mlflowTrackingUri.trim() ? mlflowTrackingUri : null,
+      },
+      patches: extraPatches,
+    });
 
     console.log('Generated script training YAML content:', newYamlContent);
 
@@ -1039,24 +976,24 @@ router.post('/launch-verl-training', async (req, res) => {
       });
     }
 
-    // 读取VERL训练任务模板
-    const templatePath = path.join(__dirname, '../templates/verl-training-template.yaml');
-    const templateContent = await fs.readFile(templatePath, 'utf8');
-
     // 计算总节点数 = 1 (head) + worker replicas
     const totNumNodes = 1 + workerReplicas;
 
-    // 替换模板中的占位符
-    const newYamlContent = templateContent
-      .replace(/JOB_NAME/g, jobName)
-      .replace(/INSTANCE_TYPE/g, instanceType)
-      .replace(/ENTRY_POINT_PATH/g, entryPointPath)
-      .replace(/DOCKER_IMAGE/g, dockerImage)
-      .replace(/WORKER_REPLICAS/g, workerReplicas.toString())
-      .replace(/MAX_REPLICAS/g, Math.max(3, workerReplicas + 2).toString())
-      .replace(/GPU_PER_NODE/g, gpuPerNode.toString())
-      .replace(/EFA_PER_NODE/g, efaPerNode.toString())
-      .replace(/TOT_NUM_NODES/g, totNumNodes.toString());
+    // 渲染VERL训练任务模板
+    const templatePath = path.join(__dirname, '../templates/verl-training-template.yaml');
+    const newYamlContent = renderTemplate(templatePath, {
+      values: {
+        JOB_NAME: jobName,
+        INSTANCE_TYPE: instanceType,
+        ENTRY_POINT_PATH: entryPointPath,
+        DOCKER_IMAGE: dockerImage,
+        WORKER_REPLICAS: workerReplicas,
+        MAX_REPLICAS: Math.max(3, workerReplicas + 2),
+        GPU_PER_NODE: gpuPerNode,
+        EFA_PER_NODE: efaPerNode,
+        TOT_NUM_NODES: totNumNodes,
+      },
+    });
 
     console.log('Generated VERL YAML content preview:', newYamlContent.substring(0, 500) + '...');
 
@@ -1081,6 +1018,176 @@ router.post('/launch-verl-training', async (req, res) => {
       error: error.message || 'Unknown error occurred'
     });
   }
+});
+
+// ============================================================
+// 通用 Job 启动 API (sh-based, 无框架绑定)
+// ============================================================
+
+/**
+ * POST /launch-hyperpodrun-job
+ * 通用 HyperPod PyTorchJob: .sh 入口，用户自行调用 hyperpodrun。
+ */
+router.post('/launch-hyperpodrun-job', async (req, res) => {
+  try {
+    const {
+      jobName,
+      dockerImage,
+      instanceType,
+      entryScriptPath,
+      replicas = 1,
+      nprocPerNode = 1,
+      efaPerNode = 0,
+      envVars = [],
+    } = req.body;
+
+    if (!jobName) return res.status(400).json({ success: false, error: 'Job name is required' });
+    if (!dockerImage) return res.status(400).json({ success: false, error: 'Docker image is required' });
+    if (!instanceType) return res.status(400).json({ success: false, error: 'Instance type is required' });
+    if (!entryScriptPath) return res.status(400).json({ success: false, error: 'Entry script path is required' });
+
+    const templatePath = path.join(__dirname, '../templates/hyperpodrun-job-template.yaml');
+    const envPath = ['spec', 'replicaSpecs', 0, 'template', 'spec', 'containers', 0, 'env'];
+
+    const newYamlContent = renderTemplate(templatePath, {
+      values: {
+        JOB_NAME: jobName,
+        DOCKER_IMAGE: dockerImage,
+        INSTANCE_TYPE: instanceType,
+        ENTRY_SCRIPT_PATH: entryScriptPath,
+        REPLICAS: replicas,
+        NPROC_PER_NODE: nprocPerNode,
+        EFA_PER_NODE: efaPerNode,
+      },
+      patches: appendEnvPatches(envVars, [envPath]),
+    });
+
+    const deployResult = await deployTrainingYaml('hyperpodrun-job', jobName, newYamlContent);
+    res.json({
+      success: true,
+      message: `HyperPod job "${jobName}" launched successfully`,
+      jobName,
+      savedTemplate: deployResult.permanentFileName,
+      savedTemplatePath: deployResult.permanentFilePath,
+      output: deployResult.applyOutput,
+    });
+  } catch (error) {
+    console.error('HyperPod job launch error:', error);
+    res.status(500).json({ success: false, error: error.message || 'Unknown error' });
+  }
+});
+
+
+/**
+ * POST /launch-rayjob
+ * 通用 RayJob: .sh 入口，head+worker 同规格，env 同时写入两边容器。
+ */
+router.post('/launch-rayjob', async (req, res) => {
+  try {
+    const {
+      jobName,
+      dockerImage,
+      instanceType,
+      entryScriptPath,
+      workerReplicas = 1,
+      gpuPerNode = 1,
+      efaPerNode = 0,
+      maxRunHours = 24,
+      envVars = [],
+    } = req.body;
+
+    if (!jobName) return res.status(400).json({ success: false, error: 'Job name is required' });
+    if (!dockerImage) return res.status(400).json({ success: false, error: 'Docker image is required' });
+    if (!instanceType) return res.status(400).json({ success: false, error: 'Instance type is required' });
+    if (!entryScriptPath) return res.status(400).json({ success: false, error: 'Entry script path is required' });
+
+    const templatePath = path.join(__dirname, '../templates/rayjob-template.yaml');
+    const headEnvPath = ['spec', 'rayClusterSpec', 'headGroupSpec', 'template', 'spec', 'containers', 0, 'env'];
+    const workerEnvPath = ['spec', 'rayClusterSpec', 'workerGroupSpecs', 0, 'template', 'spec', 'containers', 0, 'env'];
+
+    const newYamlContent = renderTemplate(templatePath, {
+      values: {
+        JOB_NAME: jobName,
+        DOCKER_IMAGE: dockerImage,
+        INSTANCE_TYPE: instanceType,
+        ENTRY_SCRIPT_PATH: entryScriptPath,
+        WORKER_REPLICAS: workerReplicas,
+        MAX_REPLICAS: Math.max(3, workerReplicas + 2),
+        GPU_PER_NODE: gpuPerNode,
+        EFA_PER_NODE: efaPerNode,
+        DEADLINE_SECONDS: maxRunHours * 3600,
+      },
+      patches: appendEnvPatches(envVars, [headEnvPath, workerEnvPath]),
+    });
+
+    const deployResult = await deployTrainingYaml('rayjob', jobName, newYamlContent);
+    res.json({
+      success: true,
+      message: `RayJob "${jobName}" launched successfully`,
+      jobName,
+      savedTemplate: deployResult.permanentFileName,
+      savedTemplatePath: deployResult.permanentFilePath,
+      output: deployResult.applyOutput,
+    });
+  } catch (error) {
+    console.error('RayJob launch error:', error);
+    res.status(500).json({ success: false, error: error.message || 'Unknown error' });
+  }
+});
+
+// ============================================================
+// 通用 Job 配置保存/加载 API
+// ============================================================
+
+function makeConfigRoutes(slug, defaults) {
+  router.post(`/${slug}/save`, async (req, res) => {
+    try {
+      const configPath = path.join(__dirname, `../config/${slug}.json`);
+      const configDir = path.join(__dirname, '../config');
+      if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
+      await fs.writeFile(configPath, JSON.stringify(req.body, null, 2));
+      res.json({ success: true, message: `${slug} configuration saved` });
+    } catch (error) {
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  router.get(`/${slug}/load`, async (req, res) => {
+    try {
+      const configPath = path.join(__dirname, `../config/${slug}.json`);
+      if (!fs.existsSync(configPath)) {
+        return res.json({ success: true, config: defaults, isDefault: true });
+      }
+      const config = JSON.parse(await fs.readFile(configPath, 'utf8'));
+      res.json({ success: true, config, isDefault: false });
+    } catch (error) {
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+}
+
+makeConfigRoutes('hyperpodrun-job-config', {
+  jobName: 'hyperpodrun-job-1',
+  dockerImage: '633205212955.dkr.ecr.us-west-2.amazonaws.com/sm-training-op-torch26-smhp-op:latest',
+  instanceType: '',
+  entryScriptPath: '/fsx/my-project/run.sh',
+  replicas: 1,
+  nprocPerNode: 1,
+  efaPerNode: 0,
+  envVars: [],
+});
+
+
+makeConfigRoutes('rayjob-config', {
+  jobName: 'rayjob-1',
+  dockerImage: '',
+  instanceType: '',
+  entryScriptPath: '/fsx/my-project/run.sh',
+  workerReplicas: 1,
+  gpuPerNode: 1,
+  efaPerNode: 0,
+  maxRunHours: 24,
+  envVars: [],
 });
 
 // ============================================================
@@ -1586,6 +1693,7 @@ router.get('/verl-config/load', async (req, res) => {
   }
 });
 
+
 // ============================================================
 // 作业查询 API
 // ============================================================
@@ -1645,8 +1753,10 @@ router.get('/training-jobs', async (req, res) => {
       console.log('No RayJobs found:', error.message);
     }
 
+    let kubeflowJobs = [];
+
     // 合并所有作业
-    allJobs.push(...hyperpodJobs, ...rayJobs);
+    allJobs.push(...hyperpodJobs, ...rayJobs, ...kubeflowJobs);
 
     console.log(`Aggregated ${allJobs.length} training jobs:`, allJobs.map(j => `${j.name} (${j.type})`));
 
@@ -1797,6 +1907,7 @@ router.get('/hyperpod-jobs/:jobName/pods', async (req, res) => {
     });
   }
 });
+
 
 /**
  * GET /rayjobs

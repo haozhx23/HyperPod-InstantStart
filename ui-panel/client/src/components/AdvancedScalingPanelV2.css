@@ -50,7 +50,7 @@
   border-radius: 4px;
   padding: 8px;
   background-color: #ffffff;
-  transition: all 0.2s ease;
+  transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
   cursor: pointer;
   margin-bottom: 6px;
 }
@@ -58,7 +58,6 @@
 .advanced-scaling-v2 .instance-type-card:hover {
   border-color: #1890ff;
   background-color: #f0f9ff;
-  transform: translateY(-1px);
   box-shadow: 0 2px 4px rgba(24, 144, 255, 0.2);
 }
 
@@ -98,7 +97,7 @@
 
 .advanced-scaling-v2 .section-card {
   box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.03), 0 1px 6px -1px rgba(0, 0, 0, 0.02);
-  transition: all 0.3s ease;
+  transition: box-shadow 0.3s ease;
 }
 
 .advanced-scaling-v2 .section-card:hover {

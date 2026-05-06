@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
+import { getAuthToken } from './AuthGate';
 import {
   Card,
   Select,
@@ -85,10 +86,9 @@ const TrainingMonitorPanelRedux = () => {
 
     const connectWebSocket = () => {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const hostname = window.location.hostname;
-      const wsPort = process.env.REACT_APP_WS_PORT || '3098';
-      const wsUrl = `${protocol}//${hostname}:${wsPort}`;
-      
+      const token = getAuthToken();
+      const wsUrl = `${protocol}//${window.location.host}/ws${token ? `?token=${token}` : ''}`;
+
       console.log(`Training Monitor connecting to WebSocket: ${wsUrl}`);
       const ws = new WebSocket(wsUrl);
 
@@ -224,7 +224,7 @@ const TrainingMonitorPanelRedux = () => {
       const podLogs = prevLogs[podName] || [];
       const newLog = {
         timestamp,
-        data: logData,
+        data: logData.split('\r').pop(),
         type: 'log'
       };
 
@@ -385,7 +385,7 @@ const TrainingMonitorPanelRedux = () => {
   // 获取完整日志
   const fetchFullLogs = async (jobName, podName) => {
     try {
-      const response = await fetch(`http://localhost:3001/api/logs/${jobName}/${podName}`);
+      const response = await fetch(`/api/logs/${jobName}/${podName}`);
       if (response.ok) {
         const fullLogs = await response.text();
         return fullLogs;
@@ -403,7 +403,7 @@ const TrainingMonitorPanelRedux = () => {
   // 下载完整日志
   const downloadFullLogs = async (jobName, podName) => {
     try {
-      const response = await fetch(`http://localhost:3001/api/logs/${jobName}/${podName}/download`);
+      const response = await fetch(`/api/logs/${jobName}/${podName}/download`);
       if (response.ok) {
         const blob = await response.blob();
         const url = window.URL.createObjectURL(blob);
@@ -523,22 +523,24 @@ const TrainingMonitorPanelRedux = () => {
         style={{
           height: '400px',
           overflow: 'auto',
-          backgroundColor: '#001529',
-          color: '#fff',
+          backgroundColor: '#fafafa',
+          color: '#333',
           padding: '12px',
           fontFamily: 'Monaco, Consolas, "Courier New", monospace',
           fontSize: '12px',
-          lineHeight: '1.4'
+          lineHeight: '1.4',
+          border: '1px solid #e8e8e8',
+          borderRadius: '4px'
         }}
       >
         {allLogs.length === 0 ? (
-          <div style={{ color: '#666', textAlign: 'center', padding: '20px' }}>
+          <div style={{ color: '#999', textAlign: 'center', padding: '20px' }}>
             No logs available. Click "Start Streaming" to begin monitoring logs.
           </div>
         ) : (
           allLogs.map((log, index) => (
             <div key={index} style={{ marginBottom: '2px' }}>
-              <span style={{ color: '#666', fontSize: '10px' }}>
+              <span style={{ color: '#999', fontSize: '10px' }}>
                 {new Date(log.timestamp).toLocaleTimeString()}
               </span>
               <span
@@ -551,7 +553,7 @@ const TrainingMonitorPanelRedux = () => {
               >
                 [{log.podName}]
               </span>
-              <span style={{ color: log.type === 'error' ? '#ff4d4f' : '#fff', whiteSpace: 'pre-wrap' }}>
+              <span style={{ color: log.type === 'error' ? '#ff4d4f' : '#333', whiteSpace: 'pre-wrap' }}>
                 {log.data}
               </span>
             </div>
@@ -565,10 +567,10 @@ const TrainingMonitorPanelRedux = () => {
             right: 0,
             textAlign: 'right',
             padding: '4px 8px',
-            backgroundColor: 'rgba(0, 21, 41, 0.8)',
+            backgroundColor: 'rgba(250, 250, 250, 0.9)',
             fontSize: '10px',
             color: autoScroll ? '#52c41a' : '#faad14',
-            borderTop: '1px solid #434343'
+            borderTop: '1px solid #e8e8e8'
           }}>
             {autoScroll ? 'Auto-scrolling enabled' : 'Manual scroll mode'}
           </div>
@@ -593,8 +595,14 @@ const TrainingMonitorPanelRedux = () => {
             <Option key={job.name} value={job.name}>
               <Space>
                 <Text strong>{job.name}</Text>
-                <Tag color={job.type === 'rayjob' ? 'purple' : 'orange'}>
-                  {job.type === 'rayjob' ? 'RayJob' : 'HyperPod'}
+                <Tag color={
+                  job.type === 'rayjob' ? 'purple' :
+                  'orange'
+                }>
+                  {
+                    job.type === 'rayjob' ? 'RayJob' :
+                    'HyperPod'
+                  }
                 </Tag>
                 <Tag color="blue">
                   {job.spec.replicas} replicas

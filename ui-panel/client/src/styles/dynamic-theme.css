@@ -5,7 +5,7 @@ body {
   font-family: var(--theme-font-family);
   background: var(--theme-gray50);
   color: var(--theme-gray900);
-  transition: all 0.3s ease;
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
 }
 
 /* Header 样式 */
@@ -31,7 +31,7 @@ body {
 }
 
 .theme-header-subtitle {
-  color: var(--theme-gray200);
+  color: rgba(255, 255, 255, 0.7);
   font-size: 14px;
   font-weight: 400;
   margin-left: 8px;
@@ -40,15 +40,14 @@ body {
 /* Card 样式 */
 .theme-card {
   border-radius: var(--theme-card-radius);
-  border: 1px solid var(--theme-gray200);
+  border: 1px solid var(--theme-border);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
-  transition: all 0.3s ease;
-  background: white;
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+  background: var(--theme-surface);
 }
 
 .theme-card:hover {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-  transform: translateY(-2px);
 }
 
 .theme-card .ant-card-head {
@@ -95,7 +94,7 @@ body {
   border-radius: var(--theme-button-radius);
   font-weight: 600;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-  transition: all 0.3s ease;
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
 }
 
 .theme-btn-primary:hover,
@@ -142,12 +141,12 @@ body {
 }
 
 .theme-btn-secondary {
-  background: white;
+  background: var(--theme-surface);
   border: 2px solid var(--theme-gray300);
   color: var(--theme-gray700);
   border-radius: var(--theme-button-radius);
   font-weight: 600;
-  transition: all 0.3s ease;
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
 }
 
 .theme-btn-secondary:hover {
@@ -249,11 +248,11 @@ body {
 .theme-tabs .ant-tabs-tab {
   border-radius: var(--theme-button-radius) var(--theme-button-radius) 0 0;
   font-weight: 600;
-  transition: all 0.3s ease;
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
 }
 
 .theme-tabs .ant-tabs-tab-active {
-  background: white;
+  background: var(--theme-surface);
   border-bottom: 3px solid var(--theme-primary);
 }
 
@@ -264,18 +263,17 @@ body {
 
 /* 统计卡片 */
 .theme-stat-card {
-  background: white;
-  border: 1px solid var(--theme-gray200);
+  background: var(--theme-surface);
+  border: 1px solid var(--theme-border);
   border-radius: var(--theme-card-radius);
   padding: 24px;
   text-align: center;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
-  transition: all 0.3s ease;
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
 }
 
 .theme-stat-card:hover {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-  transform: translateY(-2px);
 }
 
 .theme-stat-card .ant-statistic-content {
@@ -314,7 +312,7 @@ body {
 /* Modern 主题 */
 .theme-modern .theme-card {
   backdrop-filter: blur(10px);
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--theme-surface);
 }
 
 /* Classic 主题 */
@@ -349,22 +347,56 @@ body {
   }
 }
 
-/* 深色模式支持 */
-@media (prefers-color-scheme: dark) {
-  .theme-card {
-    background: var(--theme-gray800);
-    border-color: var(--theme-gray700);
-    color: var(--theme-gray100);
-  }
-  
-  .theme-card .ant-card-head {
-    background: var(--theme-gray900);
-    border-color: var(--theme-gray700);
-  }
-  
-  .theme-stat-card {
-    background: var(--theme-gray800);
-    border-color: var(--theme-gray700);
-    color: var(--theme-gray100);
+/* 深色模式 - 由 ThemeProvider 根据 prefers-color-scheme 设置 data-theme-mode="dark" */
+[data-theme-mode="dark"] body {
+  background: #141414;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+[data-theme-mode="dark"] .theme-card .ant-card-head {
+  background: #262626;
+  border-bottom-color: #303030;
+}
+
+[data-theme-mode="dark"] .theme-card .ant-card-head-title {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+[data-theme-mode="dark"] .theme-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme-mode="dark"] .theme-tabs .ant-tabs-tab-active {
+  background: #262626;
+}
+
+[data-theme-mode="dark"] .theme-stat-card {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+[data-theme-mode="dark"] .theme-stat-card .ant-statistic-content {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+[data-theme-mode="dark"] .theme-stat-card .ant-statistic-title {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+[data-theme-mode="dark"] .theme-modern .theme-card {
+  background: rgba(38, 38, 38, 0.9);
+}
+
+[data-theme-mode="dark"] .theme-classic .theme-card {
+  border-color: #303030;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
   }
 }

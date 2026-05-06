@@ -24,6 +24,7 @@ const {
   generateResourcesSection
 } = require('./utils/inferenceUtils');
 const EKSServiceHelper = require('./utils/eksServiceHelper');
+const { renderTemplate, patches: P } = require('./utils/renderTemplate');
 
 // 依赖注入
 let broadcast = null;
@@ -964,101 +965,79 @@ router.post('/deploy/container', async (req, res) => {
     // 生成 NLB 注解
     const nlbAnnotations = generateNLBAnnotations(isExternal);
 
-    // 生成混合调度节点选择器
-    const hybridNodeSelectorTerms = generateHybridNodeSelectorTerms(instanceTypes);
-    console.log('Generated hybrid node selector terms');
-
-    // 处理部署命令
+    // 处理部署命令 & 确定服务引擎类型
     let parsedCommand = null;
     let servEngine = 'hypd-custom';
-    let commandYaml = '# Using image default ENTRYPOINT/CMD';
-
     if (deploymentCommand && deploymentCommand.trim()) {
-      // 有命令：解析并生成 command 字段
       parsedCommand = parseInferenceCommand(deploymentCommand);
       console.log('Parsed command:', parsedCommand);
-
-      // 确定服务引擎类型
-      if (parsedCommand.commandType === 'sglang') {
-        servEngine = 'sglang';
-      } else if (parsedCommand.commandType === 'vllm') {
-        servEngine = 'vllm';
-      } else {
-        servEngine = 'hypd-custom';
-      }
-
-      // 生成 command YAML
-      commandYaml = `command: ${JSON.stringify(parsedCommand.fullCommand)}`;
+      if (parsedCommand.commandType === 'sglang') servEngine = 'sglang';
+      else if (parsedCommand.commandType === 'vllm') servEngine = 'vllm';
     } else {
-      // 无命令：使用镜像默认 ENTRYPOINT/CMD
       console.log('No command specified, using image default ENTRYPOINT/CMD');
     }
     console.log(`Using service engine: ${servEngine}`);
 
-    // 加载并解析模板
-    const templatePath = path.join(__dirname, '../templates/inference-container-hybrid-template.yaml');
-    const templateContent = await fs.readFile(templatePath, 'utf8');
-    const YAML = require('yaml');
-    const deployment = YAML.parse(templateContent);
-
-    // 基本信息（对象操作）
     const appName = `${servEngine}-${finalDeploymentTag}-inference`;
-    deployment.metadata.name = appName;
-    deployment.metadata.labels.app = appName;
-    deployment.metadata.labels['model-type'] = servEngine;
-    deployment.metadata.labels['deployment-tag'] = finalDeploymentTag;
-    
-    deployment.spec.selector.matchLabels.app = appName;
-    deployment.spec.replicas = replicas;
 
-    // Pod 模板 labels
-    const podLabels = deployment.spec.template.metadata.labels;
-    podLabels.app = appName;
-    podLabels['model-type'] = servEngine;
+    // 组装可选 / 结构化 block 的 patches
+    const podLabelsPath = ['spec', 'template', 'metadata', 'labels'];
+    const containerPath = ['spec', 'template', 'spec', 'containers', 0];
+    const extraPatches = [];
 
-    // HAMi label（按需添加）
+    // HAMi webhook skip
     if (gpuMemory === -1) {
-      podLabels['hami.io/webhook'] = 'ignore';
+      extraPatches.push(P.set([...podLabelsPath, 'hami.io/webhook'], 'ignore'));
     }
 
-    // Container 配置
-    const container = deployment.spec.template.spec.containers[0];
-    container.name = servEngine;
-    container.image = dockerImage;
-    container.ports[0].containerPort = port || 8000;
+    // resources —— 总是注入（由 generateResourcesSection 决定具体形状）
+    extraPatches.push(P.set(
+      [...containerPath, 'resources'],
+      generateResourcesSection({ gpuCount, gpuMemory, cpuRequest, memoryRequest })
+    ));
 
-    // Resources（对象操作）
-    container.resources = generateResourcesSection({ gpuCount, gpuMemory, cpuRequest, memoryRequest });
-
-    // Command（按需添加）
+    // 启动命令（可选）
     if (parsedCommand) {
-      container.command = parsedCommand.fullCommand;
+      extraPatches.push(P.set([...containerPath, 'command'], parsedCommand.fullCommand));
     }
 
-    // HuggingFace Token（按需添加）
+    // HuggingFace Token 注入到 env 列表最前面
     if (huggingFaceToken?.trim()) {
-      container.env.unshift({
+      extraPatches.push(P.prepend([...containerPath, 'env'], {
         name: 'HUGGING_FACE_HUB_TOKEN',
-        value: huggingFaceToken
-      });
+        value: huggingFaceToken,
+      }));
     }
 
-    // NodeSelector Terms（对象操作）
-    const nodeSelectorTerms = generateHybridNodeSelectorTerms(instanceTypes);
-    deployment.spec.template.spec.affinity.nodeAffinity
-      .requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms = nodeSelectorTerms;
+    // 混合调度的 nodeSelectorTerms
+    extraPatches.push(P.set(
+      ['spec', 'template', 'spec', 'affinity', 'nodeAffinity',
+        'requiredDuringSchedulingIgnoredDuringExecution', 'nodeSelectorTerms'],
+      generateHybridNodeSelectorTerms(instanceTypes)
+    ));
 
-    // Model Pool 标签（按需添加）
+    // Model Pool 模式追加 labels
     if (deployAsPool) {
-      deployment.metadata.labels['model-id'] = finalDeploymentTag;
-      deployment.metadata.labels['deployment-type'] = 'model-pool';
-      
-      podLabels['model-id'] = finalDeploymentTag;
-      podLabels['business'] = 'unassigned';
-      podLabels['deployment-type'] = 'model-pool';
+      extraPatches.push(P.set(['metadata', 'labels', 'model-id'], finalDeploymentTag));
+      extraPatches.push(P.set(['metadata', 'labels', 'deployment-type'], 'model-pool'));
+      extraPatches.push(P.set([...podLabelsPath, 'model-id'], finalDeploymentTag));
+      extraPatches.push(P.set([...podLabelsPath, 'business'], 'unassigned'));
+      extraPatches.push(P.set([...podLabelsPath, 'deployment-type'], 'model-pool'));
     }
 
-    let newYamlContent = YAML.stringify(deployment, { blockQuote: 'literal', lineWidth: 0 });
+    // 渲染模板
+    const templatePath = path.join(__dirname, '../templates/inference-container-hybrid-template.yaml');
+    let newYamlContent = renderTemplate(templatePath, {
+      values: {
+        APP_NAME: appName,
+        MODEL_TYPE: servEngine,
+        DEPLOYMENT_TAG: finalDeploymentTag,
+        DOCKER_IMAGE: dockerImage,
+        REPLICAS: replicas,
+        PORT: port || 8000,
+      },
+      patches: extraPatches,
+    });
 
     // 生成 Service YAML (非 modelpool 模式)
     if (!deployAsPool) {
@@ -1194,126 +1173,107 @@ router.post('/deploy/managed-inference', async (req, res) => {
     // 生成 NLB 注解
     const nlbAnnotations = generateNLBAnnotations(isExternal);
 
-    // 加载模板
-    const templatePath = path.join(__dirname, '../templates/managed-inference-template.yaml');
-    const templateContent = await fs.readFile(templatePath, 'utf8');
-
     // 解析 workerCommand
     const parsedCommand = parseInferenceCommand(workerCommand);
     console.log('Parsed managed inference command:', parsedCommand);
+    const argsToUse = parsedCommand.commandType === 'vllm'
+      ? (parsedCommand.args || [])
+      : (parsedCommand.fullCommand || []);
+    console.log(`Using ${parsedCommand.commandType === 'vllm' ? 'args only (vLLM ENTRYPOINT)' : 'full command'}`);
 
-    // 生成 worker args YAML
-    let workerArgsYaml = '';
-    let argsToUse = [];
-    if (parsedCommand.commandType === 'vllm') {
-      argsToUse = parsedCommand.args || [];
-      console.log('Using args only for vLLM (ENTRYPOINT exists)');
-    } else {
-      argsToUse = parsedCommand.fullCommand || [];
-      console.log('Using full command for non-vLLM');
-    }
+    // 组装可选 block 的 patches —— 每个条件一段，结构清晰
+    const extraPatches = [];
+
     if (argsToUse.length > 0) {
-      workerArgsYaml = argsToUse.map(arg => `\n      - "${arg}"`).join('');
+      extraPatches.push(P.set(['spec', 'worker', 'args'], argsToUse));
     }
 
-    // 处理 GPU Memory (HAMi)
-    let gpuMemoryYaml = '';
-    if (gpuMemory && gpuMemory !== -1 && gpuMemory > 0) {
-      gpuMemoryYaml = `\n        nvidia.com/gpumem: ${gpuMemory}`;
-    }
-
-    // 处理 CPU 和 Memory 请求
-    let cpuRequestYaml = '';
-    let memoryRequestYaml = '';
+    // CPU / Memory 请求
     if (cpuRequest && cpuRequest !== -1 && cpuRequest > 0) {
-      cpuRequestYaml = `\n        cpu: "${cpuRequest}"`;
+      extraPatches.push(P.set(['spec', 'worker', 'resources', 'requests', 'cpu'], String(cpuRequest)));
     }
     if (memoryRequest && memoryRequest !== -1 && memoryRequest > 0) {
-      memoryRequestYaml = `\n        memory: ${memoryRequest}Gi`;
+      extraPatches.push(P.set(['spec', 'worker', 'resources', 'requests', 'memory'], `${memoryRequest}Gi`));
     }
 
-    // HAMi label 不适用于 Managed Inference
-    const hamiLabel = '';
+    // GPU Memory (HAMi) — 同时加到 requests 和 limits
+    if (gpuMemory && gpuMemory !== -1 && gpuMemory > 0) {
+      extraPatches.push(P.set(['spec', 'worker', 'resources', 'requests', 'nvidia.com/gpumem'], gpuMemory));
+      extraPatches.push(P.set(['spec', 'worker', 'resources', 'limits', 'nvidia.com/gpumem'], gpuMemory));
+    }
 
-    // 处理 KV Cache 配置
-    let kvCacheSpecYaml = '';
+    // KV Cache
     if (kvCache && (kvCache.enableL1Cache || kvCache.enableL2Cache)) {
-      kvCacheSpecYaml = '\n\n  kvCacheSpec:';
-      if (kvCache.enableL1Cache) {
-        kvCacheSpecYaml += '\n    enableL1Cache: true';
-      }
+      const kvSpec = {};
+      if (kvCache.enableL1Cache) kvSpec.enableL1Cache = true;
       if (kvCache.enableL2Cache) {
-        kvCacheSpecYaml += '\n    enableL2Cache: true';
-        kvCacheSpecYaml += '\n    l2CacheSpec:';
-        const l2Backend = kvCache.l2CacheBackend || 'tieredstorage';
-        kvCacheSpecYaml += `\n      l2CacheBackend: "${l2Backend}"`;
-        if (l2Backend === 'redis' && kvCache.l2CacheUrl) {
-          kvCacheSpecYaml += `\n      l2CacheLocalUrl: "${kvCache.l2CacheUrl}"`;
+        kvSpec.enableL2Cache = true;
+        const backend = kvCache.l2CacheBackend || 'tieredstorage';
+        kvSpec.l2CacheSpec = { l2CacheBackend: backend };
+        if (backend === 'redis' && kvCache.l2CacheUrl) {
+          kvSpec.l2CacheSpec.l2CacheLocalUrl = kvCache.l2CacheUrl;
         }
       }
+      extraPatches.push(P.set(['spec', 'kvCacheSpec'], kvSpec));
     }
 
-    // 处理 Intelligent Routing 配置
-    let intelligentRoutingSpecYaml = '';
+    // Intelligent Routing
     if (intelligentRouting && intelligentRouting.enabled) {
-      intelligentRoutingSpecYaml = '\n  intelligentRoutingSpec:';
-      intelligentRoutingSpecYaml += '\n    enabled: true';
-      intelligentRoutingSpecYaml += `\n    routingStrategy: ${intelligentRouting.strategy}`;
+      extraPatches.push(P.set(['spec', 'intelligentRoutingSpec'], {
+        enabled: true,
+        routingStrategy: intelligentRouting.strategy,
+      }));
+      // Session-based 策略需要注入 SESSION_KEY 环境变量
+      if ((intelligentRouting.strategy === 'session' || intelligentRouting.strategy === 'kvaware') &&
+          intelligentRouting.sessionKey) {
+        extraPatches.push(P.append(['spec', 'worker', 'environmentVariables'], {
+          name: 'SESSION_KEY',
+          value: intelligentRouting.sessionKey,
+        }));
+      }
     }
 
-    // 处理 Session Key 环境变量
-    let sessionKeyEnvYaml = '';
-    if (intelligentRouting && intelligentRouting.enabled &&
-        (intelligentRouting.strategy === 'session' || intelligentRouting.strategy === 'kvaware') &&
-        intelligentRouting.sessionKey) {
-      sessionKeyEnvYaml = `\n      - name: SESSION_KEY\n        value: "${intelligentRouting.sessionKey}"`;
-    }
-
-    // 处理 Auto-Scaling 配置
-    let autoScalingSpecYaml = '';
+    // Auto-Scaling (KEDA)
     if (autoScaling && autoScaling.enabled) {
-      autoScalingSpecYaml = '\n\n  autoScalingSpec:';
-      autoScalingSpecYaml += `\n    minReplicaCount: ${autoScaling.minReplicaCount}`;
-      autoScalingSpecYaml += `\n    maxReplicaCount: ${autoScaling.maxReplicaCount}`;
-      autoScalingSpecYaml += `\n    pollingInterval: ${autoScaling.pollingInterval || 30}`;
-      autoScalingSpecYaml += `\n    cooldownPeriod: ${autoScaling.cooldownPeriod || 120}`;
-      autoScalingSpecYaml += `\n    scaleDownStabilizationTime: ${autoScaling.scaleDownStabilizationTime || 60}`;
-      autoScalingSpecYaml += `\n    scaleUpStabilizationTime: ${autoScaling.scaleUpStabilizationTime || 0}`;
-
-      // Prometheus Trigger
+      const scalingSpec = {
+        minReplicaCount: autoScaling.minReplicaCount,
+        maxReplicaCount: autoScaling.maxReplicaCount,
+        pollingInterval: autoScaling.pollingInterval || 30,
+        cooldownPeriod: autoScaling.cooldownPeriod || 120,
+        scaleDownStabilizationTime: autoScaling.scaleDownStabilizationTime || 60,
+        scaleUpStabilizationTime: autoScaling.scaleUpStabilizationTime || 0,
+      };
       if (autoScaling.prometheusTrigger) {
         const prom = autoScaling.prometheusTrigger;
-        autoScalingSpecYaml += '\n    prometheusTrigger:';
-        autoScalingSpecYaml += `\n      serverAddress: "${prom.serverAddress}"`;
-        autoScalingSpecYaml += `\n      query: "${prom.query}"`;
-        autoScalingSpecYaml += `\n      targetValue: ${prom.targetValue}`;
+        scalingSpec.prometheusTrigger = {
+          serverAddress: prom.serverAddress,
+          query: prom.query,
+          targetValue: prom.targetValue,
+        };
         if (prom.activationTargetValue !== undefined) {
-          autoScalingSpecYaml += `\n      activationTargetValue: ${prom.activationTargetValue}`;
+          scalingSpec.prometheusTrigger.activationTargetValue = prom.activationTargetValue;
         }
       }
+      extraPatches.push(P.set(['spec', 'autoScalingSpec'], scalingSpec));
     }
 
-    // 替换模板占位符
-    let newYamlContent = templateContent
-      .replace(/DEPLOYMENT_NAME/g, finalDeploymentTag)
-      .replace(/MODEL_NAME/g, deploymentName)
-      .replace(/INSTANCE_TYPE/g, instanceType)
-      .replace(/REPLICAS_COUNT/g, replicas.toString())
-      .replace(/AUTOSCALING_SPEC/g, autoScalingSpecYaml)
-      .replace(/S3_BUCKET_NAME/g, s3BucketName)
-      .replace(/AWS_REGION/g, s3Region)
-      .replace(/MODEL_LOCATION/g, modelLocation)
-      .replace(/DOCKER_IMAGE/g, dockerImage)
-      .replace(/WORKER_ARGS/g, workerArgsYaml)
-      .replace(/PORT_NUMBER/g, port.toString())
-      .replace(/CPU_REQUEST/g, cpuRequestYaml)
-      .replace(/MEMORY_REQUEST/g, memoryRequestYaml)
-      .replace(/GPU_COUNT/g, gpuCount.toString())
-      .replace(/GPU_MEMORY/g, gpuMemoryYaml)
-      .replace(/HAMI_LABEL/g, hamiLabel)
-      .replace(/KV_CACHE_SPEC/g, kvCacheSpecYaml)
-      .replace(/INTELLIGENT_ROUTING_SPEC/g, intelligentRoutingSpecYaml)
-      .replace(/SESSION_KEY_ENV/g, sessionKeyEnvYaml);
+    // 渲染模板
+    const templatePath = path.join(__dirname, '../templates/managed-inference-template.yaml');
+    let newYamlContent = renderTemplate(templatePath, {
+      values: {
+        DEPLOYMENT_NAME: finalDeploymentTag,
+        MODEL_NAME: deploymentName,
+        INSTANCE_TYPE: instanceType,
+        REPLICAS: replicas,
+        PORT: port,
+        S3_BUCKET: s3BucketName,
+        AWS_REGION: s3Region,
+        MODEL_LOCATION: modelLocation,
+        DOCKER_IMAGE: dockerImage,
+        GPU_COUNT: gpuCount,
+      },
+      patches: extraPatches,
+    });
 
     // 生成 Service YAML（仅在 external 模式下）
     if (isExternal) {

@@ -117,6 +117,7 @@ class HyperPodDependencyManager {
 
   /**
    * 安装HyperPod专用依赖（简化版）
+   * [2026-04-08] cert-manager 从 configure dependency 阶段移除，整合到这里一起安装
    */
   static async installHyperPodDependencies(configDir) {
     console.log('Installing HyperPod-specific dependencies...');
@@ -132,8 +133,10 @@ class HyperPodDependencyManager {
       return;
     }
 
-    // Phase 2: 等待 cert-manager 就绪
-    await this.waitForCertManagerReady(configDir);
+    // Phase 2: 安装 cert-manager（如果尚未安装）并等待就绪
+    // --- 旧逻辑：仅等待 cert-manager 就绪（假设已在 configure dependency 阶段安装） ---
+    // await this.waitForCertManagerReady(configDir);
+    await this.installAndWaitForCertManager(configDir);
 
     // Phase 3: 安装 Training Operator addon（带重试）
     await this.installTrainingOperatorAddon(configDir);
@@ -210,8 +213,98 @@ class HyperPodDependencyManager {
   }
 
   /**
+   * 安装 cert-manager 并等待就绪
+   * [2026-04-08] 从 clusterDependencyManager.installCertManager 整合而来，
+   * 合并了安装和等待逻辑（原 waitForCertManagerReady 的等待部分）
+   */
+  static async installAndWaitForCertManager(configDir) {
+    console.log('Installing cert-manager and waiting for it to be ready...');
+
+    const commands = `cd ${configDir} && bash -c 'source cluster_envs &&
+
+    echo "=========================================="
+    echo "Step 1: Install cert-manager addon"
+    echo "=========================================="
+
+    CERT_STATUS=\$(aws eks describe-addon \\
+        --cluster-name \$EKS_CLUSTER_NAME \\
+        --addon-name cert-manager \\
+        --region \$AWS_REGION \\
+        --query "addon.status" \\
+        --output text 2>/dev/null || echo "NOT_FOUND")
+
+    if [ "\$CERT_STATUS" = "ACTIVE" ]; then
+        echo "✅ cert-manager is already ACTIVE, skipping installation"
+    else
+        if [ "\$CERT_STATUS" = "NOT_FOUND" ]; then
+            echo "Creating cert-manager addon..."
+            aws eks create-addon \\
+                --cluster-name \$EKS_CLUSTER_NAME \\
+                --addon-name cert-manager \\
+                --region \$AWS_REGION \\
+                --configuration-values '"'"'{"replicaCount":1,"cainjector":{"replicaCount":1},"webhook":{"replicaCount":1}}'"'"' \\
+                --resolve-conflicts OVERWRITE 2>&1 || echo "cert-manager addon creation failed, may already exist"
+        fi
+
+        echo "Waiting for cert-manager addon to become ACTIVE..."
+        for i in {1..30}; do
+            STATUS=\$(aws eks describe-addon \\
+                --cluster-name \$EKS_CLUSTER_NAME \\
+                --addon-name cert-manager \\
+                --region \$AWS_REGION \\
+                --query "addon.status" \\
+                --output text 2>/dev/null || echo "UNKNOWN")
+
+            if [ "\$STATUS" = "ACTIVE" ]; then
+                echo "✅ cert-manager addon is ACTIVE"
+                break
+            fi
+            echo "cert-manager status: \$STATUS (\$i/30)"
+            sleep 10
+        done
+    fi
+
+    echo ""
+    echo "=========================================="
+    echo "Step 2: Wait for cert-manager deployments"
+    echo "=========================================="
+
+    kubectl wait --for=condition=available deployment/cert-manager -n cert-manager --timeout=300s || true
+    kubectl wait --for=condition=available deployment/cert-manager-webhook -n cert-manager --timeout=300s || true
+    kubectl wait --for=condition=available deployment/cert-manager-cainjector -n cert-manager --timeout=300s || true
+
+    echo ""
+    echo "=========================================="
+    echo "Step 3: Verify webhook endpoints exist"
+    echo "=========================================="
+
+    for i in {1..30}; do
+        ENDPOINTS=\$(kubectl get endpoints cert-manager-webhook -n cert-manager -o jsonpath="{.subsets[*].addresses[*].ip}" 2>/dev/null || echo "")
+        if [ -n "\$ENDPOINTS" ]; then
+            echo "✅ cert-manager webhook endpoints: \$ENDPOINTS"
+            break
+        fi
+        echo "Waiting for endpoints... (\$i/30)"
+        sleep 5
+    done
+
+    echo ""
+    echo "=========================================="
+    echo "Step 4: Stabilization wait (300s)"
+    echo "=========================================="
+    echo "Waiting 300 seconds for cert-manager webhook to be fully accessible..."
+    sleep 300
+
+    echo "✅ cert-manager installation and readiness check completed"
+    '`;
+
+    await this.executeNonBlocking(commands);
+  }
+
+  /**
    * 等待 cert-manager 就绪（简化版）
    * 只检查 addon 状态和 deployment 就绪，不做 webhook 连接测试
+   * [2026-04-08] 旧方法，保留供参考。新流程使用 installAndWaitForCertManager
    */
   static async waitForCertManagerReady(configDir) {
     console.log('Waiting for cert-manager to be ready...');

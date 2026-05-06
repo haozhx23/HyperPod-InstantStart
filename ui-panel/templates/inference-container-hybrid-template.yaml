@@ -2,57 +2,46 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: PLACEHOLDER_NAME
+  name: "${APP_NAME}"
   labels:
-    app: PLACEHOLDER_APP
-    model-type: "PLACEHOLDER_MODEL_TYPE"
-    deployment-tag: "PLACEHOLDER_TAG"
+    app: "${APP_NAME}"
+    model-type: "${MODEL_TYPE}"
+    deployment-tag: "${DEPLOYMENT_TAG}"
 spec:
-  replicas: 1
+  replicas: ${REPLICAS}
   selector:
     matchLabels:
-      app: PLACEHOLDER_APP
+      app: "${APP_NAME}"
   template:
     metadata:
       labels:
-        app: PLACEHOLDER_APP
-        model-type: "PLACEHOLDER_MODEL_TYPE"
+        app: "${APP_NAME}"
+        model-type: "${MODEL_TYPE}"
     spec:
       affinity:
         nodeAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
-          - weight: 100
-            preference:
-              matchExpressions:
-              - key: sagemaker.amazonaws.com/compute-type
-                operator: In
-                values: ["hyperpod"]
-          - weight: 90
-            preference:
-              matchExpressions:
-              - key: alpha.eksctl.io/nodegroup-name
-                operator: Exists
-          - weight: 80
-            preference:
-              matchExpressions:
-              - key: karpenter.sh/capacity-type
-                operator: Exists
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: node.kubernetes.io/instance-type
-                operator: In
-                values: ["ml.g6.12xlarge"]
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: sagemaker.amazonaws.com/compute-type
+                    operator: In
+                    values: ["hyperpod"]
+            - weight: 90
+              preference:
+                matchExpressions:
+                  - key: alpha.eksctl.io/nodegroup-name
+                    operator: Exists
+            - weight: 80
+              preference:
+                matchExpressions:
+                  - key: karpenter.sh/capacity-type
+                    operator: Exists
       containers:
-        - name: SERVENGINE
-          image: DOCKER_IMAGE
-          resources:
-            requests:
-              nvidia.com/gpu: 1
-            limits:
-              nvidia.com/gpu: 1
+        - name: "${MODEL_TYPE}"
+          image: "${DOCKER_IMAGE}"
           ports:
-            - containerPort: 8000
+            - containerPort: ${PORT}
               name: http
           volumeMounts:
             - name: persistent-storage-s3

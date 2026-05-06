@@ -182,6 +182,85 @@ export const fetchInferenceEndpoints = createAsyncThunk(
   }
 );
 
+// 异步操作：获取 Kubernetes Jobs（kubectl get jobs）
+export const fetchK8sJobs = createAsyncThunk(
+  'appStatus/fetchK8sJobs',
+  async (_, { rejectWithValue }) => {
+    try {
+      const response = await fetch('/api/k8s-jobs');
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      const data = await response.json();
+      return { k8sJobs: data.success ? (data.jobs || []) : [], timestamp: new Date().toISOString() };
+    } catch (error) {
+      console.error('Error fetching k8s jobs:', error);
+      return rejectWithValue(error.message);
+    }
+  }
+);
+
+
+// Training-Jobs page 的 tab key,用来从 legacy training-recipes 里切分出来
+const TRAINING_JOB_TAB_KEYS = [
+  'sagemaker',
+  'hyperpodrunJob',
+  'rayJob',
+];
+
+/**
+ * 兼容 shim: 从新 schema (config.pages) 或 legacy 扁平 schema 归一化出 pages 结构。
+ * 新 schema 优先; 缺失时从旧 3 个顶层 key 重建。
+ */
+function normalizePagesConfig(raw) {
+  if (raw && raw.pages && typeof raw.pages === 'object') {
+    return raw.pages;
+  }
+  // Legacy 重建
+  const legacyRecipes = raw?.['training-recipes'] || {};
+  const legacyApp = raw?.['app-status'] || {};
+  const legacyCluster = raw?.['cluster-management'] || {};
+
+  const trainingTabs = {};
+  const recipeTabs = {};
+  for (const [k, v] of Object.entries(legacyRecipes)) {
+    if (TRAINING_JOB_TAB_KEYS.includes(k)) trainingTabs[k] = v;
+    else recipeTabs[k] = v;
+  }
+  return {
+    'cluster-management': { enabled: 'on', tabs: legacyCluster },
+    'storage': { enabled: 'on' },
+    'inference': { enabled: 'on', tabs: {} },
+    'training': { enabled: 'on', tabs: trainingTabs },
+    'training-recipes': { enabled: 'on', tabs: recipeTabs },
+    'training-history': { enabled: 'on' },
+    'monitoring': { enabled: 'on', tabs: legacyApp },
+  };
+}
+
+// 异步操作：获取 App Status 配置
+export const fetchAppStatusConfig = createAsyncThunk(
+  'appStatus/fetchAppStatusConfig',
+  async (_, { rejectWithValue }) => {
+    try {
+      const response = await fetch('/api/config/app-status');
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      const data = await response.json();
+      const pages = normalizePagesConfig(data.config || {});
+
+      // 扁平兼容视图: 让 selectTabConfig/selectRecipeConfig/selectClusterConfig 继续工作。
+      // recipeConfig 合并 training + training-recipes 两个页面的 tabs,兼容老代码里按 key 判 isRecipeVisible 的逻辑。
+      return {
+        pagesConfig: pages,
+        tabConfig: pages.monitoring?.tabs || {},
+        recipeConfig: { ...(pages.training?.tabs || {}), ...(pages['training-recipes']?.tabs || {}) },
+        clusterConfig: pages['cluster-management']?.tabs || {},
+      };
+    } catch (error) {
+      console.error('Error fetching app-status config:', error);
+      return rejectWithValue(error.message);
+    }
+  }
+);
+
 // 新增：使用V2 API的优化组合获取
 export const fetchAppStatusV2 = createAsyncThunk(
   'appStatus/fetchAppStatusV2',
@@ -224,13 +303,18 @@ export const refreshAllAppStatus = createAsyncThunk(
         dispatch(fetchBindingServices()).unwrap(),
         dispatch(fetchDeployments()).unwrap(),        // 新增
         dispatch(fetchTrainingJobs()).unwrap(),       // 新增
-        dispatch(fetchInferenceEndpoints()).unwrap()  // 新增
+        dispatch(fetchInferenceEndpoints()).unwrap(),
+        dispatch(fetchK8sJobs()).unwrap(),            // K8s Jobs
       ]);
 
       const errors = [];
       results.forEach((result, index) => {
         if (result.status === 'rejected') {
-          const operations = ['App Status V2', 'RayJobs', 'Business Services', 'Deployments', 'Training Jobs', 'Inference Endpoints'];
+          const operations = [
+            'App Status V2', 'RayJobs', 'Business Services', 'Deployments', 'Training Jobs',
+            'Inference Endpoints',
+            'K8s Jobs',
+          ];
           errors.push(`${operations[index]}: ${result.reason}`);
         }
       });
@@ -260,7 +344,12 @@ const appStatusSlice = createSlice({
     bindingServices: [],
     deployments: [],           // 新增
     trainingJobs: [],          // 新增
-    inferenceEndpoints: [],    // 新增
+    inferenceEndpoints: [],
+    k8sJobs: [],               // K8s Jobs (kubectl get jobs)
+    pagesConfig: {},           // 顶层页面层级配置 { pages.{page}.enabled, pages.{page}.tabs }
+    tabConfig: {},             // Legacy flat: Monitoring tab 显示/隐藏 (由 pages.monitoring.tabs 派生)
+    recipeConfig: {},          // Legacy flat: Training + TrainingRecipes tab 合并 (派生)
+    clusterConfig: {},         // Legacy flat: Cluster Management tab (由 pages.cluster-management.tabs 派生)
 
     // 加载状态管理
     loading: false,
@@ -270,7 +359,8 @@ const appStatusSlice = createSlice({
     bindingServicesLoading: false,
     deploymentsLoading: false, // 新增
     trainingJobsLoading: false, // 新增
-    inferenceEndpointsLoading: false, // 新增
+    inferenceEndpointsLoading: false,
+    k8sJobsLoading: false,
 
     // 错误状态管理
     error: null,
@@ -280,7 +370,8 @@ const appStatusSlice = createSlice({
     bindingServicesError: null,
     deploymentsError: null,    // 新增
     trainingJobsError: null,   // 新增
-    inferenceEndpointsError: null, // 新增
+    inferenceEndpointsError: null,
+    k8sJobsError: null,
 
     // 时间戳记录
     lastUpdate: null,
@@ -290,7 +381,8 @@ const appStatusSlice = createSlice({
     lastBindingServicesUpdate: null,
     lastDeploymentsUpdate: null,    // 新增
     lastTrainingJobsUpdate: null,   // 新增
-    lastInferenceEndpointsUpdate: null, // 新增
+    lastInferenceEndpointsUpdate: null,
+    lastK8sJobsUpdate: null,
 
     // 统计信息
     stats: {
@@ -312,8 +404,8 @@ const appStatusSlice = createSlice({
       runningTrainingJobs: 0,     // 新增
       completedTrainingJobs: 0,   // 新增
       failedTrainingJobs: 0,      // 新增
-      totalInferenceEndpoints: 0, // 新增
-      activeInferenceEndpoints: 0 // 新增
+      totalInferenceEndpoints: 0,
+      activeInferenceEndpoints: 0
     }
   },
   reducers: {
@@ -326,7 +418,22 @@ const appStatusSlice = createSlice({
       state.bindingServicesError = null;
       state.deploymentsError = null;      // 新增
       state.trainingJobsError = null;     // 新增
-      state.inferenceEndpointsError = null; // 新增
+      state.inferenceEndpointsError = null;
+      state.k8sJobsError = null;
+    },
+
+    // 批量写入 pods + services（用于 WebSocket status_update 消息）
+    setPodsServices: (state, action) => {
+      const { pods, services } = action.payload || {};
+      if (Array.isArray(pods)) {
+        state.pods = pods;
+        state.lastPodsUpdate = new Date().toISOString();
+      }
+      if (Array.isArray(services)) {
+        state.services = services;
+        state.lastServicesUpdate = new Date().toISOString();
+      }
+      appStatusSlice.caseReducers.updateStats(state);
     },
 
     // 更新单个 Pod 状态（用于 WebSocket 实时更新）
@@ -499,7 +606,7 @@ const appStatusSlice = createSlice({
         ...businessServiceStats,
         ...deploymentStats,        // 新增
         ...trainingJobStats,       // 新增
-        ...inferenceEndpointStats  // 新增
+        ...inferenceEndpointStats
       };
     }
   },
@@ -673,6 +780,30 @@ const appStatusSlice = createSlice({
         state.inferenceEndpointsError = action.payload;
       })
 
+    // 处理获取 K8s Jobs
+      .addCase(fetchK8sJobs.pending, (state) => {
+        state.k8sJobsLoading = true;
+        state.k8sJobsError = null;
+      })
+      .addCase(fetchK8sJobs.fulfilled, (state, action) => {
+        state.k8sJobsLoading = false;
+        state.k8sJobs = action.payload.k8sJobs;
+        state.lastK8sJobsUpdate = action.payload.timestamp;
+      })
+      .addCase(fetchK8sJobs.rejected, (state, action) => {
+        state.k8sJobsLoading = false;
+        state.k8sJobsError = action.payload;
+      })
+
+
+    // 处理获取 App Status 配置
+      .addCase(fetchAppStatusConfig.fulfilled, (state, action) => {
+        state.pagesConfig = action.payload.pagesConfig;
+        state.tabConfig = action.payload.tabConfig;
+        state.recipeConfig = action.payload.recipeConfig;
+        state.clusterConfig = action.payload.clusterConfig;
+      })
+
     // 处理组合刷新操作
       .addCase(refreshAllAppStatus.pending, (state) => {
         state.loading = true;
@@ -695,6 +826,7 @@ const appStatusSlice = createSlice({
 
 export const {
   clearError,
+  setPodsServices,
   updatePodStatus,
   updateServiceStatus,
   updateRayJobStatus,

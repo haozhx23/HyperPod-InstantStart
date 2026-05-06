@@ -14,7 +14,6 @@ spec:
       template:
         spec:
           serviceAccountName: mlflow-service-account
-          # serviceAccountName: hp-training-operator-pod-manager
           nodeSelector:
             beta.kubernetes.io/instance-type: ml.g6.12xlarge
           containers:

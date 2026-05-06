@@ -1,3 +1,11 @@
+:root {
+  color-scheme: light dark;
+  /* 默认缩放因子；index.js 会根据 REACT_APP_UI_ZOOM (user.env) 覆盖此值。
+     组件里的 calc(X / var(--zoom-factor)) 依赖这个 var 来把 vh/vw 回算成
+     zoom 之后的物理视口尺寸。 */
+  --zoom-factor: 0.8;
+}
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
@@ -6,8 +14,13 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   background-color: #f0f2f5;
-  /* 使用zoom缩放，不影响fixed定位的Modal */
-  zoom: 0.75;
+  /* 使用zoom缩放，不影响fixed定位的Modal；值来自 CSS 变量 */
+  zoom: var(--zoom-factor);
+}
+
+[data-theme-mode="dark"] body {
+  background-color: #141414;
+  color: rgba(255, 255, 255, 0.88);
 }
 
 code {
@@ -32,6 +45,10 @@ html, body, #root {
 /* 全局字体优化 */
 .ant-typography {
   color: rgba(0, 0, 0, 0.85);
+}
+
+[data-theme-mode="dark"] .ant-typography {
+  color: rgba(255, 255, 255, 0.88);
 }
 
 /* 全局间距调整 */

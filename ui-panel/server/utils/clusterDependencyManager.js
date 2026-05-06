@@ -1,6 +1,8 @@
 const { execSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const yaml = require('yaml');
+const dependencyConfig = require('./dependencyConfigLoader');
 
 class ClusterDependencyManager {
   
@@ -99,70 +101,90 @@ echo "=== Helm repositories setup completed ==="`;
   }
 
   /**
-   * 克隆HyperPod CLI仓库
+   * 克隆HyperPod CLI仓库（支持通过配置锁定 tag 版本）
    */
   static async cloneHyperPodCLI(clusterConfigDir) {
     console.log('Cloning SageMaker HyperPod CLI repository...');
-    
-    const cloneCmd = `cd ${clusterConfigDir} && 
+
+    const cliVersion = dependencyConfig.load().hyperpodHelmChart.cliVersion;
+    const branchFlag = cliVersion ? `--branch ${cliVersion} --depth 1` : '';
+
+    const cloneCmd = `cd ${clusterConfigDir} &&
 if [ ! -d "./sagemaker-hyperpod-cli" ]; then
-  echo "Cloning SageMaker HyperPod CLI repository..."
-  git clone https://github.com/aws/sagemaker-hyperpod-cli.git
+  echo "Cloning SageMaker HyperPod CLI repository (version: ${cliVersion || 'latest main'})..."
+  git clone ${branchFlag} https://github.com/aws/sagemaker-hyperpod-cli.git
 else
   echo "SageMaker HyperPod CLI repository already exists, skipping clone..."
 fi`;
-    
+
     await this.executeNonBlocking(cloneCmd);
   }
 
   /**
    * 创建必要的命名空间
+   * 同时打上 Helm 接管的 label/annotation，避免后续 `helm install hyperpod-dependencies`
+   * 因为 namespace 已存在但缺少 ownership metadata 而报 "cannot be imported" 错误。
    */
   static async createNamespaces(clusterConfigDir) {
     console.log('Creating namespaces...');
-    const namespaceCmd = `cd ${clusterConfigDir} && bash -c 'source cluster_envs && 
+    const namespaceCmd = `cd ${clusterConfigDir} && bash -c 'source cluster_envs &&
 kubectl create namespace aws-hyperpod --dry-run=client -o yaml | kubectl apply -f - &&
-kubectl create namespace kubeflow --dry-run=client -o yaml | kubectl apply -f -'`;
-    
+kubectl create namespace kubeflow --dry-run=client -o yaml | kubectl apply -f - &&
+for ns in aws-hyperpod kubeflow; do
+  kubectl label namespace "$ns" app.kubernetes.io/managed-by=Helm --overwrite
+  kubectl annotate namespace "$ns" meta.helm.sh/release-name=hyperpod-dependencies meta.helm.sh/release-namespace=kube-system --overwrite
+done'`;
+
     await this.executeNonBlocking(namespaceCmd);
   }
 
   /**
    * 安装HyperPod Helm Chart
+   * 只服务 HyperPod 节点（chart 默认 affinity 就是 ml.* 白名单）。
    */
   static async installHyperPodChart(clusterConfigDir) {
     console.log('Installing HyperPod helm chart...');
-    
-    const installCmd = `cd ${clusterConfigDir} && bash -c 'source cluster_envs && 
+
+    const { efaDevicePluginImageTag } = dependencyConfig.load().hyperpodHelmChart;
+
+    // 与 chart 默认值一致地声明开关；字段必须精确匹配 Chart.yaml 里的 condition key。
+    const values = {
+      'cert-manager': { enabled: false },
+      'neuron-device-plugin': { devicePlugin: { enabled: false } },
+      'nvidia-device-plugin': { devicePlugin: { enabled: true } },
+      'aws-efa-k8s-device-plugin': {
+        devicePlugin: { enabled: true },
+        ...(efaDevicePluginImageTag && { image: { tag: efaDevicePluginImageTag } }),
+      },
+      'health-monitoring-agent': { enabled: true },
+      'hyperpod-patching': { enabled: true },
+      mlflow: { enabled: false },
+      'mpi-operator': { enabled: false },
+      trainingOperators: { enabled: false },
+      inferenceOperators: { enabled: false },
+      'deep-health-check': { enabled: false },
+      'job-auto-restart': { enabled: false },
+      storage: { enabled: false },
+      'cluster-role-and-bindings': { enabled: false },
+      'namespaced-role-and-bindings': { enabled: false },
+      'team-role-and-bindings': { enabled: false },
+      'gpu-operator': { enabled: false },
+    };
+
+    const valuesPath = path.join(clusterConfigDir, 'hyperpod-values-override.yaml');
+    fs.writeFileSync(valuesPath, yaml.stringify(values));
+    console.log(`Wrote helm overrides to ${valuesPath}`);
+
+    const installCmd = `cd ${clusterConfigDir} && bash -c 'source cluster_envs &&
 echo "=== Building HyperPod Helm Chart dependencies ===" &&
 helm dependency build sagemaker-hyperpod-cli/helm_chart/HyperPodHelmChart --debug &&
 echo "=== Installing HyperPod Helm Chart ===" &&
-echo "Cluster: $EKS_CLUSTER_NAME" &&
-echo "Region: $AWS_REGION" &&
-helm upgrade --install hyperpod-dependencies ./sagemaker-hyperpod-cli/helm_chart/HyperPodHelmChart \\
-  --kube-context arn:aws:eks:$AWS_REGION:$(aws sts get-caller-identity --query Account --output text):cluster/$EKS_CLUSTER_NAME \\
-  --namespace kube-system \\
-  --set cert-manager.enabled=false \\
-  --set neuron-device-plugin.devicePlugin.enabled=false \\
-  --set nvidia-device-plugin.devicePlugin.enabled=true \\
-  --set aws-efa-k8s-device-plugin.devicePlugin.enabled=true \\
-  --set aws-efa-k8s-device-plugin.image.tag="v0.5.13" \\
-  --set health-monitoring-agent.enabled=true \\
-  --set hyperpod-patching.enabled=true \\
-  --set mlflow.enabled=true \\
-  --set mpi-operator.enabled=false \\
-  --set trainingOperators.enabled=false \\
-  --set inferenceOperators.enabled=false \\
-  --set deep-health-check.enabled=false \\
-  --set job-auto-restart.enabled=false \\
-  --set storage.enabled=false \\
-  --set cluster-role-and-bindings.enabled=false \\
-  --set namespaced-role-and-bindings.enabled=false \\
-  --set team-role-and-bindings.enabled=false \\
-  --set gpu-operator.enabled=false \\
-  --timeout=10m &&
+echo "Cluster: \$EKS_CLUSTER_NAME" &&
+echo "Region: \$AWS_REGION" &&
+echo "--- values override ---" && cat hyperpod-values-override.yaml && echo "--- end ---" &&
+helm upgrade --install hyperpod-dependencies ./sagemaker-hyperpod-cli/helm_chart/HyperPodHelmChart --kube-context arn:aws:eks:\$AWS_REGION:\$(aws sts get-caller-identity --query Account --output text):cluster/\$EKS_CLUSTER_NAME --namespace kube-system -f hyperpod-values-override.yaml --atomic --timeout=10m &&
 echo "=== HyperPod Helm Chart installation completed ==="'`;
-    
+
     await this.executeNonBlocking(installCmd);
   }
 
@@ -210,80 +232,7 @@ echo "=== HyperPod Helm Chart installation completed ==="'`;
     await this.executeNonBlocking(commands);
   }
 
-  /**
-   * 安装 FSx Dependencies
-   */
-  static async installFSxDependencies(clusterConfigDir) {
-    console.log('Installing FSx dependencies...');
-    
-    const commands = `cd ${clusterConfigDir} && bash -c 'source cluster_envs && 
-    
-    echo "=== Installing FSx CSI Driver ==="
-    
-    # 获取账户ID
-    ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-    ROLE_NAME=SM_HP_FSX_CSI_ROLE_$EKS_CLUSTER_NAME
-    
-    # 创建IAM服务账户和角色
-    echo "Creating IAM service account for FSx CSI driver..."
-    eksctl create iamserviceaccount \\
-        --name fsx-csi-controller-sa \\
-        --namespace kube-system \\
-        --override-existing-serviceaccounts \\
-        --cluster $EKS_CLUSTER_NAME \\
-        --attach-policy-arn arn:aws:iam::aws:policy/AmazonFSxFullAccess \\
-        --role-name $ROLE_NAME \\
-        --region $AWS_REGION \\
-        --approve \\
-        --role-only || echo "FSx CSI service account already exists"
-    
-    # 获取角色ARN
-    ROLE_ARN=$(aws iam get-role --role-name $ROLE_NAME --query "Role.Arn" --output text)
-    
-    # 安装 FSx CSI Driver addon
-    echo "Installing FSx CSI driver addon..."
-    eksctl create addon \\
-        --name aws-fsx-csi-driver \\
-        --cluster $EKS_CLUSTER_NAME \\
-        --service-account-role-arn $ROLE_ARN \\
-        --region $AWS_REGION \\
-        --force || echo "FSx CSI driver addon already exists"
-    
-    echo "FSx CSI Driver installation completed"
-    '`;
-    
-    await this.executeNonBlocking(commands);
-  }
 
-  /**
-   * 安装 kuberay-operator
-   */
-  static async installKuberayOperator(clusterConfigDir) {
-    console.log('Installing kuberay-operator...');
-    
-    const commands = `cd ${clusterConfigDir} && bash -c 'source cluster_envs && 
-    
-    echo "=== Installing kuberay-operator ==="
-    
-    # 添加 kuberay helm repo
-    helm repo add kuberay https://ray-project.github.io/kuberay-helm/ || echo "Repo already exists"
-    helm repo update
-    
-    # 创建 namespace
-    kubectl create namespace kuberay-operator --dry-run=client -o yaml | kubectl apply -f -
-    
-    # 安装 kuberay-operator
-    helm upgrade --install kuberay-operator kuberay/kuberay-operator \\
-      --namespace kuberay-operator \\
-      --version 1.1.1 \\
-      --set image.tag=v1.1.1 \\
-      --timeout=10m || echo "kuberay-operator already installed"
-    
-    echo "kuberay-operator installation completed"
-    '`;
-    
-    await this.executeNonBlocking(commands);
-  }
 
   static async installnlbDependencies(clusterConfigDir) {
     console.log('Installing NLB dependencies...');
@@ -451,6 +400,38 @@ echo "=== HyperPod Helm Chart installation completed ==="'`;
   }
 
   /**
+   * 配置 VPC CNI Prefix Delegation 模式（托管 addon 方式）
+   *
+   * 目的：节省 Pod IP 消耗
+   *   - 默认模式：每个 Pod 占用一个辅助 IP（p5 等大机型每节点预取 50+ IP）
+   *   - Prefix 模式：每 ENI 分配一个 /28 前缀（每节点固定 16 IP，支持 110 Pod）
+   *
+   * 时机：必须在任何 worker 节点创建前执行（configure dependencies 阶段）
+   *      新节点起来后自然走 prefix 模式，无需重启
+   */
+  static async configureVpcCniPrefixDelegation(clusterConfigDir) {
+    console.log('Configuring VPC CNI prefix delegation...');
+
+    const cmd = `cd ${clusterConfigDir} && bash -c 'source cluster_envs &&
+echo "=== Ensuring vpc-cni addon exists ===" &&
+aws eks create-addon \\
+  --cluster-name \$EKS_CLUSTER_NAME \\
+  --addon-name vpc-cni \\
+  --region \$AWS_REGION \\
+  --resolve-conflicts OVERWRITE 2>/dev/null || echo "vpc-cni addon already exists" &&
+echo "=== Enabling Prefix Delegation on vpc-cni addon ===" &&
+aws eks update-addon \\
+  --cluster-name \$EKS_CLUSTER_NAME \\
+  --addon-name vpc-cni \\
+  --region \$AWS_REGION \\
+  --configuration-values '"'"'{"env":{"ENABLE_PREFIX_DELEGATION":"true","WARM_PREFIX_TARGET":"1"}}'"'"' \\
+  --resolve-conflicts OVERWRITE &&
+echo "=== VPC CNI Prefix Delegation configured ==="'`;
+
+    await this.executeNonBlocking(cmd);
+  }
+
+  /**
    * 安装 EKS Pod Identity Agent（所有集群都需要）
    */
   static async installEKSPodIdentity(clusterConfigDir) {
@@ -493,10 +474,8 @@ echo "=== HyperPod Helm Chart installation completed ==="'`;
 
       // 步骤 2: 安装 S3 CSI Driver
       await this.installGeneralDependencies(configDir);
-      
-      // 步骤 3: 安装 kuberay-operator
-      await this.installKuberayOperator(configDir);
-      
+
+
       console.log(`Successfully configured imported cluster dependencies for: ${clusterTag}`);
       return { success: true };
       
@@ -559,12 +538,26 @@ echo "=== HyperPod Helm Chart installation completed ==="'`;
       }
       
       await this.configureKubectlAndOIDC(configDir);
-      
-      await this.installHelmDependencies(configDir);
 
-      // cert-manager 必须在 AWS LB Controller 之前安装
-      // 避免 LB Controller 的 webhook 拦截 cert-manager 的 Service 创建
-      await this.installCertManager(configDir);
+      // 启用 VPC CNI Prefix Delegation（可通过配置关闭）
+      const depConfig = dependencyConfig.load();
+      if (depConfig.eks.prefixDelegation.enabled) {
+        await this.configureVpcCniPrefixDelegation(configDir);
+      } else {
+        console.log('VPC CNI Prefix Delegation is disabled in config, skipping');
+      }
+
+      // 安装 HyperPod Helm Chart（可通过配置关闭，适用于纯 EKS Node Group 场景）
+      if (depConfig.hyperpodHelmChart.enabled) {
+        await this.installHelmDependencies(configDir);
+      } else {
+        console.log('HyperPod Helm Chart is disabled in config, skipping');
+      }
+
+
+      // [2026-04-08] cert-manager 已整合到 training operator 一起管理（安装/卸载）
+      // 不再在 configure dependency 阶段安装，改由 managedFeaturesManager 和 hyperPodDependencyManager 负责
+      // await this.installCertManager(configDir);
 
       // 安装 EKS Pod Identity Agent（所有集群都需要）
       await this.installEKSPodIdentity(configDir);
@@ -573,8 +566,6 @@ echo "=== HyperPod Helm Chart installation completed ==="'`;
       
       await this.installGeneralDependencies(configDir);
 
-      await this.installKuberayOperator(configDir);
-      
       console.log(`Successfully configured created cluster dependencies for: ${clusterTag}`);
       return { success: true };
       

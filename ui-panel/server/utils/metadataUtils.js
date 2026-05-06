@@ -117,7 +117,7 @@ class MetadataUtils {
     // 从CloudFormation输出中提取
     const outputs = this.getCloudFormationOutputs(clusterTag);
     return {
-      name: outputs.OutputEKSClusterName || `eks-cluster-${clusterTag}`,
+      name: outputs.OutputEKSClusterName || null,
       arn: outputs.OutputEKSClusterArn || null,
       vpcId: outputs.OutputVpcId || null,
       securityGroupId: outputs.OutputSecurityGroupId || null,

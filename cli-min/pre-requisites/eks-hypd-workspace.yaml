@@ -14,8 +14,8 @@ Parameters:
     
   KeyPairName:
     Type: String
-    Default: yourkeypair
-    Description: Name of the EC2 KeyPair for SSH access
+    Default: ""
+    Description: Name of the EC2 KeyPair for SSH access (leave empty to use SSM Session Manager only)
     
   EBSVolumeSize:
     Type: Number
@@ -43,7 +43,12 @@ Parameters:
     Type: String
     Default: hypd-dev
     Description: Resource tag prefix for naming resources (e.g., hypd-dev, eks-prod)
-    
+
+  ExistingS3BucketName:
+    Type: String
+    Default: ""
+    Description: Existing S3 bucket name to use (leave empty to create a new one)
+
   LatestUbuntu2204AMI:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
@@ -58,11 +63,14 @@ Conditions:
     - !Condition HasSubnetId
     - !Condition HasSecurityGroupId
   UseDefaultVpc: !Not [!Condition UseCustomVpc]
+  CreateS3Bucket: !Equals [!Ref ExistingS3BucketName, ""]
+  HasKeyPair: !Not [!Equals [!Ref KeyPairName, ""]]
 
 Resources:
-  # S3 Bucket for HYPD resources
+  # S3 Bucket for HYPD resources (only if not using existing)
   HYPDUserBucket:
     Type: AWS::S3::Bucket
+    Condition: CreateS3Bucket
     Properties:
       BucketName: !Sub '${ResourceTag}-s3-${AWS::Region}'
       VersioningConfiguration:
@@ -127,21 +135,20 @@ Resources:
           FromPort: 22
           ToPort: 22
           CidrIp: 0.0.0.0/0
-        - IpProtocol: tcp
-          FromPort: 3098
-          ToPort: 3099
-          CidrIp: 0.0.0.0/0
+        # - IpProtocol: tcp
+        #   FromPort: 3098
+        #   ToPort: 3099
+        #   CidrIp: 0.0.0.0/0
 
   # EC2 Instance
   EC2Instance:
     Type: AWS::EC2::Instance
     DependsOn: 
-      - HYPDUserBucket
       - HYPDInstanceProfile
     Properties:
       ImageId: !Ref LatestUbuntu2204AMI
       InstanceType: !Ref InstanceType
-      KeyName: !Ref KeyPairName
+      KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref "AWS::NoValue"]
       IamInstanceProfile: !Ref HYPDInstanceProfile
       SecurityGroupIds: !If [UseCustomVpc, !Ref "AWS::NoValue", [!Ref SecurityGroup]]
       NetworkInterfaces: !If 
@@ -164,10 +171,14 @@ Resources:
           
           # Create log file
           LOG_FILE="/var/log/dependency-install.log"
-          exec > >(tee -a $LOG_FILE)
-          exec 2>&1
           
+          # Run all installs in a subshell piped to tee (for logging)
+          # cfn-signal stays outside so it never gets stuck in the pipe
+          (
           echo "Starting dependency installation at $(date)"
+          
+          export NEEDRESTART_MODE=a
+          export DEBIAN_FRONTEND=noninteractive
           
           apt-get update -y
           apt-get install -y zip unzip curl wget python3-pip docker.io s3fs
@@ -213,28 +224,43 @@ Resources:
           dpkg -i session-manager-plugin.deb
           rm session-manager-plugin.deb
           
+          # FSx Lustre client (official method: https://docs.aws.amazon.com/fsx/latest/FileCacheGuide/install-lustre-client.html)
+          # 只配置 APT 源 + GPG key + 用户态工具，kmod 留给运行时脚本按 `uname -r` 对齐安装
+          # （首次启动时 linux-image-aws 会被 apt 升级到仓库最新版，而 uname -r 仍是 AMI 内置旧内核，
+          #  此时装 meta 包 lustre-client-modules-aws 必然错配，导致 modprobe lustre 失败）
+          wget -q -O - https://fsx-lustre-client-repo-public-keys.s3.amazonaws.com/fsx-ubuntu-public-key.asc | gpg --dearmor | tee /usr/share/keyrings/fsx-ubuntu-public-key.gpg >/dev/null
+          echo "deb [signed-by=/usr/share/keyrings/fsx-ubuntu-public-key.gpg] https://fsx-lustre-client-repo.s3.amazonaws.com/ubuntu jammy main" > /etc/apt/sources.list.d/fsxlustreclientrepo.list
+          apt-get update -y
+          apt-get install -y lustre-client-utils
+          # apt-get install -y lustre-client-modules-aws   # 已由 setup-fsx-peering-*.sh 在运行时按当前内核安装
+          
           mkdir -p /home/ubuntu/workspace/s3
-          chown -R ubuntu:ubuntu /home/ubuntu/workspace
+          chown ubuntu:ubuntu /home/ubuntu/workspace /home/ubuntu/workspace/s3
           
           # Configure fuse for allow_other
           echo "user_allow_other" >> /etc/fuse.conf
           
           # S3_BUCKET_NAME="${ResourceTag}-${AWS::AccountId}-${AWS::Region}"
           # S3_BUCKET_NAME="${ResourceTag}-${AWS::Region}"
-          S3_BUCKET_NAME="${ResourceTag}-s3-${AWS::Region}"
+          if [ -n "${ExistingS3BucketName}" ]; then
+            S3_BUCKET_NAME="${ExistingS3BucketName}"
+          else
+            S3_BUCKET_NAME="${ResourceTag}-s3-${AWS::Region}"
+          fi
           
           # Add to fstab for persistent mounting
           echo "$S3_BUCKET_NAME /home/ubuntu/workspace/s3 fuse.s3fs _netdev,user,iam_role=${EKSPlusHYPDAdminRole},allow_other,uid=1000,gid=1000 0 0" >> /etc/fstab
 
-          sudo -u ubuntu s3fs $S3_BUCKET_NAME /home/ubuntu/workspace/s3 -o iam_role=${EKSPlusHYPDAdminRole},allow_other,uid=1000,gid=1000
+          sudo -u ubuntu s3fs $S3_BUCKET_NAME /home/ubuntu/workspace/s3 -o iam_role=${EKSPlusHYPDAdminRole},allow_other,uid=1000,gid=1000 > /dev/null 2>&1
 
           # sudo -u ubuntu bash -c "echo '{\"bucketName\":\"'$S3_BUCKET_NAME'\",\"awsRegion\":\"${AWS::Region}\",\"createTime\":\"'\$(date -Iseconds)'\"}' > /home/ubuntu/workspace/s3/CURRENT_BUCKET_INFO"
           sudo -u ubuntu bash -c 'echo "{\"bucketName\":\"'$S3_BUCKET_NAME'\",\"awsRegion\":\"${AWS::Region}\",\"createTime\":\"$(date -Iseconds)\"}" > /home/ubuntu/workspace/s3/CURRENT_BUCKET_INFO'
-          chown -R ubuntu:ubuntu /home/ubuntu
+          chown ubuntu:ubuntu /home/ubuntu
           
           echo "Installation completed at $(date)"
+          ) 2>&1 | tee -a $LOG_FILE
           
-          /usr/local/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource EC2Instance --region ${AWS::Region}
+          /usr/local/bin/cfn-signal -e 0 --stack ${AWS::StackName} --resource EC2Instance --region ${AWS::Region}
       Tags:
         - Key: Name
           Value: !Sub '${ResourceTag}-instance'
@@ -251,11 +277,14 @@ Outputs:
     Value: !GetAtt EC2Instance.PublicIp
     Description: Public IP address of the EC2 instance
   S3BucketName:
-    Value: !Ref HYPDUserBucket
-    Description: Name of the created S3 bucket
+    Value: !If [CreateS3Bucket, !Ref HYPDUserBucket, !Ref ExistingS3BucketName]
+    Description: Name of the S3 bucket
   S3BucketArn:
-    Value: !GetAtt HYPDUserBucket.Arn
-    Description: ARN of the created S3 bucket
+    Value: !If 
+      - CreateS3Bucket
+      - !GetAtt HYPDUserBucket.Arn
+      - !Sub 'arn:aws:s3:::${ExistingS3BucketName}'
+    Description: ARN of the S3 bucket
   IAMRoleName:
     Value: !Ref EKSPlusHYPDAdminRole
     Description: Name of the IAM role

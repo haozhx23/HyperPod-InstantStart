@@ -69,7 +69,7 @@ Parameters:
   # EKS
   KubernetesVersion:
     Type: String
-    Default: '1.33'
+    Default: '1.34'
   EKSClusterName:
     Type: String
     Default: sagemaker-hyperpod-eks-cluster

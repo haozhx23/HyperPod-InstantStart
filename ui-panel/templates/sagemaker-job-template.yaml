@@ -1,56 +1,56 @@
 apiVersion: sagemaker.services.k8s.aws/v1alpha1
 kind: TrainingJob
 metadata:
-  name: TRAINING_JOB_NAME
+  name: "${JOB_NAME}"
   namespace: default
 spec:
-  trainingJobName: TRAINING_JOB_NAME
-  roleARN: "SAGEMAKER_DEV_ROLE"
-  
+  trainingJobName: "${JOB_NAME}"
+  roleARN: "${SAGEMAKER_DEV_ROLE}"
+
   algorithmSpecification:
-    trainingImage: DOCKER_IMAGE
+    trainingImage: "${DOCKER_IMAGE}"
     trainingInputMode: FastFile
-  
+
   inputDataConfig:
-  - channelName: userdatas
-    dataSource:
-      s3DataSource:
-        s3DataType: S3Prefix
-        s3URI: s3://FUSE_S3_PATH/smtj-recipes/SAGEMAKER_JOB_DIR/
-        s3DataDistributionType: FullyReplicated
-    compressionType: None
-  
+    - channelName: userdatas
+      dataSource:
+        s3DataSource:
+          s3DataType: S3Prefix
+          s3URI: "s3://${S3_BUCKET}/smtj-recipes/${SAGEMAKER_JOB_DIR}/"
+          s3DataDistributionType: FullyReplicated
+      compressionType: None
+
   outputDataConfig:
-    s3OutputPath: s3://FUSE_S3_PATH/smtj-recipes/SAGEMAKER_JOB_DIR/output/
-  
+    s3OutputPath: "s3://${S3_BUCKET}/smtj-recipes/${SAGEMAKER_JOB_DIR}/output/"
+
   resourceConfig:
-    instanceType: INSTANCE_TYPE
-    instanceCount: REPLICAS_COUNT
+    instanceType: "${INSTANCE_TYPE}"
+    instanceCount: ${REPLICAS}
     volumeSizeInGB: 200
     keepAlivePeriodInSeconds: 1200
-  
+
   stoppingCondition:
     maxRuntimeInSeconds: 86400
-    # maxWaitTimeInSeconds: SPOT_MAX_WAIT_TIME
-  
-  enableManagedSpotTraining: SPOT_TRAINING_ENABLED
-  
+    # maxWaitTimeInSeconds: ${MAX_WAIT_SECONDS}   # 仅 spot 训练时启用
+
+  enableManagedSpotTraining: ${ENABLE_SPOT}
+
   checkpointConfig:
-    s3URI: s3://FUSE_S3_PATH/smtj-recipes/SAGEMAKER_JOB_DIR/checkpoints/
+    s3URI: "s3://${S3_BUCKET}/smtj-recipes/${SAGEMAKER_JOB_DIR}/checkpoints/"
     localPath: /opt/ml/checkpoints
-  
+
   # hyperParameters:
   #   batch-size: "64"
   #   epochs: "10"
   #   lr: "0.005"
-  
+
   environment:
-    SAGEMAKER_PROGRAM: "/opt/ml/input/data/userdatas/ENTRY_PYTHON_PATH"
+    SAGEMAKER_PROGRAM: "/opt/ml/input/data/userdatas/${ENTRY_PYTHON_PATH}"
     SM_PATH: "/opt/ml/input/data/userdatas"
     NCCL_SOCKET_IFNAME: "eth0"
     FI_PROVIDER: "efa"
     NCCL_DEBUG: "DEBUG"
-    NPROC_PER_NODE: GPU_PER_NODE
-    N_NODES: NUM_REPLICAS
-    BASE_JOB_NAME: TRAINING_JOB_NAME
-    HYP_PARAMS: "PYTHON_SCRIPT_PARAMS"
+    NPROC_PER_NODE: "${NPROC_PER_NODE}"
+    N_NODES: "${REPLICAS}"
+    BASE_JOB_NAME: "${JOB_NAME}"
+    HYP_PARAMS: "${PYTHON_SCRIPT_PARAMS}"

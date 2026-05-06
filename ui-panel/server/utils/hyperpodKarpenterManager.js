@@ -219,6 +219,50 @@ EOF`;
       throw new Error(`Failed to create resource: ${error.message}`);
     }
   }
+
+  /**
+   * 获取指定 instance group 的 NodeClaim 列表
+   */
+  static async getNodeClaimsByInstanceGroup(instanceGroupName) {
+    try {
+      // 先找到包含该 instance group 的 NodeClass
+      const resources = await this.getHyperPodKarpenterResources();
+      const nodeClass = resources.nodeClasses.find(nc => nc.instanceGroups.includes(instanceGroupName));
+      if (!nodeClass) return [];
+
+      const output = execSync('kubectl get nodeclaim -o json', { encoding: 'utf8' });
+      const data = JSON.parse(output);
+
+      return data.items
+        .filter(nc => nc.metadata?.labels?.['karpenter.sagemaker.amazonaws.com/hyperpodnodeclass'] === nodeClass.name)
+        .map(nc => ({
+          name: nc.metadata.name,
+          nodeName: nc.status?.nodeName || '-',
+          instanceType: nc.metadata?.labels?.['node.kubernetes.io/instance-type'] || '-',
+          zone: nc.metadata?.labels?.['topology.kubernetes.io/zone'] || '-',
+          ready: nc.status?.conditions?.find(c => c.type === 'Ready')?.status === 'True',
+          drifted: nc.status?.conditions?.find(c => c.type === 'Drifted')?.status === 'True',
+          age: nc.metadata.creationTimestamp,
+          nodePool: nc.metadata?.labels?.['karpenter.sh/nodepool'] || '-'
+        }));
+    } catch (error) {
+      if (error.message.includes("doesn't have a resource type")) return [];
+      console.error('Failed to get NodeClaims:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * 删除 NodeClaim（触发 drain + 节点回收）
+   */
+  static async deleteNodeClaim(nodeClaimName) {
+    try {
+      execSync(`kubectl delete nodeclaim ${nodeClaimName}`, { encoding: 'utf8' });
+      return { success: true, message: `NodeClaim ${nodeClaimName} deleted. Node will be drained and removed.` };
+    } catch (error) {
+      throw new Error(`Failed to delete NodeClaim: ${error.message}`);
+    }
+  }
 }
 
 module.exports = HyperPodKarpenterManager;

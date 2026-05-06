@@ -1,0 +1,57 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "hf-download-job-${JOB_NAME}"
+spec:
+  ttlSecondsAfterFinished: 60
+  backoffLimit: 3
+  activeDeadlineSeconds: 1800
+  template:
+    metadata:
+      labels:
+        app: "hf-download-job-${JOB_NAME}"
+    spec:
+      containers:
+        - name: python-container
+          image: python:3.12
+          command: ["/bin/bash"]
+          args:
+            - -c
+            - |
+              echo "Installing HF CLI ..."
+              pip install -U "huggingface_hub[cli,hf_transfer]"
+              echo "Downloading directly to FSx..."
+              #  --token=$HF_TOKEN
+              mkdir -p /fsx/$(echo ${MODEL_ID} | tr '/' '-')
+              hf download ${REPO_TYPE_ARG}${MODEL_ID} --local-dir /fsx/$(echo ${MODEL_ID} | tr '/' '-') --cache-dir /nvme/.cache/${MODEL_ID}
+              echo "Cleaning up cache..."
+              rm -rf /fsx/$(echo ${MODEL_ID} | tr '/' '-')/.cache
+              echo "Download to FSx Complete ..."
+          volumeMounts:
+            - name: persistent-storage-fsx
+              mountPath: /fsx
+              readOnly: false
+            - name: local-nvme
+              mountPath: /nvme
+            - name: shm
+              mountPath: /dev/shm
+          env:
+            - name: HF_HOME
+              value: "/nvme/.cache/huggingface"
+            - name: HF_HUB_ENABLE_HF_TRANSFER
+              value: "1"
+            - name: HF_HUB_DOWNLOAD_TIMEOUT
+              value: "60"
+      volumes:
+        - name: persistent-storage-fsx
+          persistentVolumeClaim:
+            claimName: "${PVC_NAME}"
+        - name: local-nvme
+          hostPath:
+            path: /opt/dlami/nvme
+            type: DirectoryOrCreate
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+      restartPolicy: Never

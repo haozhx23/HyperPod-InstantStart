@@ -1,0 +1,58 @@
+{
+  "pages": {
+    "cluster-management": {
+      "enabled": "on",
+      "tabs": {
+        "hyperpodInstanceGroups": "on",
+        "hyperpodKarpenter": "on"
+      }
+    },
+    "storage": {
+      "enabled": "on"
+    },
+    "inference": {
+      "enabled": "on",
+      "tabs": {
+        "modelConfig": "on",
+        "serviceConfig": "on",
+        "sglRouting": "on",
+        "kedaScaling": "on",
+        "managedInference": "on",
+        "managedScaling": "on"
+      }
+    },
+    "training": {
+      "enabled": "on",
+      "tabs": {
+        "hyperpodrunJob": "on",
+        "rayJob": "on",
+        "sagemaker": "on"
+      }
+    },
+    "training-recipes": {
+      "enabled": "on",
+      "tabs": {
+        "script": "off",
+        "torch": "on",
+        "llamafactory": "on",
+        "msswift": "on",
+        "verl": "on"
+      }
+    },
+    "training-history": {
+      "enabled": "on"
+    },
+    "monitoring": {
+      "enabled": "on",
+      "tabs": {
+        "pods": "on",
+        "services": "on",
+        "deployments": "on",
+        "inference": "on",
+        "hyperpodJobs": "on",
+        "rayjobs": "on",
+        "jobs": "on"
+      }
+    }
+  }
+}

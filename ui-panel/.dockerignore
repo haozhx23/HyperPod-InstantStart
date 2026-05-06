@@ -1,9 +1,0 @@
-node_modules
-client/node_modules
-.venv
-logs
-tmp
-*.log
-.git
-.env.local
-.DS_Store

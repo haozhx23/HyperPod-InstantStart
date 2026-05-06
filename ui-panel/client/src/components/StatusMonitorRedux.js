@@ -1,5 +1,7 @@
 import React, { useEffect, useCallback, useState } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
+import ResourceListToolbar from './common/ResourceListToolbar';
+import useResourceFilter from '../hooks/useResourceFilter';
 import {
   Tabs,
   Table,
@@ -32,8 +34,11 @@ import {
   CodeOutlined,             // 新增：用于扩缩容按钮
   ExperimentOutlined,       // 新增：用于训练任务
   SyncOutlined,             // 新增：用于Running状态图标（匹配原始HyperPodJobManager）
-  CloseCircleOutlined       // 新增：用于Failed状态图标（匹配原始HyperPodJobManager）
+  CloseCircleOutlined,      // 新增：用于Failed状态图标（匹配原始HyperPodJobManager）
+  FileTextOutlined          // 新增：用于Pod日志按钮
 } from '@ant-design/icons';
+import PodLogModal from './PodLogModal';
+import PodDescribeModal from './PodDescribeModal';
 
 // Redux imports
 import { refreshAllAppStatus } from '../store/slices/appStatusSlice';
@@ -44,7 +49,8 @@ import {
   selectAppBindingServices,
   selectAppDeployments,        // 新增
   selectAppTrainingJobs,       // 新增
-  selectAppInferenceEndpoints, // 新增
+  selectAppInferenceEndpoints,
+  selectAppK8sJobs,
   selectAppStatusLoading,
   selectAppStatusError,
   selectAppStats
@@ -58,6 +64,29 @@ const { TabPane } = Tabs;
 const { Text } = Typography;
 const { Option } = Select;
 
+// Extractors for resource-specific status strings, used by useResourceFilter.
+const getServiceType = (s) => s?.spec?.type;
+const getDeploymentStatus = (d) => (typeof d?.status === 'string' ? d.status : undefined);
+const getInferenceEndpointStatus = (e) => e?.deploymentStatus;
+const getJobStatusFromCondition = (item) => {
+  const s = item?.status;
+  if (typeof s === 'string') return s;
+  if (s && typeof s === 'object' && Array.isArray(s.conditions) && s.conditions.length) {
+    return s.conditions[s.conditions.length - 1]?.type;
+  }
+  return undefined;
+};
+const getK8sJobSummary = (j) => {
+  if (!j) return undefined;
+  if (j.succeeded >= j.completions) return 'Complete';
+  if (j.failed > 0) return 'Failed';
+  if (j.active > 0) return 'Running';
+  return 'Pending';
+};
+
+// 复用：Monitoring 页所有 Table 的内部滚动目标高度（除以 --zoom-factor 以适配 body zoom）。
+const MONITORING_TABLE_SCROLL_Y = 'calc((100vh - 480px) / var(--zoom-factor))';
+
 const StatusMonitorRedux = ({ activeTab }) => {
   const dispatch = useDispatch();
 
@@ -68,7 +97,8 @@ const StatusMonitorRedux = ({ activeTab }) => {
   const businessServices = useSelector(selectAppBindingServices);
   const deployments = useSelector(selectAppDeployments);          // 新增
   const trainingJobs = useSelector(selectAppTrainingJobs);        // 新增
-  const inferenceEndpoints = useSelector(selectAppInferenceEndpoints); // 新增
+  const inferenceEndpoints = useSelector(selectAppInferenceEndpoints);
+  const k8sJobs = useSelector(selectAppK8sJobs);
   const loading = useSelector(selectAppStatusLoading);
   const error = useSelector(selectAppStatusError);
   const appStats = useSelector(selectAppStats);
@@ -80,7 +110,8 @@ const StatusMonitorRedux = ({ activeTab }) => {
   const [deletingDeployments, setDeletingDeployments] = useState(new Set());    // 新增
   const [scalingDeployments, setScalingDeployments] = useState(new Set());      // 新增
   const [deletingTrainingJobs, setDeletingTrainingJobs] = useState(new Set());  // 新增
-  const [deletingInferenceEndpoints, setDeletingInferenceEndpoints] = useState(new Set()); // 新增
+  const [deletingInferenceEndpoints, setDeletingInferenceEndpoints] = useState(new Set());
+  const [deletingK8sJobs, setDeletingK8sJobs] = useState(new Set());
 
   // 🔄 Badge同步状态 - 确保Badge数字与表格数据完全同步
   const [localRefreshTrigger, setLocalRefreshTrigger] = useState(0);
@@ -90,6 +121,10 @@ const StatusMonitorRedux = ({ activeTab }) => {
   const [scaleModalVisible, setScaleModalVisible] = useState(false);
   const [scaleTarget, setScaleTarget] = useState(null);
   const [targetReplicas, setTargetReplicas] = useState(1);
+
+  // Pod Log Modal 状态
+  const [logModalPod, setLogModalPod] = useState(null);
+  const [describeModalPod, setDescribeModalPod] = useState(null);
 
   // 初始化时获取数据（只执行一次）
   useEffect(() => {
@@ -417,6 +452,28 @@ const StatusMonitorRedux = ({ activeTab }) => {
     }
   };
 
+  // 删除 K8s Job
+  const handleK8sJobDelete = async (jobName) => {
+    setDeletingK8sJobs(prev => new Set([...prev, jobName]));
+    try {
+      const response = await fetch(`/api/k8s-jobs/${jobName}`, { method: 'DELETE' });
+      const result = await response.json();
+      if (result.success) {
+        message.success(`Job ${jobName} deleted successfully`);
+        await dispatch(refreshAllAppStatus());
+        setLocalRefreshTrigger(prev => prev + 1);
+      } else {
+        message.error(`Failed to delete job: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Error deleting k8s job:', error);
+      message.error('Failed to delete job');
+    } finally {
+      setDeletingK8sJobs(prev => { const s = new Set(prev); s.delete(jobName); return s; });
+    }
+  };
+
+
   // Scale Modal 功能 - 继承原部署管理功能
   const showScaleModal = (deployment) => {
     setScaleTarget(deployment);
@@ -520,6 +577,41 @@ const StatusMonitorRedux = ({ activeTab }) => {
     // 透传 Pod phase
     return phase || 'Unknown';
   };
+
+  // Monitoring 页每个 tab 共享一套筛选/分页模式。Pods/Services/RayJobs 这些
+  // k8s 原生对象默认 ns 选 'default' 避免一屏铺满；processed 形态的（deployments /
+  // jobs / inference / k8sjobs / trainjobs）没可靠 namespace 字段，默认 __all__。
+  const podFilter = useResourceFilter(pods, {
+    getStatus: getPodStatus,
+    searchPlaceholder: 'Search pods by name',
+  });
+  const serviceFilter = useResourceFilter(services, {
+    getStatus: getServiceType,
+    searchPlaceholder: 'Search services by name',
+  });
+  const rayJobFilter = useResourceFilter(rayJobs, {
+    searchPlaceholder: 'Search ray jobs by name',
+  });
+  const deploymentFilter = useResourceFilter(deployments, {
+    getStatus: getDeploymentStatus,
+    defaultNamespace: '__all__',
+    searchPlaceholder: 'Search deployments by name',
+  });
+  const trainingJobFilter = useResourceFilter(trainingJobs, {
+    getStatus: getJobStatusFromCondition,
+    defaultNamespace: '__all__',
+    searchPlaceholder: 'Search jobs by name',
+  });
+  const inferenceEndpointFilter = useResourceFilter(inferenceEndpoints, {
+    getStatus: getInferenceEndpointStatus,
+    defaultNamespace: '__all__',
+    searchPlaceholder: 'Search endpoints by name',
+  });
+  const k8sJobFilter = useResourceFilter(k8sJobs, {
+    getStatus: getK8sJobSummary,
+    defaultNamespace: '__all__',
+    searchPlaceholder: 'Search k8s jobs by name',
+  });
 
   const getPodStatusColor = (status) => {
     const statusLower = status?.toLowerCase() || '';
@@ -660,6 +752,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
     {
       title: 'Restarts',
       key: 'restarts',
+      width: 80,
       render: (_, pod) => {
         const containerStatuses = pod.status?.containerStatuses || [];
         const totalRestarts = containerStatuses.reduce((sum, c) => sum + (c.restartCount || 0), 0);
@@ -678,6 +771,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
     {
       title: 'Age',
       key: 'age',
+      width: 80,
       render: (_, pod) => {
         const creationTime = new Date(pod.metadata.creationTimestamp);
         const now = new Date();
@@ -691,6 +785,41 @@ const StatusMonitorRedux = ({ activeTab }) => {
         } else {
           return `${Math.floor(ageMinutes / 1440)}d`;
         }
+      },
+    },
+    {
+      title: 'Actions',
+      key: 'actions',
+      width: 220,
+      render: (_, pod) => {
+        const podName = pod.metadata?.name;
+        const namespace = pod.metadata?.namespace;
+        const phase = pod.status?.phase;
+        return (
+          <Space size={0}>
+            <Tooltip title="View pod logs">
+              <Button
+                size="small"
+                type="link"
+                icon={<FileTextOutlined />}
+                disabled={!phase || phase === 'Pending'}
+                onClick={() => setLogModalPod({ name: podName, namespace })}
+              >
+                Logs
+              </Button>
+            </Tooltip>
+            <Tooltip title="Run kubectl describe (useful for Pending/Failed pods)">
+              <Button
+                size="small"
+                type="link"
+                icon={<InfoCircleOutlined />}
+                onClick={() => setDescribeModalPod({ name: podName, namespace })}
+              >
+                Describe
+              </Button>
+            </Tooltip>
+          </Space>
+        );
       },
     },
   ];
@@ -1402,6 +1531,96 @@ const StatusMonitorRedux = ({ activeTab }) => {
     },
   ];
 
+  // K8s Jobs 表格列定义
+  const k8sJobColumns = [
+    {
+      title: 'Job Name',
+      dataIndex: 'name',
+      key: 'name',
+      render: (name) => (
+        <Space>
+          <ContainerOutlined style={{ color: '#1890ff' }} />
+          <Text strong style={{ fontFamily: 'monospace', fontSize: '12px' }}>{name}</Text>
+        </Space>
+      ),
+    },
+    {
+      title: 'Status',
+      key: 'status',
+      render: (_, record) => {
+        if (record.succeeded >= record.completions) {
+          return <Tag color="success" icon={<CheckCircleOutlined />}>Complete</Tag>;
+        }
+        if (record.failed > 0) {
+          return <Tag color="error" icon={<CloseCircleOutlined />}>Failed</Tag>;
+        }
+        if (record.active > 0) {
+          return <Tag color="processing" icon={<SyncOutlined />}>Running</Tag>;
+        }
+        return <Tag color="warning" icon={<ClockCircleOutlined />}>Pending</Tag>;
+      },
+    },
+    {
+      title: 'Completions',
+      key: 'completions',
+      render: (_, record) => (
+        <Text>{record.succeeded}/{record.completions}</Text>
+      ),
+    },
+    {
+      title: 'Created',
+      dataIndex: 'creationTimestamp',
+      key: 'creationTimestamp',
+      render: (timestamp) => {
+        if (!timestamp) return '-';
+        const date = new Date(timestamp);
+        return (
+          <Tooltip title={date.toLocaleString()}>
+            <Text type="secondary">{date.toLocaleDateString()} {date.toLocaleTimeString()}</Text>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      title: 'Duration',
+      key: 'duration',
+      render: (_, record) => {
+        if (!record.startTime) return '-';
+        const start = new Date(record.startTime);
+        const end = record.completionTime ? new Date(record.completionTime) : new Date();
+        const diffMs = end - start;
+        const hours = Math.floor(diffMs / (1000 * 60 * 60));
+        const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+        if (hours > 0) return <Text type="secondary">{hours}h {minutes}m</Text>;
+        return <Text type="secondary">{minutes > 0 ? `${minutes}m` : '< 1m'}</Text>;
+      },
+    },
+    {
+      title: 'Actions',
+      key: 'actions',
+      render: (_, record) => (
+        <Popconfirm
+          title="Delete Job"
+          description={`Are you sure you want to delete "${record.name}"?`}
+          onConfirm={() => handleK8sJobDelete(record.name)}
+          okText="Yes"
+          cancelText="No"
+        >
+          <Button
+            type="primary"
+            danger
+            size="small"
+            icon={<DeleteOutlined />}
+            loading={deletingK8sJobs.has(record.name)}
+          >
+            Delete
+          </Button>
+        </Popconfirm>
+      ),
+    },
+  ];
+
+
   // 统计信息
   const podStats = {
     total: pods.length,
@@ -1491,7 +1710,19 @@ const StatusMonitorRedux = ({ activeTab }) => {
     return null;
   };
 
-  // 🔄 刷新按钮现在移到了全局App Status tab行，各个tab内不再显示
+  // 🔄 Refresh button that lives at the far-right of each tab's filter toolbar
+  const refreshExtra = (
+    <Button
+      size="small"
+      icon={<ReloadOutlined />}
+      loading={loading}
+      onClick={handleRefresh}
+      title="Refresh App Status Data"
+    >
+      Refresh
+    </Button>
+  );
+
   const refreshButton = activeTab ? null : (
     <div style={{
       display: 'flex',
@@ -1534,16 +1765,31 @@ const StatusMonitorRedux = ({ activeTab }) => {
           )}
           {refreshButton}
           {renderStatsCard(podStats, 'pods')}
+          <ResourceListToolbar {...podFilter.toolbarProps} extra={refreshExtra} />
           <Table
             columns={podColumns}
-            dataSource={pods}
+            dataSource={podFilter.filtered}
             rowKey={(pod) => pod.metadata.uid}
             size="small"
-            pagination={false}
+            sticky
+            scroll={{ y: MONITORING_TABLE_SCROLL_Y }}
+            pagination={podFilter.paginationProps}
             loading={loading}
             locale={{
-              emptyText: 'No pods found'
+              emptyText: podFilter.isFiltered ? 'No pods match the current filter' : 'No pods found',
             }}
+          />
+          <PodLogModal
+            podName={logModalPod?.name || null}
+            namespace={logModalPod?.namespace}
+            visible={!!logModalPod}
+            onClose={() => setLogModalPod(null)}
+          />
+          <PodDescribeModal
+            podName={describeModalPod?.name || null}
+            namespace={describeModalPod?.namespace}
+            visible={!!describeModalPod}
+            onClose={() => setDescribeModalPod(null)}
           />
         </div>
       );
@@ -1563,15 +1809,18 @@ const StatusMonitorRedux = ({ activeTab }) => {
           )}
           {refreshButton}
           {renderStatsCard(serviceStats, 'services')}
+          <ResourceListToolbar {...serviceFilter.toolbarProps} extra={refreshExtra} />
           <Table
             columns={serviceColumns}
-            dataSource={services}
+            dataSource={serviceFilter.filtered}
             rowKey={(service) => service.metadata.uid}
             size="small"
-            pagination={false}
+            sticky
+            scroll={{ y: MONITORING_TABLE_SCROLL_Y }}
+            pagination={serviceFilter.paginationProps}
             loading={loading}
             locale={{
-              emptyText: 'No services found'
+              emptyText: serviceFilter.isFiltered ? 'No services match the current filter' : 'No services found',
             }}
           />
         </div>
@@ -1591,13 +1840,19 @@ const StatusMonitorRedux = ({ activeTab }) => {
             />
           )}
           {refreshButton}
+          <ResourceListToolbar {...rayJobFilter.toolbarProps} extra={refreshExtra} />
           <Table
             columns={rayJobColumns}
-            dataSource={rayJobs}
+            dataSource={rayJobFilter.filtered}
             rowKey={(job) => job.metadata.uid}
             size="small"
-            pagination={{ pageSize: 10 }}
+            sticky
+            scroll={{ y: MONITORING_TABLE_SCROLL_Y }}
+            pagination={rayJobFilter.paginationProps}
             loading={loading}
+            locale={{
+              emptyText: rayJobFilter.isFiltered ? 'No ray jobs match the current filter' : 'No ray jobs found',
+            }}
           />
         </div>
       );
@@ -1616,15 +1871,18 @@ const StatusMonitorRedux = ({ activeTab }) => {
             />
           )}
           {refreshButton}
+          <ResourceListToolbar {...deploymentFilter.toolbarProps} extra={refreshExtra} />
           <Table
             columns={deploymentColumns}
-            dataSource={deployments}
+            dataSource={deploymentFilter.filtered}
             rowKey="deploymentName"
             size="small"
-            pagination={{ pageSize: 10 }}
+            sticky
+            scroll={{ y: MONITORING_TABLE_SCROLL_Y }}
+            pagination={deploymentFilter.paginationProps}
             loading={loading}
             locale={{
-              emptyText: 'No deployments found'
+              emptyText: deploymentFilter.isFiltered ? 'No deployments match the current filter' : 'No deployments found',
             }}
           />
 
@@ -1686,18 +1944,18 @@ const StatusMonitorRedux = ({ activeTab }) => {
             />
           )}
 
-          {/* 始终显示Table，与RayJobs保持一致 */}
+          <ResourceListToolbar {...trainingJobFilter.toolbarProps} extra={refreshExtra} />
           <Table
             columns={trainingJobColumns}
-            dataSource={trainingJobs}
+            dataSource={trainingJobFilter.filtered}
             rowKey="name"
             loading={loading}
             size="small"
-            pagination={{
-              pageSize: 5,
-              showSizeChanger: false,
-              showQuickJumper: false,
-              showTotal: (total) => `Total ${total} jobs`
+            sticky
+            scroll={{ y: MONITORING_TABLE_SCROLL_Y }}
+            pagination={trainingJobFilter.paginationProps}
+            locale={{
+              emptyText: trainingJobFilter.isFiltered ? 'No jobs match the current filter' : 'No HyperPod jobs found',
             }}
           />
         </div>
@@ -1719,22 +1977,48 @@ const StatusMonitorRedux = ({ activeTab }) => {
           )}
 
           {/* InferenceEndpointConfig 表格 */}
+          <ResourceListToolbar {...inferenceEndpointFilter.toolbarProps} extra={refreshExtra} />
           <Table
             columns={inferenceEndpointColumns}
-            dataSource={inferenceEndpoints}
+            dataSource={inferenceEndpointFilter.filtered}
             rowKey="name"
             loading={loading}
             size="small"
-            pagination={{
-              pageSize: 5,
-              showSizeChanger: false,
-              showQuickJumper: false,
-              showTotal: (total) => `Total ${total} endpoints`
+            sticky
+            scroll={{ y: MONITORING_TABLE_SCROLL_Y }}
+            pagination={inferenceEndpointFilter.paginationProps}
+            locale={{
+              emptyText: inferenceEndpointFilter.isFiltered ? 'No endpoints match the current filter' : 'No inference endpoints found',
             }}
           />
         </div>
       );
     }
+
+    if (activeTab === 'k8sjobs') {
+      return (
+        <div>
+          {error && (
+            <Alert message="App Status Error" description={error} type="error" showIcon style={{ marginBottom: 16 }} />
+          )}
+          <ResourceListToolbar {...k8sJobFilter.toolbarProps} extra={refreshExtra} />
+          <Table
+            columns={k8sJobColumns}
+            dataSource={k8sJobFilter.filtered}
+            rowKey="name"
+            loading={loading}
+            size="small"
+            sticky
+            scroll={{ y: MONITORING_TABLE_SCROLL_Y }}
+            pagination={k8sJobFilter.paginationProps}
+            locale={{
+              emptyText: k8sJobFilter.isFiltered ? 'No jobs match the current filter' : 'No k8s jobs found',
+            }}
+          />
+        </div>
+      );
+    }
+
 
     return <div>Unsupported tab: {activeTab}</div>;
   }
@@ -1776,6 +2060,18 @@ const StatusMonitorRedux = ({ activeTab }) => {
             size="small"
             pagination={{ pageSize: 10 }}
             loading={loading}
+          />
+          <PodLogModal
+            podName={logModalPod?.name || null}
+            namespace={logModalPod?.namespace}
+            visible={!!logModalPod}
+            onClose={() => setLogModalPod(null)}
+          />
+          <PodDescribeModal
+            podName={describeModalPod?.name || null}
+            namespace={describeModalPod?.namespace}
+            visible={!!describeModalPod}
+            onClose={() => setDescribeModalPod(null)}
           />
         </div>
       </TabPane>

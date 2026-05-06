@@ -342,7 +342,6 @@ class ClusterManager {
           helmDependencies: false,
           nlbController: false,
           s3CsiDriver: false,
-          kuberayOperator: false,
           certManager: false
         }
       },

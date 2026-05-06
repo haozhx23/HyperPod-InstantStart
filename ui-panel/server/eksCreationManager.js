@@ -144,7 +144,6 @@ async function registerCompletedCluster(clusterTag, status = 'active') {
           helmDependencies: false,
           nlbController: false,
           s3CsiDriver: false,
-          kuberayOperator: false,
           certManager: false
         }
       },
@@ -154,7 +153,7 @@ async function registerCompletedCluster(clusterTag, status = 'active') {
         outputs: stackOutputs
       },
       eksCluster: {
-        name: stackOutputs.OutputEKSClusterName || `eks-cluster-${clusterTag}`,
+        name: stackOutputs.OutputEKSClusterName || null,
         arn: stackOutputs.OutputEKSClusterArn || null,
         vpcId: stackOutputs.OutputVpcId || null,
         securityGroupId: stackOutputs.OutputSecurityGroupId || null,
@@ -363,13 +362,13 @@ async function configureDependenciesForActiveCluster(clusterTag) {
     console.log(`Successfully configured dependencies for cluster: ${clusterTag}`);
 
     // 更新状态为成功
+    // [2026-04-08] certManager 不再在 configure dependency 阶段安装，改由 training operator 一起管理
     await updateDependencyStatus(clusterTag, 'success', {
       components: {
         helmDependencies: true,
         nlbController: true,
         s3CsiDriver: true,
-        kuberayOperator: true,
-        certManager: true
+        certManager: false
       }
     });
 
@@ -466,8 +465,7 @@ router.post('/create-eks', async (req, res) => {
     }
 
     // 立即创建集群目录和状态记录（在 CloudFormation 调用前）
-    const timestamp = new Date().toISOString().replace(/[-:.T]/g, '').slice(0, 14);
-    const stackName = `full-stack-${clusterTag}-${timestamp}`;
+    const stackName = `full-cfn-${clusterTag}`;
 
     const clusterConfig = {
       clusterTag,
@@ -659,7 +657,19 @@ router.get('/creating-clusters', async (req, res) => {
       }
     }
 
-    res.json({ success: true, clusters: creatingClusters });
+    // 重读磁盘拿权威状态（本次循环的 delete 和其它触发源的写入都已落盘）
+    const finalState = fs.existsSync(creatingClustersPath)
+      ? JSON.parse(fs.readFileSync(creatingClustersPath, 'utf8'))
+      : {};
+
+    // currentStackStatus 只在本次循环的内存里采集，不持久化——合并回响应
+    for (const [tag, info] of Object.entries(finalState)) {
+      if (creatingClusters[tag]?.currentStackStatus) {
+        info.currentStackStatus = creatingClusters[tag].currentStackStatus;
+      }
+    }
+
+    res.json({ success: true, clusters: finalState });
   } catch (error) {
     console.error('Error getting creating clusters:', error);
     res.status(500).json({ error: error.message });
@@ -926,7 +936,10 @@ router.get('/creation-logs/:clusterTag', async (req, res) => {
       return res.status(404).json({ error: 'Cluster not found' });
     }
 
-    const stackName = `full-stack-${clusterTag}`;
+    const stackName = clusterInfo?.cloudFormation?.stackName;
+    if (!stackName) {
+      return res.status(400).json({ error: 'CloudFormation stack name not found in cluster metadata' });
+    }
     const events = await CloudFormationManager.getStackEvents(stackName, clusterInfo.awsRegion);
 
     res.json({

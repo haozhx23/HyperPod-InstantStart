@@ -30,7 +30,7 @@ import './AdvancedScalingPanelV2.css';
 const { Option } = Select;
 const { Panel } = Collapse;
 
-const AdvancedScalingPanelV2 = ({ onDeploy, deploymentStatus }) => {
+const AdvancedScalingPanelV2 = ({ onDeploy }) => {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);

@@ -8,6 +8,7 @@ import { updateCreatingClusterStatus, checkDependenciesStatus } from '../store/s
 import { setHyperPodCreationStatus, setHyperPodDeletionStatus, fetchNodeGroups } from '../store/slices/nodeGroupsSlice';
 import { updateDeploymentStatus, fetchDeployments } from '../store/slices/inferenceSlice';
 import { updateTrainingStatus, fetchTrainingJobs, updateJobLogs } from '../store/slices/trainingSlice';
+import { getAuthToken } from '../components/AuthGate';
 
 class WebSocketManager {
   constructor() {
@@ -26,9 +27,8 @@ class WebSocketManager {
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.hostname;
-    const port = process.env.REACT_APP_WS_PORT || '3098';
-    const wsUrl = `${protocol}//${host}:${port}`;
+    const token = getAuthToken();
+    const wsUrl = `${protocol}//${window.location.host}/ws${token ? `?token=${token}` : ''}`;
 
     console.log(`Connecting to WebSocket at ${wsUrl}`);
 

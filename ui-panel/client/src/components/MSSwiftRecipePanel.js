@@ -1,6 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useSelector } from 'react-redux';
+import { selectDeploymentStatus } from '../store/selectors';
+import useInstanceInfo from '../hooks/useInstanceInfo';
+import { useRecipeConfig } from '../utils/useRecipeConfig';
+import RecipeConfigActions from './RecipeConfigActions';
 import {
-  Card,
   Form,
   Input,
   InputNumber,
@@ -11,7 +15,6 @@ import {
   Alert,
   Collapse,
   Typography,
-  message,
   Tooltip,
   Select,
   AutoComplete
@@ -19,8 +22,6 @@ import {
 import {
   ExperimentOutlined,
   PlayCircleOutlined,
-  SaveOutlined,
-  ReloadOutlined,
   SettingOutlined,
   ThunderboltOutlined,
   CodeOutlined,
@@ -33,101 +34,45 @@ const { TextArea } = Input;
 const { Panel } = Collapse;
 const { Text } = Typography;
 
-const MSSwiftRecipePanel = ({ onLaunch, deploymentStatus, hyperPodInstanceTypes, instanceTypesLoading, refreshInstanceTypes }) => {
+const MSSwiftRecipePanel = ({ onLaunch, hyperPodInstanceTypes, instanceTypesLoading, refreshInstanceTypes }) => {
+  const deploymentStatus = useSelector(selectDeploymentStatus);
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [showLogMonitoring, setShowLogMonitoring] = useState(false);
+  const { fetchInstanceInfo, infoLoading } = useInstanceInfo(form, { gpu: 'nprocPerNode', efa: 'efaCount' });
   const [commandOptions, setCommandOptions] = useState([]);
   const [commandsMap, setCommandsMap] = useState({});
-  const hasLoadedConfig = useRef(false);
+  const loadedCommandsRef = useRef(false);
 
-  useEffect(() => {
-    if (!hasLoadedConfig.current) {
-      hasLoadedConfig.current = true;
-      loadSavedConfig();
-      loadCommandOptions();
-    }
-  }, []);
+  const { saving, loadConfig, saveConfig } = useRecipeConfig({
+    endpoint: '/api/msswift-config',
+    form,
+  });
 
-  const loadCommandOptions = async () => {
+  const loadCommandOptions = useCallback(async () => {
     try {
       const response = await fetch('/api/msswift-commands');
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const result = await response.json();
-      
-      if (result.success) {
-        setCommandsMap(result.commands);
-        const options = Object.keys(result.commands).map(key => ({
-          label: key,
-          value: key
-        }));
-        setCommandOptions(options);
-      }
+      if (!result.success) throw new Error(result.error || 'Load commands failed');
+
+      setCommandsMap(result.commands);
+      setCommandOptions(Object.keys(result.commands).map((key) => ({ label: key, value: key })));
     } catch (error) {
       console.error('Error loading MS-Swift commands:', error);
     }
-  };
+  }, []);
 
-  const loadSavedConfig = async () => {
-    try {
-      const response = await fetch('/api/msswift-config/load');
-      const result = await response.json();
-      
-      if (result.success) {
-        form.setFieldsValue(result.config);
-        if (result.config.logMonitoringConfig && result.config.logMonitoringConfig.trim() !== '') {
-          setShowLogMonitoring(true);
-        }
-        
-        if (!result.isDefault) {
-          message.success('Previous configuration loaded');
-        }
-      }
-    } catch (error) {
-      console.error('Error loading config:', error);
-      message.error('Failed to load saved configuration');
-    }
-  };
-
-  const saveConfig = async () => {
-    try {
-      setSaving(true);
-      const values = await form.validateFields();
-      
-      const response = await fetch('/api/msswift-config/save', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(values),
-      });
-      
-      const result = await response.json();
-      
-      if (result.success) {
-        message.success('Configuration saved successfully');
-      } else {
-        message.error(`Failed to save configuration: ${result.error}`);
-      }
-    } catch (error) {
-      console.error('Error saving config:', error);
-      message.error('Failed to save configuration');
-    } finally {
-      setSaving(false);
-    }
-  };
+  useEffect(() => {
+    if (loadedCommandsRef.current) return;
+    loadedCommandsRef.current = true;
+    loadCommandOptions();
+  }, [loadCommandOptions]);
 
   const handleSubmit = async (values) => {
     setLoading(true);
     try {
-      await fetch('/api/msswift-config/save', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(values),
-      });
-      
+      await saveConfig({ silent: true, values }).catch(() => {});
+
       // 将 key 转换为 value 用于 YAML 填充
       let commandValue = commandsMap[values.msswiftCommandType];
       if (!commandValue) {
@@ -174,25 +119,18 @@ const MSSwiftRecipePanel = ({ onLaunch, deploymentStatus, hyperPodInstanceTypes,
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-        <Space>
-          <Tooltip title="Save Configuration">
-            <Button
-              icon={<SaveOutlined />}
-              onClick={saveConfig}
-              loading={saving}
-              size="small"
-            />
-          </Tooltip>
-          <Tooltip title="Reload Configuration and Refresh Instance Types">
-            <Button
-              icon={<ReloadOutlined />}
-              onClick={() => { loadSavedConfig(); if (refreshInstanceTypes) refreshInstanceTypes(); }}
-              size="small"
-            />
-          </Tooltip>
-        </Space>
-      </div>
+      <RecipeConfigActions
+        saving={saving}
+        onSave={() => saveConfig()}
+        onReload={async () => {
+          await Promise.allSettled([
+            loadConfig(),
+            loadCommandOptions(),
+            refreshInstanceTypes?.(),
+          ]);
+        }}
+        reloadTooltip="Reload Configuration, Commands and Instance Types"
+      />
       {getStatusAlert()}
 
       <Form
@@ -241,6 +179,7 @@ const MSSwiftRecipePanel = ({ onLaunch, deploymentStatus, hyperPodInstanceTypes,
                 onSelect={(value, option) => {
                   const instanceType = option.instanceType || value.split('-')[0];
                   form.setFieldValue('instanceType', instanceType);
+                  fetchInstanceInfo(instanceType);
                 }}
                 style={{ width: '100%' }}
               />
@@ -388,10 +327,7 @@ const MSSwiftRecipePanel = ({ onLaunch, deploymentStatus, hyperPodInstanceTypes,
         */}
 
         {/* 高级配置 */}
-        <Collapse 
-          ghost
-          onChange={(keys) => setShowLogMonitoring(keys.includes('logMonitoring'))}
-        >
+        <Collapse ghost>
           <Panel 
             header={
               <Space>
@@ -434,6 +370,7 @@ const MSSwiftRecipePanel = ({ onLaunch, deploymentStatus, hyperPodInstanceTypes,
             htmlType="submit"
             icon={<PlayCircleOutlined />}
             loading={loading}
+            disabled={infoLoading}
             size="large"
             className="training-btn"
             block

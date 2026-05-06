@@ -100,6 +100,15 @@ const EnhancedModelDownloadPanel = ({ onStorageChange }) => {
     // };
   }, []);
 
+  // Auto-select default storage: FSx first, then S3
+  useEffect(() => {
+    if (fsxStorages.length > 0) {
+      form.setFieldValue('s3Storage', fsxStorages[0].pvcName);
+    } else if (storages.length > 0 && !form.getFieldValue('s3Storage')) {
+      form.setFieldValue('s3Storage', storages[0].pvcName);
+    }
+  }, [fsxStorages, storages, form]);
+
   const handleDownload = async (values) => {
     try {
       setLoading(true);
@@ -120,6 +129,7 @@ const EnhancedModelDownloadPanel = ({ onStorageChange }) => {
             memory: values.memory ?? -1,
           },
           s3Storage: values.s3Storage || 's3-claim',
+          storageType: fsxStorages.some(s => s.pvcName === values.s3Storage) ? 'fsx' : 's3',
           instanceType: values.instanceType || null
         }),
       });

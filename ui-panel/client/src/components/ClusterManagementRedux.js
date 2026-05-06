@@ -20,7 +20,9 @@ import {
   Divider,
   InputNumber,
   Tooltip,
-  Collapse
+  Collapse,
+  Checkbox,
+  Radio
 } from 'antd';
 import {
   CloudServerOutlined,
@@ -30,8 +32,7 @@ import {
   CheckCircleOutlined,
   ImportOutlined,
   InfoCircleOutlined,
-  ClusterOutlined,
-  PlusOutlined
+  AppstoreOutlined
 } from '@ant-design/icons';
 import NodeGroupManager from './NodeGroupManagerRedux';
 import EksClusterCreationPanel from './EksClusterCreationPanel';
@@ -42,17 +43,100 @@ import {
   configureDependencies
 } from '../store/slices/clustersSlice';
 import {
+  fetchAdvancedFeatures,
+  updateAdvancedFeatures,
+  fetchNodeGroups
+} from '../store/slices/nodeGroupsSlice';
+import {
   selectActiveCluster,
   selectClustersList,
   selectDependenciesStatus,
   selectClusterLoading,
   selectClusterError,
-  selectEffectiveDependenciesStatus
+  selectEffectiveDependenciesStatus,
+  selectHyperPodGroups
 } from '../store/selectors';
 import globalRefreshManager from '../hooks/useGlobalRefresh';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
+
+/**
+ * Advanced Features 字段声明表
+ *
+ * 设计意图：
+ *   Submit 时只把"用户亲手动过的"字段发给后端，避免 stale form 值导致后端误操作
+ *   （典型场景：某 feature 被另一个 feature 自动补装后，form 里残留的 unchecked 状态
+ *    会触发 `_updateCertManager({enabled: false})` 把刚装好的 cert-manager 又卸载）。
+ *
+ * 每行含义：
+ *   - touchKeys: form 字段名数组。只要其中任一字段被用户动过（antd isFieldTouched=true），
+ *                就认为这个 feature 需要更新。聚合字段（如 Karpenter 的 disruption）会有多项。
+ *   - updateKey: 后端 updates 对象里对应的 key（见 managedFeaturesManager.updateAdvancedFeatures）。
+ *   - build(values): 从 form values 组装成后端期望的对象结构。
+ *   - hyperPodOnly: true 表示该 feature 仅在当前集群有 HyperPod 时才提交。
+ *
+ * 新增 feature 时：
+ *   1. 在 handleOpenAddons 的 setFieldsValue 里加一行，把 addon 状态映射到 form 字段
+ *   2. 在这里加一行，描述它的 touch 字段集、updateKey、build 函数
+ *   （不用改 handleSubmitAddons 的循环逻辑）
+ *
+ * HAMi 不在此表：它走独立 API (/api/cluster/hami/install|uninstall)，由 handleSubmitAddons 单独处理。
+ */
+const ADDON_FIELD_MAP = [
+  // 通用功能（不依赖 HyperPod）
+  {
+    touchKeys: ['kuberayOperatorEnabled'],
+    updateKey: 'kuberayOperator',
+    build: (v) => ({ enabled: v.kuberayOperatorEnabled }),
+  },
+  {
+    touchKeys: ['certManagerEnabled'],
+    updateKey: 'certManager',
+    build: (v) => ({ enabled: v.certManagerEnabled }),
+  },
+  // HyperPod 专属
+  {
+    touchKeys: ['inferenceOperatorEnabled'],
+    updateKey: 'inferenceOperator',
+    build: (v) => ({ enabled: v.inferenceOperatorEnabled }),
+    hyperPodOnly: true,
+  },
+  {
+    touchKeys: ['trainingOperatorEnabled'],
+    updateKey: 'trainingOperator',
+    build: (v) => ({ enabled: v.trainingOperatorEnabled }),
+    hyperPodOnly: true,
+  },
+  {
+    touchKeys: ['tieredStorageEnabled', 'tieredStorageMode', 'tieredStoragePercentage'],
+    updateKey: 'tieredStorage',
+    build: (v) => ({
+      enabled: v.tieredStorageEnabled,
+      configMode: v.tieredStorageMode,
+      percentage: v.tieredStorageMode === 'custom' ? v.tieredStoragePercentage : null,
+    }),
+    hyperPodOnly: true,
+  },
+  {
+    touchKeys: [
+      'karpenterEnabled',
+      'karpenterConsolidationPolicy',
+      'karpenterConsolidateAfter',
+      'karpenterBudgetNodes',
+    ],
+    updateKey: 'karpenter',
+    build: (v) => ({
+      enabled: v.karpenterEnabled,
+      disruption: {
+        consolidationPolicy: v.karpenterConsolidationPolicy,
+        consolidateAfter: v.karpenterConsolidateAfter,
+        budgetNodes: v.karpenterBudgetNodes,
+      },
+    }),
+    hyperPodOnly: true,
+  },
+];
 
 // 依赖配置状态显示组件（增强版）
 const DependencyStatus = ({ cluster, dependenciesStatus }) => {
@@ -211,12 +295,22 @@ const ClusterManagementRedux = () => {
   const loading = useSelector(selectClusterLoading);
   // const error = useSelector(selectClusterError); // Unused
 
+  const hyperPodGroups = useSelector(selectHyperPodGroups);
+
   // 本地状态管理
   const [showImportModal, setShowImportModal] = useState(false);
   const [importForm] = Form.useForm();
   const [importLoading, setImportLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('manage');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+
+  // Advanced Features (Advanced Features) 状态
+  const [addonsModalVisible, setAddonsModalVisible] = useState(false);
+  const [addonsForm] = Form.useForm();
+  const [addonsData, setAddonsData] = useState(null);
+  const [addonsLoading, setAddonsLoading] = useState(false);
+  const [addonsUpdating, setAddonsUpdating] = useState(false);
+  const [hamiStatus, setHamiStatus] = useState(null);
 
   // 默认配置值
   const defaultConfig = {
@@ -321,20 +415,6 @@ const ClusterManagementRedux = () => {
     }
   };
 
-  // 创建新集群
-  const createNewCluster = () => {
-    // 重置表单为默认值，生成新的集群标识
-    const newClusterTag = `hypd-instrt-${new Date().toISOString().slice(5, 10).replace('-', '')}-${Math.random().toString(36).substr(2, 3)}`;
-    const newConfig = { ...defaultConfig, clusterTag: newClusterTag };
-
-    form.setFieldsValue(newConfig);
-
-    // 切换到创建标签页
-    setActiveTab('create-eks');
-
-    message.info(`Ready to create new cluster: ${newClusterTag}`);
-  };
-
   // 统一的全局刷新函数
   const refreshAllStatus = async () => {
     try {
@@ -379,78 +459,199 @@ const ClusterManagementRedux = () => {
     }
   }, [activeCluster, dispatch]);
 
+  // Advanced Features: 判断当前集群是否有 HyperPod
+  const currentCluster = clusters.find(c => c.clusterTag === activeCluster);
+  const hasHyperPod = !!(
+    currentCluster?.hyperPodCluster ||
+    (Array.isArray(hyperPodGroups) && hyperPodGroups.length > 0)
+  );
+
+  // Advanced Features: 打开 Modal
+  const handleOpenAddons = async () => {
+    setAddonsModalVisible(true);
+    setAddonsLoading(true);
+
+    try {
+      const [result, hamiResponse] = await Promise.all([
+        dispatch(fetchAdvancedFeatures()).unwrap(),
+        fetch('/api/cluster/hami/status')
+      ]);
+      setAddonsData(result.advancedFeatures);
+
+      const hamiData = await hamiResponse.json();
+      setHamiStatus(hamiData);
+
+      addonsForm.setFieldsValue({
+        hamiEnabled: hamiData.installed || false,
+        hamiSplitCount: hamiData.config?.splitCount || 10,
+        hamiNodePolicy: hamiData.config?.nodePolicy || 'binpack',
+        hamiGpuPolicy: hamiData.config?.gpuPolicy || 'spread',
+        tieredStorageEnabled: result.advancedFeatures.tieredStorage.enabled,
+        tieredStorageMode: result.advancedFeatures.tieredStorage.configMode,
+        tieredStoragePercentage: result.advancedFeatures.tieredStorage.percentage || 50,
+        inferenceOperatorEnabled: result.advancedFeatures.inferenceOperator.enabled,
+        trainingOperatorEnabled: result.advancedFeatures.trainingOperator?.enabled || false,
+        kuberayOperatorEnabled: result.advancedFeatures.kuberayOperator?.enabled || false,
+        certManagerEnabled: result.advancedFeatures.certManager?.enabled || false,
+        karpenterEnabled: result.advancedFeatures.karpenter?.enabled || false,
+        karpenterConsolidationPolicy: result.advancedFeatures.karpenter?.disruption?.consolidationPolicy || 'WhenEmptyOrUnderutilized',
+        karpenterConsolidateAfter: result.advancedFeatures.karpenter?.disruption?.consolidateAfter || '0s',
+        karpenterBudgetNodes: result.advancedFeatures.karpenter?.disruption?.budgetNodes || '90%',
+      });
+    } catch (error) {
+      console.error('Error fetching cluster add-ons:', error);
+      message.error(`Failed to load cluster add-ons: ${error}`);
+      setAddonsModalVisible(false);
+    } finally {
+      setAddonsLoading(false);
+    }
+  };
+
+  // Advanced Features: 提交更新
+  //
+  // 只把用户"亲手动过"的字段发给后端（antd Form isFieldTouched 语义）。
+  // setFieldsValue 通过 fetchAddons 设置的初始值不算 touched，避免 stale form 状态
+  // 触发后端误操作（如把 inference operator 自动补装的 cert-manager 又卸载掉）。
+  //
+  // 哪些字段进入 updates 对象由 ADDON_FIELD_MAP 声明，新增 feature 只需在表里加一行。
+  // HAMi 走独立 API，不在 ADDON_FIELD_MAP 里，下面单独处理。
+  const handleSubmitAddons = async () => {
+    try {
+      setAddonsUpdating(true);
+      const values = await addonsForm.validateFields();
+
+      // 按声明表 + isFieldTouched 构造只含 diff 的 updates
+      const updates = {};
+      for (const field of ADDON_FIELD_MAP) {
+        if (field.hyperPodOnly && !hasHyperPod) continue;
+        const touched = field.touchKeys.some((key) => addonsForm.isFieldTouched(key));
+        if (touched) {
+          updates[field.updateKey] = field.build(values);
+        }
+      }
+
+      // HAMi 处理
+      const currentHamiEnabled = hamiStatus?.installed || false;
+      const newHamiEnabled = values.hamiEnabled || false;
+
+      if (newHamiEnabled && !currentHamiEnabled) {
+        const hamiResponse = await fetch('/api/cluster/hami/install', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            splitCount: values.hamiSplitCount,
+            nodePolicy: values.hamiNodePolicy,
+            gpuPolicy: values.hamiGpuPolicy
+          })
+        });
+        const hamiResult = await hamiResponse.json();
+        if (!hamiResult.success) throw new Error(hamiResult.message || 'Failed to install HAMi');
+      } else if (newHamiEnabled && currentHamiEnabled) {
+        const hamiResponse = await fetch('/api/cluster/hami/install', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            splitCount: values.hamiSplitCount,
+            nodePolicy: values.hamiNodePolicy,
+            gpuPolicy: values.hamiGpuPolicy
+          })
+        });
+        const hamiResult = await hamiResponse.json();
+        if (!hamiResult.success) throw new Error(hamiResult.message || 'Failed to update HAMi');
+      } else if (!newHamiEnabled && currentHamiEnabled) {
+        const hamiResponse = await fetch('/api/cluster/hami/uninstall', { method: 'DELETE' });
+        const hamiResult = await hamiResponse.json();
+        if (!hamiResult.success) throw new Error(hamiResult.message || 'Failed to uninstall HAMi');
+      }
+
+      // 刷新 HAMi 状态
+      try {
+        const statusResponse = await fetch('/api/cluster/hami/status');
+        const statusData = await statusResponse.json();
+        setHamiStatus(statusData);
+      } catch (e) { /* ignore */ }
+
+      // 更新其他功能（仅当有实际 diff 时才调用后端）
+      if (Object.keys(updates).length > 0) {
+        await dispatch(updateAdvancedFeatures(updates)).unwrap();
+      }
+
+      message.success('Cluster add-ons updated successfully');
+      setAddonsModalVisible(false);
+      addonsForm.resetFields();
+
+      dispatch(fetchNodeGroups());
+    } catch (error) {
+      console.error('Error updating cluster add-ons:', error);
+      message.error(`Failed to update: ${error.message || error}`);
+    } finally {
+      setAddonsUpdating(false);
+    }
+  };
+
   return (
     <>
       {/* 注入自定义滚动条样式 */}
       <style dangerouslySetInnerHTML={{ __html: customScrollbarStyle }} />
 
       <div>
-        <Card
-          title={
-            <Space>
-              <ClusterOutlined />
-              <span>Cluster Management</span>
-            </Space>
-          }
-          className="theme-card compute"
-          style={{ marginBottom: 24 }}
-        >
-          <Tabs
-            activeKey={activeTab}
-            onChange={setActiveTab}
-            items={[
-              {
-                key: 'manage',
-                label: (
-                  <Space>
-                    <InfoCircleOutlined />
-                    <span>Cluster Information</span>
-                  </Space>
-                ),
-                children: (
+        <Tabs
+          activeKey={activeTab}
+          onChange={setActiveTab}
+          items={[
+            {
+              key: 'manage',
+              label: (
+                <Space>
+                  <InfoCircleOutlined />
+                  <span>Cluster Information</span>
+                </Space>
+              ),
+              children: (
+                <>
+                  {/* 集群选择器：整行宽度 */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+                    <Select
+                      value={activeCluster}
+                      onChange={handleSwitchCluster}
+                      style={{ flex: 1 }}
+                      placeholder={clusters.length === 0 ? "No clusters — import or create one" : "Select a cluster"}
+                      loading={loading}
+                      allowClear
+                      showSearch
+                      optionFilterProp="children"
+                    >
+                      {clusters.map(cluster => (
+                        <Option key={cluster.clusterTag} value={cluster.clusterTag}>
+                          <Space>
+                            <span>{cluster.clusterTag}</span>
+                            <Tag color={cluster.type === 'imported' ? 'blue' : 'green'} size="small">
+                              {cluster.type === 'imported' ? 'Imported' : 'Created'}
+                            </Tag>
+                            <Text type="secondary" style={{ fontSize: '12px' }}>
+                              {new Date(cluster.lastModified).toLocaleDateString()}
+                            </Text>
+                          </Space>
+                        </Option>
+                      ))}
+                    </Select>
+                    <Tag color="blue" style={{ margin: 0, fontSize: '14px', padding: '2px 10px' }}>
+                      {clusters.length}
+                    </Tag>
+                    <Button
+                      size="small"
+                      icon={<ReloadOutlined />}
+                      onClick={refreshAllStatus}
+                      loading={loading}
+                    >
+                      Refresh Status
+                    </Button>
+                  </div>
+
                   <Row gutter={24} style={{ height: '100%' }}>
                     {/* 左侧：集群选择和管理 */}
                     <Col xs={24} lg={10}>
                       <div>
-                        {/* 集群选择器：Select + Total Badge + Refresh 一行 */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-                          <Select
-                            value={activeCluster}
-                            onChange={handleSwitchCluster}
-                            style={{ flex: 1 }}
-                            placeholder={clusters.length === 0 ? "No clusters — import or create one" : "Select a cluster"}
-                            loading={loading}
-                            allowClear
-                            showSearch
-                            optionFilterProp="children"
-                          >
-                            {clusters.map(cluster => (
-                              <Option key={cluster.clusterTag} value={cluster.clusterTag}>
-                                <Space>
-                                  <span>{cluster.clusterTag}</span>
-                                  <Tag color={cluster.type === 'imported' ? 'blue' : 'green'} size="small">
-                                    {cluster.type === 'imported' ? 'Imported' : 'Created'}
-                                  </Tag>
-                                  <Text type="secondary" style={{ fontSize: '12px' }}>
-                                    {new Date(cluster.lastModified).toLocaleDateString()}
-                                  </Text>
-                                </Space>
-                              </Option>
-                            ))}
-                          </Select>
-                          <Tag color="blue" style={{ margin: 0, fontSize: '14px', padding: '2px 10px' }}>
-                            {clusters.length}
-                          </Tag>
-                          <Button
-                            size="small"
-                            icon={<ReloadOutlined />}
-                            onClick={refreshAllStatus}
-                            loading={loading}
-                          >
-                            Refresh Status
-                          </Button>
-                        </div>
-
                         {/* 集群操作按钮 */}
                         <Space style={{ marginBottom: 16 }} wrap>
                           {activeCluster && (
@@ -465,13 +666,15 @@ const ClusterManagementRedux = () => {
                           >
                             Import Cluster
                           </Button>
-                          <Button
-                            type="primary"
-                            icon={<PlusOutlined />}
-                            onClick={createNewCluster}
-                          >
-                            Create EKS
-                          </Button>
+                          {activeCluster && (
+                            <Button
+                              icon={<AppstoreOutlined />}
+                              onClick={handleOpenAddons}
+                              disabled={!effectiveDependenciesStatus}
+                            >
+                              Advanced Features
+                            </Button>
+                          )}
                         </Space>
 
                         {/* 集群信息显示 */}
@@ -570,50 +773,33 @@ const ClusterManagementRedux = () => {
                       </div>
                     </Col>
 
-                    {/* 右侧：Node Groups */}
-                    <Col xs={24} lg={14}>
-                      {activeCluster ? (
+                    {/* 右侧：Node Groups（仅在已选中集群时显示） */}
+                    {activeCluster && (
+                      <Col xs={24} lg={14}>
                         <NodeGroupManager
                           dependenciesConfigured={effectiveDependenciesStatus}
                           activeCluster={activeCluster}
                           refreshTrigger={refreshTrigger}
                           cluster={clusters.find(c => c.clusterTag === activeCluster)}
                         />
-                      ) : (
-                        <Card title="Node Groups" style={{ height: '100%' }} className="theme-card database">
-                          <div style={{
-                            display: 'flex',
-                            justifyContent: 'center',
-                            alignItems: 'center',
-                            height: '200px',
-                            flexDirection: 'column'
-                          }}>
-                            <Text type="secondary" style={{ fontSize: '16px', marginBottom: '8px' }}>
-                              No Active Cluster
-                            </Text>
-                            <Text type="secondary">
-                              Please select or import a cluster to view node groups
-                            </Text>
-                          </div>
-                        </Card>
-                      )}
-                    </Col>
+                      </Col>
+                    )}
                   </Row>
-                )
-              },
-              {
-                key: 'create-eks',
-                label: (
-                  <Space>
-                    <CloudServerOutlined />
-                    <span>Create EKS Cluster</span>
-                  </Space>
-                ),
-                children: <EksClusterCreationPanel />
-              },
-            ]}
-          />
-        </Card>
+                </>
+              )
+            },
+            {
+              key: 'create-eks',
+              label: (
+                <Space>
+                  <CloudServerOutlined />
+                  <span>Create EKS Cluster</span>
+                </Space>
+              ),
+              children: <EksClusterCreationPanel />
+            },
+          ]}
+        />
       </div>
 
       {/* 导入现有集群 Modal */}
@@ -724,6 +910,278 @@ const ClusterManagementRedux = () => {
             </Space>
           </Space>
         </Form>
+      </Modal>
+
+      {/* Advanced Features Modal */}
+      <Modal
+        title="Advanced Features"
+        open={addonsModalVisible}
+        onOk={handleSubmitAddons}
+        onCancel={() => {
+          if (addonsUpdating) return;
+          setAddonsModalVisible(false);
+          addonsForm.resetFields();
+        }}
+        okText="Apply Changes"
+        confirmLoading={addonsUpdating}
+        cancelButtonProps={{ disabled: addonsUpdating }}
+        width={700}
+      >
+        <Spin spinning={addonsLoading}>
+          <Form form={addonsForm} layout="vertical">
+
+            {/* ── General Section ── */}
+            <Divider orientation="left" style={{ marginTop: 0 }}>General</Divider>
+
+            {/* HAMi GPU Virtualization */}
+            <Card size="small" style={{ marginBottom: 16, backgroundColor: '#fafafa' }}>
+              <Form.Item name="hamiEnabled" valuePropName="checked" style={{ marginBottom: 12 }}>
+                <Checkbox><Text strong>HAMi GPU Virtualization</Text></Checkbox>
+              </Form.Item>
+              <Form.Item noStyle shouldUpdate={(prev, curr) => prev.hamiEnabled !== curr.hamiEnabled}>
+                {({ getFieldValue }) =>
+                  getFieldValue('hamiEnabled') ? (
+                    <>
+                      <Alert
+                        message="HAMi enables GPU virtualization, allowing multiple workloads to share a single physical GPU."
+                        type="info" showIcon style={{ marginBottom: 12 }}
+                      />
+                      <Form.Item name="hamiSplitCount" label="Max Split/Process Limits"
+                        rules={[{ required: true, message: 'Please select split count' }]}
+                        tooltip="Only limits the Max number of GPU processes on one physical GPU">
+                        <Select>
+                          {[2,3,4,5,6,7,8,9,10].map(n => (
+                            <Select.Option key={n} value={n}>{n}</Select.Option>
+                          ))}
+                        </Select>
+                      </Form.Item>
+                      <Row gutter={16}>
+                        <Col span={12}>
+                          <Form.Item name="hamiNodePolicy" label="Node Scheduler Policy"
+                            rules={[{ required: true, message: 'Please select node policy' }]}
+                            tooltip="How to distribute pods across nodes">
+                            <Select>
+                              <Select.Option value="binpack">binpack (Consolidate)</Select.Option>
+                              <Select.Option value="spread">spread (Distribute)</Select.Option>
+                            </Select>
+                          </Form.Item>
+                        </Col>
+                        <Col span={12}>
+                          <Form.Item name="hamiGpuPolicy" label="GPU Scheduler Policy"
+                            rules={[{ required: true, message: 'Please select GPU policy' }]}
+                            tooltip="How to allocate GPUs within a node">
+                            <Select>
+                              <Select.Option value="binpack">binpack (Consolidate)</Select.Option>
+                              <Select.Option value="spread">spread (Distribute)</Select.Option>
+                            </Select>
+                          </Form.Item>
+                        </Col>
+                      </Row>
+                    </>
+                  ) : null
+                }
+              </Form.Item>
+            </Card>
+
+            {/* KubeRay Operator */}
+            <Card size="small" style={{ marginBottom: 16, backgroundColor: '#fafafa' }}>
+              <Form.Item name="kuberayOperatorEnabled" valuePropName="checked" style={{ marginBottom: 12 }}>
+                <Checkbox><Text strong>KubeRay Operator</Text></Checkbox>
+              </Form.Item>
+              <Form.Item noStyle shouldUpdate={(prev, curr) => prev.kuberayOperatorEnabled !== curr.kuberayOperatorEnabled}>
+                {({ getFieldValue }) =>
+                  getFieldValue('kuberayOperatorEnabled') ? (
+                    <Alert
+                      message="KubeRay Operator enables running Ray workloads (RayCluster, RayJob, RayService) on your cluster."
+                      type="info" showIcon style={{ marginBottom: 12 }}
+                    />
+                  ) : null
+                }
+              </Form.Item>
+            </Card>
+
+            {/* Infrastructure Add-ons (Collapsible) */}
+            <Collapse
+              size="small"
+              style={{ marginBottom: 16 }}
+              items={[{
+                key: 'infra',
+                label: <Text strong>Add-ons</Text>,
+                children: (
+                  <>
+                    {/* cert-manager */}
+                    <Card size="small" style={{ marginBottom: 16, backgroundColor: '#fafafa' }}>
+                      <Form.Item name="certManagerEnabled" valuePropName="checked" style={{ marginBottom: 12 }}>
+                        <Checkbox><Text strong>cert-manager</Text></Checkbox>
+                      </Form.Item>
+                      <Form.Item noStyle shouldUpdate={(prev, curr) => prev.certManagerEnabled !== curr.certManagerEnabled}>
+                        {({ getFieldValue }) =>
+                          getFieldValue('certManagerEnabled') ? (
+                            <Alert message="cert-manager is required by Training Operator. Install it before enabling Training Operator."
+                              type="info" showIcon style={{ marginBottom: 12 }} />
+                          ) : null
+                        }
+                      </Form.Item>
+                      {addonsData?.certManager?.status === 'CREATING' && (
+                        <Alert message="cert-manager is currently being installed..." type="warning" showIcon style={{ marginBottom: 12 }} />
+                      )}
+                    </Card>
+
+
+                  </>
+                )
+              }]}
+            />
+
+            {/* ── HyperPod Section ── */}
+            {hasHyperPod && (
+              <>
+                <Divider orientation="left">HyperPod</Divider>
+
+                {/* Tiered Storage */}
+                <Card size="small" style={{ marginBottom: 16, backgroundColor: '#fafafa' }}>
+                  <Form.Item name="tieredStorageEnabled" valuePropName="checked" style={{ marginBottom: 12 }}>
+                    <Checkbox><Text strong>Tiered Storage (Managed Checkpointing)</Text></Checkbox>
+                  </Form.Item>
+                  <Form.Item noStyle shouldUpdate={(prev, curr) => prev.tieredStorageEnabled !== curr.tieredStorageEnabled}>
+                    {({ getFieldValue }) =>
+                      getFieldValue('tieredStorageEnabled') ? (
+                        <>
+                          <Alert
+                            message={`Tiered Storage uses cluster CPU memory for faster checkpoint operations. ServiceAccount: ${addonsData?.tieredStorage?.irsa?.saName || 'tiered-storage-sa'}`}
+                            type="info" showIcon style={{ marginBottom: 12 }}
+                          />
+                          <Form.Item name="tieredStorageMode" label="Configuration Mode"
+                            rules={[{ required: true, message: 'Please select a mode' }]}>
+                            <Radio.Group>
+                              <Space direction="vertical">
+                                <Radio value="default">
+                                  <Text>Use Default (Enable only)</Text>
+                                  <br />
+                                  <Text type="secondary" style={{ fontSize: 12 }}>System automatically manages memory allocation</Text>
+                                </Radio>
+                                <Radio value="custom">
+                                  <Text>Custom Configuration</Text>
+                                  <br />
+                                  <Text type="secondary" style={{ fontSize: 12 }}>Specify memory allocation percentage</Text>
+                                </Radio>
+                              </Space>
+                            </Radio.Group>
+                          </Form.Item>
+                          <Form.Item noStyle shouldUpdate={(prev, curr) => prev.tieredStorageMode !== curr.tieredStorageMode}>
+                            {({ getFieldValue }) =>
+                              getFieldValue('tieredStorageMode') === 'custom' ? (
+                                <Form.Item name="tieredStoragePercentage" label="Memory Allocation Percentage"
+                                  rules={[
+                                    { required: true, message: 'Please specify percentage' },
+                                    { type: 'number', min: 20, max: 80, message: 'Must be between 20-80' }
+                                  ]}>
+                                  <InputNumber min={20} max={80} style={{ width: '100%' }} addonAfter="%" placeholder="50" />
+                                </Form.Item>
+                              ) : null
+                            }
+                          </Form.Item>
+                        </>
+                      ) : null
+                    }
+                  </Form.Item>
+                </Card>
+
+                {/* HyperPod Karpenter */}
+                <Card size="small" style={{ marginBottom: 16, backgroundColor: '#fafafa' }}>
+                  <Form.Item name="karpenterEnabled" valuePropName="checked" style={{ marginBottom: 12 }}>
+                    <Checkbox><Text strong>HyperPod Karpenter (Managed Autoscaling)</Text></Checkbox>
+                  </Form.Item>
+                  <Form.Item noStyle shouldUpdate={(prev, curr) => prev.karpenterEnabled !== curr.karpenterEnabled}>
+                    {({ getFieldValue }) =>
+                      getFieldValue('karpenterEnabled') ? (
+                        <>
+                          <Alert
+                            message="Karpenter enables just-in-time node provisioning, scale-to-zero, and automatic consolidation for HyperPod instance groups."
+                            type="info" showIcon style={{ marginBottom: 12 }}
+                          />
+                          {addonsData?.karpenter?.status === 'Updating' && (
+                            <Alert message="Karpenter is currently being configured..." type="warning" showIcon style={{ marginBottom: 12 }} />
+                          )}
+                          <Form.Item name="karpenterConsolidationPolicy" label="Consolidation Policy"
+                            tooltip="When to reclaim idle nodes: WhenEmpty (only empty nodes) or WhenEmptyOrUnderutilized (empty or underused)">
+                            <Select>
+                              <Select.Option value="WhenEmptyOrUnderutilized">WhenEmptyOrUnderutilized (Aggressive)</Select.Option>
+                              <Select.Option value="WhenEmpty">WhenEmpty (Conservative)</Select.Option>
+                            </Select>
+                          </Form.Item>
+                          <Row gutter={16}>
+                            <Col span={12}>
+                              <Form.Item name="karpenterConsolidateAfter" label="Consolidate After"
+                                tooltip="How long to wait after condition is met before reclaiming">
+                                <Select>
+                                  <Select.Option value="0s">0s (Immediate)</Select.Option>
+                                  <Select.Option value="30s">30s</Select.Option>
+                                  <Select.Option value="60s">60s</Select.Option>
+                                  <Select.Option value="300s">5 min</Select.Option>
+                                  <Select.Option value="600s">10 min</Select.Option>
+                                </Select>
+                              </Form.Item>
+                            </Col>
+                            <Col span={12}>
+                              <Form.Item name="karpenterBudgetNodes" label="Disruption Budget"
+                                tooltip="Max percentage of nodes that can be disrupted simultaneously">
+                                <Select>
+                                  <Select.Option value="10%">10% (Very Safe)</Select.Option>
+                                  <Select.Option value="50%">50%</Select.Option>
+                                  <Select.Option value="90%">90% (Default)</Select.Option>
+                                  <Select.Option value="100%">100%</Select.Option>
+                                </Select>
+                              </Form.Item>
+                            </Col>
+                          </Row>
+                        </>
+                      ) : null
+                    }
+                  </Form.Item>
+                </Card>
+
+                {/* Inference Operator */}
+                <Card size="small" style={{ marginBottom: 16, backgroundColor: '#fafafa' }}>
+                  <Form.Item name="inferenceOperatorEnabled" valuePropName="checked" style={{ marginBottom: 12 }}>
+                    <Checkbox><Text strong>HyperPod Inference Operator</Text></Checkbox>
+                  </Form.Item>
+                  <Form.Item noStyle shouldUpdate={(prev, curr) => prev.inferenceOperatorEnabled !== curr.inferenceOperatorEnabled}>
+                    {({ getFieldValue }) =>
+                      getFieldValue('inferenceOperatorEnabled') ? (
+                        <Alert
+                          message="Inference Operator enables deployment and management of ML inference endpoints on your EKS cluster."
+                          type="info" showIcon style={{ marginBottom: 12 }}
+                        />
+                      ) : null
+                    }
+                  </Form.Item>
+                </Card>
+
+                {/* Training Operator */}
+                <Card size="small" style={{ marginBottom: 16, backgroundColor: '#fafafa' }}>
+                  <Form.Item name="trainingOperatorEnabled" valuePropName="checked" style={{ marginBottom: 12 }}>
+                    <Checkbox><Text strong>HyperPod Training Operator</Text></Checkbox>
+                  </Form.Item>
+                  <Form.Item noStyle shouldUpdate={(prev, curr) => prev.trainingOperatorEnabled !== curr.trainingOperatorEnabled}>
+                    {({ getFieldValue }) =>
+                      getFieldValue('trainingOperatorEnabled') ? (
+                        <Alert
+                          message="Training Operator enables auto-recovery of distributed training jobs (PyTorchJob, etc.) on your HyperPod cluster."
+                          type="info" showIcon style={{ marginBottom: 12 }}
+                        />
+                      ) : null
+                    }
+                  </Form.Item>
+                  {addonsData?.trainingOperator?.status === 'CREATING' && (
+                    <Alert message="Training Operator is currently being installed..." type="warning" showIcon style={{ marginBottom: 12 }} />
+                  )}
+                </Card>
+              </>
+            )}
+
+          </Form>
+        </Spin>
       </Modal>
     </>
   );

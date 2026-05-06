@@ -1,6 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState } from 'react';
+import { useSelector } from 'react-redux';
+import { selectDeploymentStatus } from '../store/selectors';
+import useInstanceInfo from '../hooks/useInstanceInfo';
+import { useRecipeConfig } from '../utils/useRecipeConfig';
+import RecipeConfigActions from './RecipeConfigActions';
 import {
-  Card,
   Form,
   Input,
   InputNumber,
@@ -11,15 +15,11 @@ import {
   Alert,
   Collapse,
   Typography,
-  message,
-  Tooltip,
   Select
 } from 'antd';
 import {
   FireOutlined,
   PlayCircleOutlined,
-  SaveOutlined,
-  ReloadOutlined,
   SettingOutlined,
   ThunderboltOutlined,
   CodeOutlined,
@@ -31,83 +31,21 @@ const { TextArea } = Input;
 const { Panel } = Collapse;
 const { Text } = Typography;
 
-const TorchRecipePanel = ({ onLaunch, deploymentStatus, hyperPodInstanceTypes, instanceTypesLoading, refreshInstanceTypes }) => {
+const TorchRecipePanel = ({ onLaunch, hyperPodInstanceTypes, instanceTypesLoading, refreshInstanceTypes }) => {
+  const deploymentStatus = useSelector(selectDeploymentStatus);
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [showLogMonitoring, setShowLogMonitoring] = useState(false);
-  const hasLoadedConfig = useRef(false); // 使用useRef防止重复加载
+  const { fetchInstanceInfo, infoLoading } = useInstanceInfo(form, { gpu: 'nprocPerNode', efa: 'efaCount' });
 
-  // 加载保存的配置
-  useEffect(() => {
-    if (!hasLoadedConfig.current) {
-      hasLoadedConfig.current = true;
-      loadSavedConfig();
-    }
-  }, []);
-
-  const loadSavedConfig = async () => {
-    try {
-      const response = await fetch('/api/torch-config/load');
-      const result = await response.json();
-      
-      if (result.success) {
-        form.setFieldsValue(result.config);
-        if (result.config.logMonitoringConfig && result.config.logMonitoringConfig.trim() !== '') {
-          setShowLogMonitoring(true);
-        }
-        
-        if (!result.isDefault) {
-          message.success('Previous configuration loaded');
-        }
-      }
-    } catch (error) {
-      console.error('Error loading config:', error);
-      message.error('Failed to load saved configuration');
-    }
-  };
-
-  const saveConfig = async () => {
-    try {
-      setSaving(true);
-      const values = await form.validateFields();
-      
-      const response = await fetch('/api/torch-config/save', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(values),
-      });
-      
-      const result = await response.json();
-      
-      if (result.success) {
-        message.success('Configuration saved successfully');
-      } else {
-        message.error(`Failed to save configuration: ${result.error}`);
-      }
-    } catch (error) {
-      console.error('Error saving config:', error);
-      message.error('Failed to save configuration');
-    } finally {
-      setSaving(false);
-    }
-  };
+  const { saving, loadConfig, saveConfig } = useRecipeConfig({
+    endpoint: '/api/torch-config',
+    form,
+  });
 
   const handleSubmit = async (values) => {
     setLoading(true);
     try {
-      // 自动保存配置
-      await fetch('/api/torch-config/save', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(values),
-      });
-      
-      // 通过 onLaunch 统一提交（与其他 Recipe 保持一致）
+      await saveConfig({ silent: true, values }).catch(() => {});
       await onLaunch({ ...values, recipeType: 'torch' });
     } catch (error) {
       console.error('Error launching torch training:', error);
@@ -138,30 +76,15 @@ const TorchRecipePanel = ({ onLaunch, deploymentStatus, hyperPodInstanceTypes, i
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-        <Space>
-          <Tooltip title="Save Configuration">
-            <Button
-              icon={<SaveOutlined />}
-              onClick={saveConfig}
-              loading={saving}
-              size="small"
-            />
-          </Tooltip>
-          <Tooltip title="Reload Configuration and Refresh Instance Types">
-            <Button
-              icon={<ReloadOutlined />}
-              onClick={() => {
-                loadSavedConfig();
-                if (refreshInstanceTypes) {
-                  refreshInstanceTypes();
-                }
-              }}
-              size="small"
-            />
-          </Tooltip>
-        </Space>
-      </div>
+      <RecipeConfigActions
+        saving={saving}
+        onSave={() => saveConfig()}
+        onReload={async () => {
+          await loadConfig().catch(() => {});
+          await refreshInstanceTypes?.();
+        }}
+        reloadTooltip="Reload Configuration and Refresh Instance Types"
+      />
       {getStatusAlert()}
 
       <Form
@@ -220,9 +143,9 @@ const TorchRecipePanel = ({ onLaunch, deploymentStatus, hyperPodInstanceTypes, i
                   option.label.toLowerCase().indexOf(inputValue.toLowerCase()) !== -1
                 }
                 onSelect={(value, option) => {
-                  // 如果选择的是从集群获取的选项，提取实例类型；否则使用原值
                   const instanceType = option.instanceType || value.split('-')[0];
                   form.setFieldValue('instanceType', instanceType);
+                  fetchInstanceInfo(instanceType);
                 }}
                 style={{ width: '100%' }}
               />
@@ -346,10 +269,7 @@ const TorchRecipePanel = ({ onLaunch, deploymentStatus, hyperPodInstanceTypes, i
         </Form.Item>
 
         {/* 高级配置 - 可折叠 */}
-        <Collapse 
-          ghost
-          onChange={(keys) => setShowLogMonitoring(keys.includes('logMonitoring'))}
-        >
+        <Collapse ghost>
           <Panel 
             header={
               <Space>
@@ -392,6 +312,7 @@ const TorchRecipePanel = ({ onLaunch, deploymentStatus, hyperPodInstanceTypes, i
             htmlType="submit"
             icon={<PlayCircleOutlined />}
             loading={loading}
+            disabled={infoLoading}
             size="large"
             className="training-btn"
             block

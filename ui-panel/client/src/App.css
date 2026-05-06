@@ -175,20 +175,13 @@
   }
 }
 
-/* 深色模式支持 */
-@media (prefers-color-scheme: dark) {
-  .app-content {
-    background: #141414;
-  }
-  
-  .ant-card {
-    background: #1f1f1f;
-    border-color: #303030;
-  }
-  
-  .ant-table-small .ant-table-tbody > tr > td,
-  .ant-table-small .ant-table-thead > tr > th {
-    background: #1f1f1f;
-    border-color: #303030;
-  }
+/* 深色模式 - 由 ThemeProvider 统一控制，见 dynamic-theme.css */
+[data-theme-mode="dark"] .app-content {
+  background: #141414;
+}
+
+[data-theme-mode="dark"] .ant-typography code {
+  background: #2a2a2a;
+  border-color: #3a3a3a;
+  color: rgba(255, 255, 255, 0.88);
 }

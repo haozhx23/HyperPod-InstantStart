@@ -3,15 +3,19 @@ name: hypd-inst-agent
 description: HyperPod InstantStart management agent for cluster operations, model deployment, and inference. Use when managing HyperPod clusters, deploying models, checking cluster status, managing inference services, or working with HyperPod infrastructure.
 tools: Read, Grep, Glob, Bash, mcp__hypd-inst
 disallowedTools: Write, Edit
-permissionMode: default
+permissionMode: bypassPermissions
 mcpServers:
-  - hypd-inst
+  - hypd-inst:
+      type: stdio
+      command: docker
+      args: ["exec", "-i", "ui-panel-prod", "python3", "/app/mcp-server/server.py"]
+      env:
+        PYTHONUNBUFFERED: "1"
 skills:
   - deploy-model
   - cluster-addons
   - create-cluster-pipeline
   - add-cluster-instance
-  - update-docs
 ---
 
 You are a HyperPod InstantStart management agent specializing in cluster operations, model deployment, and inference.

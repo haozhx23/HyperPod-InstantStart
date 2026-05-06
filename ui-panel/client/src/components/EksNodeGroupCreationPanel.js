@@ -12,9 +12,13 @@ const EksNodeGroupCreationPanel = ({ onCreated }) => {
   const [eksSecurityGroup, setEksSecurityGroup] = useState(null);
   const [availabilityZones, setAvailabilityZones] = useState([]);
   const [azLoading, setAzLoading] = useState(false);
+  const [instanceTypeOptions, setInstanceTypeOptions] = useState([]);
 
   useEffect(() => {
     fetchClusterInfo();
+    fetch('/api/config/instance-type-options').then(r => r.json()).then(d => {
+      if (d.success) setInstanceTypeOptions(d.instanceTypes.map(t => t.replace(/^ml\./, '')));
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -91,14 +95,6 @@ const EksNodeGroupCreationPanel = ({ onCreated }) => {
     }
   };
 
-  // GPU实例类型选项（不带ml.前缀，与HyperPod选项对应）
-  const gpuInstanceTypes = [
-    'g5.8xlarge', 'g5.12xlarge', 'g5.24xlarge', 'g5.48xlarge',
-    'g6.8xlarge', 'g6.12xlarge', 'g6.24xlarge', 'g6.48xlarge', 
-    'g6e.8xlarge', 'g6e.12xlarge', 'g6e.24xlarge', 'g6e.48xlarge',
-    'p4d.24xlarge', 'p5.48xlarge', 'p5en.48xlarge', 'p6-b200.48xlarge'
-  ];
-
   return (
     <Card title="Create EKS Node Group" size="small">
       <Form
@@ -158,7 +154,7 @@ const EksNodeGroupCreationPanel = ({ onCreated }) => {
         >
           <AutoComplete
             placeholder="Select or type GPU instance type"
-            options={gpuInstanceTypes.map(type => ({ value: type, label: type }))}
+            options={instanceTypeOptions.map(type => ({ value: type, label: type }))}
             filterOption={(inputValue, option) =>
               option.value.toLowerCase().indexOf(inputValue.toLowerCase()) !== -1
             }

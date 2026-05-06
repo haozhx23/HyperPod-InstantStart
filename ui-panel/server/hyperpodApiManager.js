@@ -272,9 +272,8 @@ router.post('/create-hyperpod', async (req, res) => {
     };
 
     // 生成 HyperPod 配置
-    const timestamp = new Date().toISOString().replace(/[-:.T]/g, '').slice(0, 14);
-    const hyperPodTag = userConfig.hyperPodTag;
-    const hyperPodStackName = `hyperpod-${hyperPodTag}-${timestamp}`;
+    const initInstanceGroupTag = userConfig.initInstanceGroupTag;
+    const hyperPodStackName = `hypd-cfn-${activeCluster}`;
     const eksClusterTag = activeCluster;
     const hyperPodClusterName = `hp-cluster-${eksClusterTag}`;
 
@@ -345,14 +344,14 @@ router.post('/create-hyperpod', async (req, res) => {
 
     // 构建 HyperPod 配置（subnet 已由 ensureComputeSubnet 创建，CF 跳过 subnet 创建）
     const hyperPodConfig = {
-      ResourceNamePrefix: hyperPodTag,
+      ResourceNamePrefix: eksClusterTag,
       AvailabilityZoneId: availabilityZoneId,
       ExistingPrivateSubnetId: computeSubnetId,
       HyperPodClusterName: hyperPodClusterName,
       NodeRecovery: 'None',
       UseContinuousNodeProvisioningMode: 'true',
       CreateAcceleratedInstanceGroup: 'true',
-      AcceleratedInstanceGroupName: `${hyperPodTag}-ig`,
+      AcceleratedInstanceGroupName: `${initInstanceGroupTag}-ig`,
       AcceleratedInstanceType: userConfig.AcceleratedInstanceType,
       AcceleratedInstanceCount: userConfig.AcceleratedInstanceCount,
       AcceleratedEBSVolumeSize: userConfig.AcceleratedEBSVolumeSize,

@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Form, 
+import { useSelector } from 'react-redux';
+import { selectAppServices } from '../store/selectors';
+import {
+  Form,
   Input,
   InputNumber,
   Button, 
@@ -30,7 +32,8 @@ const { TextArea } = Input;
 const { Option } = Select;
 const { Text, Paragraph } = Typography;
 
-const TestPanel = ({ services, onRefresh }) => {
+const TestPanel = ({ onRefresh }) => {
+  const services = useSelector(selectAppServices);
   const [form] = Form.useForm();
   const [curlCommand, setCurlCommand] = useState('');
   const [response, setResponse] = useState('');

@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback, useState } from 'react';
+import React, { useEffect, useCallback, useState, useMemo } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import {
   Table,
@@ -37,8 +37,7 @@ import {
   selectPendingGPUs,
   selectClusterStatusLoading,
   selectClusterStatusError,
-  selectCalculatedClusterStats,
-  selectClusterLastUpdate
+  selectCalculatedClusterStats
 } from '../store/selectors';
 
 // 新的事件总线
@@ -55,7 +54,6 @@ const ClusterStatusV2Redux = () => {
   const loading = useSelector(selectClusterStatusLoading);
   const error = useSelector(selectClusterStatusError);
   const clusterStats = useSelector(selectCalculatedClusterStats);
-  const lastUpdate = useSelector(selectClusterLastUpdate);
 
   // HAMi 节点控制状态
   const [partitionModalVisible, setPartitionModalVisible] = useState(false);
@@ -66,6 +64,11 @@ const ClusterStatusV2Redux = () => {
   // 节点操作状态
   const [nodeActionModalVisible, setNodeActionModalVisible] = useState(false);
   const [nodeActionLoading, setNodeActionLoading] = useState(false);
+
+  // 过滤器状态
+  const [filterNodeType, setFilterNodeType] = useState('__all__');
+  const [filterCapacityType, setFilterCapacityType] = useState('__all__');
+  const [filterGpuAvail, setFilterGpuAvail] = useState('__all__');
 
   // 初始化时获取数据（只执行一次）
   useEffect(() => {
@@ -263,6 +266,58 @@ const ClusterStatusV2Redux = () => {
     }
   };
 
+  // 从节点 labels/字段派生出过滤分桶
+  const deriveNodeType = (record) => {
+    const labels = record.labels || {};
+    const isKarpenter = labels['karpenter.sh/nodepool'] != null || labels['karpenter.sh/nodeclaim'] != null;
+    if (labels['sagemaker.amazonaws.com/compute-type'] === 'hyperpod' && isKarpenter) return 'hyperpod-karpenter';
+    if (labels['sagemaker.amazonaws.com/compute-type'] === 'hyperpod') return 'hyperpod';
+    if (labels['eks.amazonaws.com/nodegroup']) return 'eks-nodegroup';
+    return 'unknown';
+  };
+
+  const deriveCapacityType = (record, nodeType) => {
+    const labels = record.labels || {};
+    const isHyperPodCapacity =
+      nodeType === 'hyperpod' ||
+      nodeType === 'hyperpod-karpenter' ||
+      false;
+    if (isHyperPodCapacity) {
+      if (record.capacityType === 'spot') return 'spot';
+      if (record.capacityType === 'training-plan') return 'ftp';
+      return 'on-demand';
+    }
+    if (nodeType === 'eks-nodegroup') {
+      return (labels['eks.amazonaws.com/capacityType'] || '').toUpperCase() === 'SPOT' ? 'spot' : 'on-demand';
+    }
+    return null;
+  };
+
+  const deriveGpuBucket = (record) => {
+    const total = record.totalGPU || 0;
+    const avail = record.availableGPU || 0;
+    if (total === 0) return 'cpu-only';
+    if (avail > 0) return 'has-available';
+    return 'no-available';
+  };
+
+  const filteredNodes = useMemo(() => {
+    return clusterNodes.filter((record) => {
+      const nodeType = deriveNodeType(record);
+      if (filterNodeType !== '__all__' && nodeType !== filterNodeType) return false;
+      if (filterCapacityType !== '__all__') {
+        const cap = deriveCapacityType(record, nodeType);
+        if (cap !== filterCapacityType) return false;
+      }
+      if (filterGpuAvail !== '__all__') {
+        if (deriveGpuBucket(record) !== filterGpuAvail) return false;
+      }
+      return true;
+    });
+  }, [clusterNodes, filterNodeType, filterCapacityType, filterGpuAvail]);
+
+  const isFiltered = filterNodeType !== '__all__' || filterCapacityType !== '__all__' || filterGpuAvail !== '__all__';
+
   // 表格列定义 - 与原版相同
   const columns = [
     {
@@ -335,18 +390,6 @@ const ClusterStatusV2Redux = () => {
           );
         }
 
-        // EC2 Karpenter节点
-        if (isKarpenter) {
-          const capacityType = labels['karpenter.sh/capacity-type'] || 'unknown';
-          return (
-            <div>
-              <Tag color="#52c41a">EC2 Karpenter</Tag>
-              <div style={{ fontSize: '11px', color: '#666', marginTop: 2 }}>
-                {capacityType === 'spot' ? 'Spot' : 'On-Demand'}
-              </div>
-            </div>
-          );
-        }
 
         // EKS NodeGroup节点
         if (labels['eks.amazonaws.com/nodegroup']) {
@@ -378,11 +421,6 @@ const ClusterStatusV2Redux = () => {
           return <span style={{ fontSize: '12px' }}>Group: {instanceGroup}</span>;
         }
 
-        // EC2 Karpenter节点
-        if (labels['karpenter.sh/nodepool']) {
-          const ec2NodePool = labels['karpenter.sh/nodepool'];
-          return <span style={{ fontSize: '12px' }}>Pool: {ec2NodePool}</span>;
-        }
 
         // EKS NodeGroup节点
         if (labels['eks.amazonaws.com/nodegroup']) {
@@ -614,19 +652,64 @@ const ClusterStatusV2Redux = () => {
           </Col>
         </Row>
 
-        {/* 刷新按钮和最后更新时间 */}
+        {/* 过滤器 + 刷新按钮 */}
         <div style={{
           marginBottom: 16,
           display: 'flex',
+          flexWrap: 'wrap',
+          alignItems: 'center',
           justifyContent: 'space-between',
-          alignItems: 'center'
+          gap: 8
         }}>
-          <span style={{ fontSize: '12px', color: '#666' }}>
-            {lastUpdate
-              ? `Last updated: ${new Date(lastUpdate).toLocaleTimeString()}`
-              : 'No data loaded yet'
-            }
-          </span>
+          <Space size={8} wrap>
+            <Select
+              size="small"
+              value={filterNodeType}
+              onChange={setFilterNodeType}
+              style={{ minWidth: 180 }}
+              options={[
+                { value: '__all__', label: 'All node types' },
+                { value: 'hyperpod', label: 'HyperPod' },
+                { value: 'hyperpod-karpenter', label: 'HyperPod Karpenter' },
+                { value: 'eks-nodegroup', label: 'EKS NodeGroup' },
+                { value: 'unknown', label: 'Unknown' },
+              ]}
+            />
+            <Select
+              size="small"
+              value={filterCapacityType}
+              onChange={setFilterCapacityType}
+              style={{ minWidth: 160 }}
+              options={[
+                { value: '__all__', label: 'All capacity types' },
+                { value: 'on-demand', label: 'On-Demand' },
+                { value: 'spot', label: 'Spot' },
+                { value: 'ftp', label: 'FTP (training-plan)' },
+              ]}
+            />
+            <Select
+              size="small"
+              value={filterGpuAvail}
+              onChange={setFilterGpuAvail}
+              style={{ minWidth: 180 }}
+              options={[
+                { value: '__all__', label: 'All GPU availability' },
+                { value: 'has-available', label: 'Has available GPU' },
+                { value: 'no-available', label: 'No available GPU' },
+                { value: 'cpu-only', label: 'CPU-only nodes' },
+              ]}
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {isFiltered && filteredNodes.length !== clusterNodes.length ? (
+                <>
+                  <Tag color="blue" style={{ marginInlineEnd: 4 }}>{filteredNodes.length}</Tag>
+                  of {clusterNodes.length}
+                </>
+              ) : (
+                <>Total {clusterNodes.length}</>
+              )}
+            </Text>
+          </Space>
           <Button
             icon={<ReloadOutlined />}
             onClick={handleRefresh}
@@ -640,13 +723,15 @@ const ClusterStatusV2Redux = () => {
         {/* 节点详情表格 */}
         <Table
           columns={columns}
-          dataSource={clusterNodes}
+          dataSource={filteredNodes}
           rowKey="nodeName"
           size="small"
+          sticky
           pagination={false}
-          // scroll={{ y: 300 }}
           locale={{
-            emptyText: loading ? 'Refreshing cluster data...' : 'No cluster data available'
+            emptyText: loading
+              ? 'Refreshing cluster data...'
+              : (isFiltered ? 'No nodes match the current filter' : 'No cluster data available')
           }}
           rowClassName={(record) => {
             if (record.error) return 'cluster-row-error';

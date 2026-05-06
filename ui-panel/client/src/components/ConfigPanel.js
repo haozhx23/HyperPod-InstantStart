@@ -1,4 +1,6 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useSelector } from 'react-redux';
+import { selectDeploymentStatus } from '../store/selectors';
 import resourceEventBus from '../utils/resourceEventBus';
 import {
   Form,
@@ -34,7 +36,8 @@ const { TextArea } = Input;
 const { Option, OptGroup } = Select;
 
 
-const ConfigPanel = ({ deploymentStatus }) => {
+const ConfigPanel = () => {
+  const deploymentStatus = useSelector(selectDeploymentStatus);
   const [deploymentForm] = Form.useForm();
   const [loading, setLoading] = useState(false);
 

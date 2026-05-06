@@ -32,7 +32,8 @@ class AppStatusV2 {
     }
 
     const queryPromise = new Promise((resolve, reject) => {
-      const child = exec(`kubectl ${command}`, (error, stdout, stderr) => {
+      // maxBuffer 默认 1 MiB，大集群 `get pods -A -o json` 常超，显式放大
+      const child = exec(`kubectl ${command}`, { maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
         this.activeQueries.delete(command); // 清理活跃查询
         
         if (error) {
@@ -99,7 +100,7 @@ class AppStatusV2 {
       console.log('Fetching fresh pods data...');
       const startTime = Date.now();
       
-      const output = await this.executeKubectlWithDedup('get pods -o json', 15000);
+      const output = await this.executeKubectlWithDedup('get pods -A -o json', 15000);
       const podsData = JSON.parse(output);
       
       // 预处理 Pod 数据

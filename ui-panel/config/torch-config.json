@@ -1,9 +1,9 @@
 {
   "trainingJobName": "torchrecipe-1",
-  "instanceType": "ml.g6.4xlarge",
+  "instanceType": "ml.g6.12xlarge",
   "dockerImage": "public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110",
-  "efaCount": 0,
-  "nprocPerNode": 1,
+  "efaCount": 1,
+  "nprocPerNode": 4,
   "replicas": 1,
   "entryPythonScriptPath": "/s3/train-recipes/torch-project-gpt-ddp/trainer_gpt_ddp.py",
   "pythonScriptParameters": "    --model_name_or_path /s3/openai-community-gpt2-medium/ \\\n    --dataset_name wikitext \\\n    --dataset_config_name wikitext-2-raw-v1 \\\n    --output_dir //nvme/ckpt-path \\\n    --num_train_epochs 1 \\\n    --per_device_train_batch_size 4 \\\n    --gradient_accumulation_steps 1 \\\n    --max_steps 10000 \\\n    --max_context_width 2048 \\\n    --learning_rate 5e-5 \\\n    --save_steps 100",

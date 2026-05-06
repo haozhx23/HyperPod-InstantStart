@@ -1,6 +1,6 @@
 {
   "computeSubnet": {
     "cidrRange": null,
-    "prefixLength": 22
+    "prefixLength": 20
   }
 }

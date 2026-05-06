@@ -89,12 +89,11 @@ body {
   border-radius: var(--aws-radius-lg);
   border: 1px solid var(--aws-gray-200);
   box-shadow: var(--aws-shadow-sm);
-  transition: all 0.3s ease;
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
 }
 
 .aws-card:hover {
   box-shadow: var(--aws-shadow-md);
-  transform: translateY(-2px);
 }
 
 .aws-card .ant-card-head {
@@ -136,7 +135,7 @@ body {
   border-radius: var(--aws-radius-md);
   font-weight: 600;
   box-shadow: var(--aws-shadow-sm);
-  transition: all 0.3s ease;
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
 }
 
 .aws-btn-primary:hover {
@@ -151,7 +150,7 @@ body {
   color: var(--aws-gray-700);
   border-radius: var(--aws-radius-md);
   font-weight: 600;
-  transition: all 0.3s ease;
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
 }
 
 .aws-btn-secondary:hover {
@@ -227,7 +226,7 @@ body {
 .aws-tabs .ant-tabs-tab {
   border-radius: var(--aws-radius-md) var(--aws-radius-md) 0 0;
   font-weight: 600;
-  transition: all 0.3s ease;
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
 }
 
 .aws-tabs .ant-tabs-tab-active {
@@ -248,12 +247,11 @@ body {
   padding: 24px;
   text-align: center;
   box-shadow: var(--aws-shadow-sm);
-  transition: all 0.3s ease;
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
 }
 
 .aws-stat-card:hover {
   box-shadow: var(--aws-shadow-md);
-  transform: translateY(-2px);
 }
 
 .aws-stat-card .ant-statistic-content {
@@ -317,22 +315,8 @@ body {
   }
 }
 
-/* Dark Mode Support */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --aws-gray-50: #1a1a1a;
-    --aws-gray-100: #2d2d2d;
-    --aws-gray-200: #404040;
-    --aws-gray-300: #595959;
-  }
-  
-  body {
-    background: var(--aws-gray-50);
-    color: var(--aws-gray-100);
-  }
-  
-  .aws-card {
-    background: var(--aws-gray-100);
-    border-color: var(--aws-gray-200);
-  }
+/* Dark mode: controlled by [data-theme-mode="dark"] set in ThemeProvider */
+[data-theme-mode="dark"] .aws-card {
+  background: #1f1f1f;
+  border-color: #303030;
 }

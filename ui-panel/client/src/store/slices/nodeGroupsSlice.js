@@ -199,7 +199,6 @@ export const checkHyperPodCreationStatus = createAsyncThunk(
 const nodeGroupsSlice = createSlice({
   name: 'nodeGroups',
   initialState: {
-    eksNodeGroups: [],
     hyperPodGroups: [],
     loading: false,
     error: null,
@@ -236,8 +235,7 @@ const nodeGroupsSlice = createSlice({
         state.error = null;
       })
       .addCase(fetchNodeGroups.fulfilled, (state, action) => {
-        const { eksNodeGroups, hyperPodInstanceGroups } = action.payload;
-        state.eksNodeGroups = eksNodeGroups || [];
+        const { hyperPodInstanceGroups } = action.payload;
         state.hyperPodGroups = hyperPodInstanceGroups || [];
         state.loading = false;
       })
@@ -245,7 +243,6 @@ const nodeGroupsSlice = createSlice({
         state.loading = false;
         state.error = action.payload;
         // 清空旧数据，避免显示已删除的节点组
-        state.eksNodeGroups = [];
         state.hyperPodGroups = [];
       })
 
@@ -358,7 +355,6 @@ const nodeGroupsSlice = createSlice({
       // 处理集群切换 - 清空旧集群的节点数据
       .addCase(switchCluster.pending, (state) => {
         // 清空节点组数据，避免显示旧集群的信息
-        state.eksNodeGroups = [];
         state.hyperPodGroups = [];
         state.loading = true;
       });

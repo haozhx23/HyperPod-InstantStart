@@ -3,6 +3,12 @@
 
 export const ACTIVE_THEME = 'aws'; // 在这里切换主题
 
+// 配色模式开关:
+//   'auto'  = 跟随 macOS/浏览器的 prefers-color-scheme
+//   'light' = 强制亮色，忽略系统设置
+//   'dark'  = 强制暗色，忽略系统设置
+export const COLOR_SCHEME_MODE = 'light';
+
 // AWS 风格主题
 const awsTheme = {
   name: 'aws',

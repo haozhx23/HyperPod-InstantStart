@@ -1,4 +1,6 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useSelector } from 'react-redux';
+import { selectDeploymentStatus } from '../store/selectors';
 import resourceEventBus from '../utils/resourceEventBus';
 import {
   Form,
@@ -43,7 +45,8 @@ const { Option } = Select;
 const { Panel } = Collapse;
 const { Text, Paragraph } = Typography;
 
-const ManagedInferencePanel = ({ deploymentStatus }) => {
+const ManagedInferencePanel = () => {
+  const deploymentStatus = useSelector(selectDeploymentStatus);
   const [deploymentForm] = Form.useForm();
   const [loading, setLoading] = useState(false);
 

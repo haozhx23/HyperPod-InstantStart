@@ -41,8 +41,8 @@ class CloudFormationManager {
       const { clusterTag, awsRegion, stackName } = config;
       
       // 使用传入的stackName或生成默认名称
-      const finalStackName = stackName || `full-stack-${clusterTag}`;
-      const eksClusterName = `eks-cluster-${clusterTag}`;
+      const finalStackName = stackName || `full-cfn-${clusterTag}`;
+      const eksClusterName = `eks-${clusterTag}`;
       
       // 构建CloudFormation参数
       const parameters = this.buildCloudFormationParameters(
@@ -183,9 +183,13 @@ class CloudFormationManager {
    * @returns {Array} 参数数组
    */
   static buildCloudFormationParameters(clusterTag, eksClusterName, cidrConfig) {
+    const dependencyConfig = require('./dependencyConfigLoader');
+    const k8sVersion = dependencyConfig.load().eks.kubernetesVersion;
+
     return [
       `ParameterKey=EKSClusterName,ParameterValue=${eksClusterName}`,
       `ParameterKey=ResourceNamePrefix,ParameterValue=${clusterTag}`,
+      `ParameterKey=KubernetesVersion,ParameterValue=${k8sVersion}`,
       `ParameterKey=VpcCIDR,ParameterValue=${cidrConfig.vpcCidr}`,
       `ParameterKey=PublicSubnet1CIDR,ParameterValue=${cidrConfig.publicSubnet1Cidr}`,
       `ParameterKey=PublicSubnet2CIDR,ParameterValue=${cidrConfig.publicSubnet2Cidr}`,
@@ -724,7 +728,7 @@ managedNodeGroups:
   static async getHyperPodSecurityGroups(clusterName, region) {
     try {
       // 根据命名约定生成HyperPod集群名称
-      const hpClusterName = clusterName.replace('eks-cluster-', 'hp-cluster-');
+      const hpClusterName = clusterName.replace('eks-', 'hp-cluster-');
       
       const command = `aws sagemaker describe-cluster --cluster-name ${hpClusterName} --region ${region} --query 'VpcConfig.SecurityGroupIds' --output json`;
       const result = execSync(command, { encoding: 'utf8' });

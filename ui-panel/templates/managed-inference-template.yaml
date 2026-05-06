@@ -1,36 +1,35 @@
 apiVersion: inference.sagemaker.aws.amazon.com/v1
 kind: InferenceEndpointConfig
 metadata:
-  name: DEPLOYMENT_NAME
+  name: "${DEPLOYMENT_NAME}"
   namespace: default
 spec:
-  modelName: MODEL_NAME
+  modelName: "${MODEL_NAME}"
   invocationEndpoint: v1/chat/completions
-  instanceType: INSTANCE_TYPE
-  replicas: REPLICAS_COUNTAUTOSCALING_SPEC
+  instanceType: "${INSTANCE_TYPE}"
+  replicas: ${REPLICAS}
   metrics:
     enabled: true
     modelMetrics:
-      port: PORT_NUMBER
+      port: ${PORT}
   modelSourceConfig:
     modelSourceType: s3
     s3Storage:
-      bucketName: S3_BUCKET_NAME
-      region: AWS_REGION
-    modelLocation: MODEL_LOCATIONKV_CACHE_SPEC
-INTELLIGENT_ROUTING_SPEC
+      bucketName: "${S3_BUCKET}"
+      region: "${AWS_REGION}"
+    modelLocation: "${MODEL_LOCATION}"
   worker:
-    image: DOCKER_IMAGE
-    args:WORKER_ARGS
+    image: "${DOCKER_IMAGE}"
+    args:
     modelInvocationPort:
-      containerPort: PORT_NUMBER
+      containerPort: ${PORT}
     modelVolumeMount:
       name: model-weights
     resources:
-      requests:CPU_REQUESTMEMORY_REQUEST
-        nvidia.com/gpu: "GPU_COUNT"GPU_MEMORY
+      requests:
+        nvidia.com/gpu: "${GPU_COUNT}"
       limits:
-        nvidia.com/gpu: "GPU_COUNT"GPU_MEMORY
+        nvidia.com/gpu: "${GPU_COUNT}"
     environmentVariables:
       - name: HF_HUB_OFFLINE
-        value: "1"SESSION_KEY_ENV
+        value: "1"

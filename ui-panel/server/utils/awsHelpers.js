@@ -116,7 +116,9 @@ module.exports = {
   getSecurityGroupsFromENIs,
   getCurrentIdentity,
   extractRoleArn,
-  getCurrentRoleArn
+  getCurrentRoleArn,
+  getInstanceEfaCount,
+  getInstanceTypeInfo
 };
 
 /**
@@ -148,4 +150,46 @@ function extractRoleArn(assumedRoleArn) {
 async function getCurrentRoleArn() {
   const identity = await getCurrentIdentity();
   return extractRoleArn(identity.Arn);
+}
+
+// Instance type info cache: { ec2Type: { vCPUs, memoryGiB, gpuCount, gpuMemoryMiB, efaSupported, efaInterfaces } }
+const _instanceInfoCache = {};
+
+/**
+ * 查询实例类型的完整硬件信息（带缓存）
+ * @param {string} instanceType - 实例类型，如 ml.p5.48xlarge 或 p5.48xlarge
+ * @param {string} [region] - AWS 区域，默认当前区域
+ * @returns {Promise<Object>} { vCPUs, memoryGiB, gpuCount, gpuMemoryMiB, efaSupported, efaInterfaces }
+ */
+async function getInstanceTypeInfo(instanceType, region) {
+  const ec2Type = instanceType.replace(/^ml\./, '');
+  if (_instanceInfoCache[ec2Type]) return _instanceInfoCache[ec2Type];
+
+  try {
+    const r = region || getCurrentRegion();
+    const { stdout } = await exec(
+      `aws ec2 describe-instance-types --instance-types ${ec2Type} --query 'InstanceTypes[0].{vCPUs: VCpuInfo.DefaultVCpus, MemoryMiB: MemoryInfo.SizeInMiB, GPUs: GpuInfo.Gpus[0].Count, GPUMemMiB: GpuInfo.TotalGpuMemoryInMiB, EfaSupported: NetworkInfo.EfaSupported, EfaInterfaces: NetworkInfo.EfaInfo.MaximumEfaInterfaces}' --output json --region ${r}`
+    );
+    const raw = JSON.parse(stdout.trim());
+    const info = {
+      vCPUs: raw.vCPUs || 0,
+      memoryGiB: raw.MemoryMiB ? Math.round(raw.MemoryMiB / 1024) : 0,
+      gpuCount: raw.GPUs || 0,
+      gpuMemoryMiB: raw.GPUMemMiB || 0,
+      efaSupported: raw.EfaSupported || false,
+      efaInterfaces: raw.EfaInterfaces || 0,
+    };
+    _instanceInfoCache[ec2Type] = info;
+    return info;
+  } catch (e) {
+    console.warn(`Failed to query instance info for ${ec2Type}:`, e.message);
+    const fallback = { vCPUs: 0, memoryGiB: 0, gpuCount: 0, gpuMemoryMiB: 0, efaSupported: false, efaInterfaces: 0 };
+    _instanceInfoCache[ec2Type] = fallback;
+    return fallback;
+  }
+}
+
+async function getInstanceEfaCount(instanceType, region) {
+  const info = await getInstanceTypeInfo(instanceType, region);
+  return info.efaInterfaces;
 }

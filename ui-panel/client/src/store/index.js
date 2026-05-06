@@ -6,6 +6,7 @@ import trainingReducer from './slices/trainingSlice';
 import clusterStatusReducer from './slices/clusterStatusSlice';
 import appStatusReducer from './slices/appStatusSlice';
 import globalRefreshReducer from './slices/globalRefreshSlice';
+import webSocketReducer from './slices/webSocketSlice';
 
 // 定义 Redux store 配置
 export const store = configureStore({
@@ -17,6 +18,7 @@ export const store = configureStore({
     clusterStatus: clusterStatusReducer,
     appStatus: appStatusReducer,
     globalRefresh: globalRefreshReducer,
+    webSocket: webSocketReducer,
   },
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware({

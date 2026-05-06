@@ -52,7 +52,10 @@ class MultiClusterStatus {
         };
       }
 
-      const stackName = clusterInfo.cloudFormation?.stackName || `full-stack-${clusterTag}`;
+      const stackName = clusterInfo.cloudFormation?.stackName;
+      if (!stackName) {
+        return { status: 'unknown', message: 'CloudFormation stack name not found in metadata' };
+      }
 
       // 检查缓存
       const cachedStatus = this.readCache(clusterTag, 'step1');

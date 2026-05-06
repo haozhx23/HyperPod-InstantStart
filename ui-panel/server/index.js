@@ -58,21 +58,41 @@ const mlflowApiManager = require('./mlflowApiManager');
 // 引入 EKS Creation 管理模块
 const eksCreationManager = require('./eksCreationManager');
 
+
 // 引入 Training Job 管理模块
 const trainingJobManager = require('./trainingJobManager');
 
 // 引入 Deployment 管理模块
 const deploymentManager = require('./deploymentManager');
 
+const http = require('http');
+const { authMiddleware, verifyHandler, isAuthActive, getAuthConfig } = require('./utils/authMiddleware');
 const app = express();
-const PORT = process.env.API_PORT || 3001;
-const WS_PORT = process.env.REACT_APP_WS_PORT || 3098; // WebSocket独立端口
+// Unified single-port design: HTTP (static + /api) and WebSocket (/ws) share one TCP port.
+// Production (client/build exists) uses PORT; dev (no build) uses API_PORT so CRA dev server on PORT can proxy to it.
+const clientBuildPath = path.join(__dirname, '../client/build');
+const IS_PRODUCTION = fs.existsSync(clientBuildPath);
+const authConfig = getAuthConfig();
+const PORT = IS_PRODUCTION
+  ? (process.env.PORT || authConfig.port || 3099)
+  : (process.env.API_PORT || 3001);
 
 app.use(cors());
 app.use(express.json());
 
-// WebSocket服务器使用独立端口
-const wss = new WebSocket.Server({ port: WS_PORT });
+// Auth middleware (imported earlier for port config)
+app.post('/api/auth/verify', verifyHandler);
+app.use('/api', authMiddleware);
+
+// Production mode: serve React static build
+if (IS_PRODUCTION) {
+  console.log('📦 Production mode: serving React build from', clientBuildPath);
+  app.use(express.static(clientBuildPath));
+}
+
+// Unified HTTP server; WebSocket attaches to it at path /ws (same origin, same port).
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server, path: '/ws' });
 
 // 日志存储配置 - 简化路径结构
 const LOGS_BASE_DIR = path.join(__dirname, '..', 'logs');
@@ -115,7 +135,8 @@ function executeKubectl(command, timeout = 30000) { // 默认30秒超时
   return new Promise((resolve, reject) => {
     console.log(`Executing kubectl command: kubectl ${command}`);
     
-    const child = exec(`kubectl ${command}`, { timeout }, (error, stdout, stderr) => {
+    // maxBuffer 默认 1 MiB，大集群 `get pods -A -o json` 可能 4-10 MiB，必须显式拉大
+    const child = exec(`kubectl ${command}`, { timeout, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) {
         // 检查是否是"资源类型不存在"的预期错误（CRD 未安装）
         const isResourceTypeNotFound = stderr?.includes(`doesn't have a resource type`) || 
@@ -236,8 +257,9 @@ const unifiedLogStreams = new Map(); // 统一管理所有日志流
 
 // 启动统一日志流（支持自动收集和WebSocket流式传输）
 function startUnifiedLogStream(jobName, podName, options = {}) {
-  const streamKey = `${jobName}-${podName}`;
-  const { ws = null, autoCollection = false } = options;
+  const { ws = null, autoCollection = false, namespace = null } = options;
+  // streamKey 包含 namespace，避免跨 ns 同名 pod 冲突（例如 kube-system 和 default 里都可能有 dns pod）
+  const streamKey = namespace ? `${jobName}-${namespace}-${podName}` : `${jobName}-${podName}`;
   
   // 如果已经有该pod的日志流，添加WebSocket连接但不重启进程
   if (unifiedLogStreams.has(streamKey)) {
@@ -265,8 +287,11 @@ function startUnifiedLogStream(jobName, podName, options = {}) {
   const logFilePath = ensureLogDirectory(jobName, podName);
   const logStream = fs.createWriteStream(logFilePath, { flags: 'a' });
   
-  // 启动kubectl logs命令
-  const logProcess = spawn('kubectl', ['logs', '-f', podName], {
+  // 启动kubectl logs命令（带 namespace，如果没提供则走 kubectl 当前上下文默认 ns）
+  const kubectlArgs = namespace
+    ? ['logs', '-n', namespace, '-f', podName]
+    : ['logs', '-f', podName];
+  const logProcess = spawn('kubectl', kubectlArgs, {
     stdio: ['pipe', 'pipe', 'pipe']
   });
   
@@ -384,8 +409,8 @@ function startUnifiedLogStream(jobName, podName, options = {}) {
 }
 
 // 从统一日志流中移除WebSocket连接
-function removeWebSocketFromLogStream(ws, jobName, podName) {
-  const streamKey = `${jobName}-${podName}`;
+function removeWebSocketFromLogStream(ws, jobName, podName, namespace) {
+  const streamKey = namespace ? `${jobName}-${namespace}-${podName}` : `${jobName}-${podName}`;
   const stream = unifiedLogStreams.get(streamKey);
   
   if (stream) {
@@ -407,8 +432,8 @@ async function startAutoLogCollectionForJob(jobName) {
   try {
     console.log(`🔍 Starting auto log collection for training job: ${jobName}`);
     
-    // 获取该训练任务的所有pods
-    const output = await executeKubectl('get pods -o json');
+    // 获取该训练任务的所有pods（-A 以支持跨 namespace 训练作业）
+    const output = await executeKubectl('get pods -A -o json');
     const result = JSON.parse(output);
     
     const jobPods = result.items.filter(pod => {
@@ -435,13 +460,13 @@ async function startAutoLogCollectionForJob(jobName) {
 }
 
 // 修改原有的startLogStream函数，使用统一管理
-function startLogStream(ws, jobName, podName) {
-  startUnifiedLogStream(jobName, podName, { ws: ws });
+function startLogStream(ws, jobName, podName, namespace) {
+  startUnifiedLogStream(jobName, podName, { ws: ws, namespace });
 }
 
 // 修改原有的stopLogStream函数
-function stopLogStream(ws, jobName, podName) {
-  removeWebSocketFromLogStream(ws, jobName, podName);
+function stopLogStream(ws, jobName, podName, namespace) {
+  removeWebSocketFromLogStream(ws, jobName, podName, namespace);
   
   if (ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({
@@ -614,14 +639,23 @@ app.post('/api/proxy-request-portforward', async (req, res) => {
 // /api/test-model 已迁移至 deploymentManager.js
 
 // WebSocket连接处理 - 优化版本，减少日志污染
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  if (isAuthActive()) {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const token = url.searchParams.get('token');
+    const { hash } = getAuthConfig();
+    if (token !== hash) {
+      ws.close(4401, 'Unauthorized');
+      return;
+    }
+  }
   console.log('WebSocket client connected');
   
   // 发送状态更新的函数
   const sendStatusUpdate = async () => {
     try {
       const [pods, services] = await Promise.all([
-        executeKubectl('get pods -o json').then(output => JSON.parse(output).items),
+        executeKubectl('get pods -A -o json').then(output => JSON.parse(output).items),
         executeKubectl('get services -o json').then(output => JSON.parse(output).items)
       ]);
       
@@ -663,13 +697,13 @@ wss.on('connection', (ws) => {
           break;
           
         case 'start_log_stream':
-          console.log(`🔄 Starting log stream for ${data.jobName}/${data.podName}`);
-          startLogStream(ws, data.jobName, data.podName);
+          console.log(`🔄 Starting log stream for ${data.jobName}/${data.podName} in ns=${data.namespace || '(default)'}`);
+          startLogStream(ws, data.jobName, data.podName, data.namespace);
           break;
-          
+
         case 'stop_log_stream':
           console.log(`⏹️ Stopping log stream for ${data.jobName}/${data.podName}`);
-          stopLogStream(ws, data.jobName, data.podName);
+          stopLogStream(ws, data.jobName, data.podName, data.namespace);
           break;
           
         case 'stop_all_log_streams':
@@ -1130,6 +1164,96 @@ app.get('/api/s3-storage', async (req, res) => {
   res.json(result);
 });
 
+// 获取实例类型配置选项（从 config/instance-type-options.json 读取）
+app.get('/api/config/instance-type-options', (req, res) => {
+  try {
+    const configPath = path.join(__dirname, '../config/instance-type-options.json');
+    const types = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    res.json({ success: true, instanceTypes: types });
+  } catch (error) {
+    console.error('Error reading instance-type-options.json:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/config/instance-info', async (req, res) => {
+  const { instanceType } = req.query;
+  if (!instanceType) {
+    return res.json({ success: false, error: 'instanceType query param required' });
+  }
+  try {
+    const { getInstanceTypeInfo } = require('./utils/awsHelpers');
+    const info = await getInstanceTypeInfo(instanceType);
+    res.json({ success: true, ...info });
+  } catch (error) {
+    res.json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/config/instance-efa', async (req, res) => {
+  const { instanceType } = req.query;
+  if (!instanceType) {
+    return res.json({ success: false, error: 'instanceType query param required' });
+  }
+  try {
+    const { getInstanceEfaCount } = require('./utils/awsHelpers');
+    const count = await getInstanceEfaCount(instanceType);
+    res.json({ success: true, efaCount: count });
+  } catch (error) {
+    res.json({ success: true, efaCount: 0 });
+  }
+});
+
+// 获取 UI 组件配置（控制各模块 tab/组件 显示/隐藏）
+app.get('/api/config/app-status', (req, res) => {
+  try {
+    const configPath = path.join(__dirname, '../config/ui-component-config.json');
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    res.json({ success: true, config });
+  } catch (error) {
+    console.error('Error reading ui-component-config.json:', error.message);
+    // 返回默认配置（全部开启）
+    res.json({ success: true, config: { 'app-status': {}, 'training-recipes': {}, 'cluster-management': {} } });
+  }
+});
+
+// 获取 Kubernetes Jobs（kubectl get jobs）
+app.get('/api/k8s-jobs', async (req, res) => {
+  try {
+    const output = await executeKubectl('get jobs -o json');
+    const data = JSON.parse(output);
+    const jobs = (data.items || []).map(job => ({
+      name: job.metadata?.name,
+      namespace: job.metadata?.namespace || 'default',
+      completions: job.spec?.completions || 1,
+      succeeded: job.status?.succeeded || 0,
+      failed: job.status?.failed || 0,
+      active: job.status?.active || 0,
+      startTime: job.status?.startTime,
+      completionTime: job.status?.completionTime,
+      creationTimestamp: job.metadata?.creationTimestamp,
+      conditions: job.status?.conditions || []
+    }));
+    res.json({ success: true, jobs });
+  } catch (error) {
+    console.error('Error fetching k8s jobs:', error);
+    res.json({ success: true, jobs: [] });
+  }
+});
+
+// 删除 Kubernetes Job
+app.delete('/api/k8s-jobs/:jobName', async (req, res) => {
+  try {
+    const { jobName } = req.params;
+    await executeKubectl(`delete job ${jobName}`);
+    res.json({ success: true, message: `Job ${jobName} deleted` });
+  } catch (error) {
+    console.error('Error deleting k8s job:', error);
+    res.status(500).json({ success: false, error: error.message || String(error) });
+  }
+});
+
+
 // 获取集群可用实例类型 API
 app.get('/api/cluster/cluster-available-instance', async (req, res) => {
   try {
@@ -1253,22 +1377,6 @@ app.get('/api/cluster/cluster-available-instance', async (req, res) => {
           } catch (ncError) {
             console.warn(`Failed to get HyperpodNodeClass for NodePool ${nodePoolName}:`, ncError.message);
           }
-        } else {
-          // EC2 Karpenter - 从 requirements 获取实例类型
-          const requirements = nodePool.spec.template.spec.requirements || [];
-          const instanceTypeReq = requirements.find(req =>
-            req.key === 'node.kubernetes.io/instance-type'
-          );
-
-          if (instanceTypeReq && instanceTypeReq.values) {
-            instanceTypeReq.values.forEach(instanceType => {
-              result.data.karpenter.push({
-                type: instanceType,
-                nodePool: nodePoolName,
-                available: true
-              });
-            });
-          }
         }
       });
 
@@ -1364,6 +1472,25 @@ app.use('/api/logs', logStreamManager.router);
 
 console.log('Log Stream Manager loaded');
 
+// `kubectl describe pod` —— Pending/Failed pod 用来看 events，比 logs 有用。
+// name/namespace 仅允许 [a-zA-Z0-9.\-_]，拒绝任何 shell 元字符。
+const SAFE_K8S_NAME = /^[a-zA-Z0-9][a-zA-Z0-9.\-_]*$/;
+app.get('/api/pods/:namespace/:name/describe', async (req, res) => {
+  const { namespace, name } = req.params;
+  if (!SAFE_K8S_NAME.test(namespace) || !SAFE_K8S_NAME.test(name)) {
+    return res.status(400).json({ success: false, error: 'Invalid namespace or pod name' });
+  }
+  try {
+    const output = await executeKubectl(`describe pod ${name} -n ${namespace}`, 20000);
+    res.json({ success: true, output });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err?.message || (typeof err === 'string' ? err : 'kubectl describe failed'),
+    });
+  }
+});
+
 // 初始化 MLflow API 管理模块
 mlflowApiManager.initialize({ broadcast });
 
@@ -1387,6 +1514,7 @@ eksCreationManager.initialize({
 app.use('/api/cluster', eksCreationManager.router);
 
 console.log('EKS Creation Manager loaded');
+
 
 // 初始化 Training Job 管理模块
 trainingJobManager.initialize({
@@ -1729,624 +1857,9 @@ console.log('AWS Instance Types API loaded');
 // Karpenter Management APIs
 // ==========================================
 
-const KarpenterManager = require('./utils/karpenterManager');
 const HyperPodKarpenterManager = require('./utils/hyperpodKarpenterManager');
 const HyperPodKarpenterInstaller = require('./utils/hyperpodKarpenterInstaller');
 
-// 安装 Karpenter
-app.post('/api/cluster/karpenter/install', async (req, res) => {
-  try {
-    const { clusterTag } = req.body;
-    const ClusterManager = require('./clusterManager');
-    const clusterManager = new ClusterManager();
-
-    // 如果没有提供clusterTag，使用活跃集群
-    const targetCluster = clusterTag || clusterManager.getActiveCluster();
-
-    if (!targetCluster) {
-      return res.status(400).json({
-        success: false,
-        error: 'No cluster specified and no active cluster found'
-      });
-    }
-
-    console.log(`Installing Karpenter for cluster: ${targetCluster}`);
-
-    // 异步安装Karpenter，避免请求超时
-    setTimeout(async () => {
-      try {
-        await KarpenterManager.installKarpenterDependencies(targetCluster, clusterManager);
-
-        // 广播安装完成消息
-        broadcast({
-          type: 'karpenter_installation_completed',
-          clusterTag: targetCluster,
-          message: 'Karpenter installation completed successfully',
-          timestamp: new Date().toISOString()
-        });
-      } catch (error) {
-        console.error('Karpenter installation failed:', error);
-
-        // 广播安装失败消息
-        broadcast({
-          type: 'karpenter_installation_failed',
-          clusterTag: targetCluster,
-          error: error.message,
-          timestamp: new Date().toISOString()
-        });
-      }
-    }, 1000);
-
-    // 立即返回开始安装的响应
-    res.json({
-      success: true,
-      message: 'Karpenter installation started',
-      clusterTag: targetCluster,
-      status: 'installing'
-    });
-
-  } catch (error) {
-    console.error('Error starting Karpenter installation:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// 检查 Karpenter 状态
-app.get('/api/cluster/karpenter/status', async (req, res) => {
-  try {
-    const ClusterManager = require('./clusterManager');
-    const clusterManager = new ClusterManager();
-    const activeCluster = clusterManager.getActiveCluster();
-
-    if (!activeCluster) {
-      return res.status(400).json({
-        success: false,
-        error: 'No active cluster found'
-      });
-    }
-
-    // 从metadata中获取安装状态
-    const metadataDir = clusterManager.getClusterMetadataDir(activeCluster);
-    const clusterInfoPath = path.join(metadataDir, 'cluster_info.json');
-
-    let karpenterInfo = null;
-    if (fs.existsSync(clusterInfoPath)) {
-      const clusterInfo = JSON.parse(fs.readFileSync(clusterInfoPath, 'utf8'));
-      karpenterInfo = clusterInfo.karpenter;
-    }
-
-    // 如果metadata中显示已安装，验证实际状态
-    if (karpenterInfo?.installed) {
-      try {
-        // 从 cluster_info.json 获取集群信息
-        const clusterInfo = await clusterManager.getClusterInfo(activeCluster);
-        
-        if (clusterInfo) {
-          const eksClusterName = clusterInfo.eksCluster?.name;
-          const region = clusterInfo.region;
-
-          if (eksClusterName) {
-            const runtimeStatus = await KarpenterManager.checkKarpenterStatus(eksClusterName, region);
-
-            res.json({
-              success: true,
-              installed: karpenterInfo.installed,
-              version: karpenterInfo.version,
-              installationDate: karpenterInfo.installationDate,
-              components: karpenterInfo.components,
-              runtimeStatus: runtimeStatus,
-              clusterTag: activeCluster
-            });
-            return;
-          }
-        }
-      } catch (error) {
-        console.warn('Failed to get runtime status:', error.message);
-      }
-    }
-
-    // 返回metadata状态或未安装状态
-    res.json({
-      success: true,
-      installed: karpenterInfo?.installed || false,
-      version: karpenterInfo?.version || null,
-      installationDate: karpenterInfo?.installationDate || null,
-      components: karpenterInfo?.components || null,
-      clusterTag: activeCluster
-    });
-
-  } catch (error) {
-    console.error('Error checking Karpenter status:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// 获取 Karpenter 节点
-app.get('/api/cluster/karpenter/nodes', async (req, res) => {
-  try {
-    const ClusterManager = require('./clusterManager');
-    const clusterManager = new ClusterManager();
-    const activeCluster = clusterManager.getActiveCluster();
-
-    if (!activeCluster) {
-      return res.status(400).json({
-        success: false,
-        error: 'No active cluster found'
-      });
-    }
-
-    // 从 cluster_info.json 获取集群信息
-    const clusterInfo = await clusterManager.getClusterInfo(activeCluster);
-
-    if (!clusterInfo) {
-      return res.status(400).json({
-        success: false,
-        error: 'Cluster configuration not found'
-      });
-    }
-
-    const eksClusterName = clusterInfo.eksCluster?.name;
-    const region = clusterInfo.region;
-
-    if (!eksClusterName) {
-      return res.status(400).json({
-        success: false,
-        error: 'EKS cluster name not found in configuration'
-      });
-    }
-
-    const nodes = await KarpenterManager.getKarpenterNodes(eksClusterName, region);
-
-    res.json({
-      success: true,
-      nodes: nodes,
-      total: nodes.length,
-      clusterTag: activeCluster,
-      eksClusterName: eksClusterName
-    });
-
-  } catch (error) {
-    console.error('Error getting Karpenter nodes:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// 卸载 Karpenter
-app.delete('/api/cluster/karpenter/uninstall', async (req, res) => {
-  try {
-    const { clusterTag } = req.body;
-    const ClusterManager = require('./clusterManager');
-    const clusterManager = new ClusterManager();
-
-    // 如果没有提供clusterTag，使用活跃集群
-    const targetCluster = clusterTag || clusterManager.getActiveCluster();
-
-    if (!targetCluster) {
-      return res.status(400).json({
-        success: false,
-        error: 'No cluster specified and no active cluster found'
-      });
-    }
-
-    console.log(`Uninstalling Karpenter for cluster: ${targetCluster}`);
-
-    // 异步卸载Karpenter
-    setTimeout(async () => {
-      try {
-        await KarpenterManager.uninstallKarpenter(targetCluster, clusterManager);
-
-        // 广播卸载完成消息
-        broadcast({
-          type: 'karpenter_uninstallation_completed',
-          clusterTag: targetCluster,
-          message: 'Karpenter uninstallation completed successfully',
-          timestamp: new Date().toISOString()
-        });
-      } catch (error) {
-        console.error('Karpenter uninstallation failed:', error);
-
-        // 广播卸载失败消息
-        broadcast({
-          type: 'karpenter_uninstallation_failed',
-          clusterTag: targetCluster,
-          error: error.message,
-          timestamp: new Date().toISOString()
-        });
-      }
-    }, 1000);
-
-    // 立即返回开始卸载的响应
-    res.json({
-      success: true,
-      message: 'Karpenter uninstallation started',
-      clusterTag: targetCluster,
-      status: 'uninstalling'
-    });
-
-  } catch (error) {
-    console.error('Error starting Karpenter uninstallation:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// ===== Karpenter NodeClass 管理 API =====
-
-// 创建 NodeClass
-app.post('/api/cluster/karpenter/nodeclass', async (req, res) => {
-  try {
-    const activeCluster = clusterManager.getActiveCluster();
-    if (!activeCluster) {
-      return res.status(400).json({
-        success: false,
-        error: 'No active cluster selected'
-      });
-    }
-
-    const config = req.body;
-
-    // 验证必需字段
-    if (!config.nodeClassName) {
-      return res.status(400).json({
-        success: false,
-        error: 'NodeClass name is required'
-      });
-    }
-
-    console.log(`Creating NodeClass: ${config.nodeClassName} for cluster: ${activeCluster}`);
-
-    const result = await KarpenterManager.createNodeClass(activeCluster, config, clusterManager);
-
-    // 广播创建成功消息
-    broadcast({
-      type: 'karpenter_nodeclass_created',
-      clusterTag: activeCluster,
-      nodeClassName: config.nodeClassName,
-      message: result.message,
-      timestamp: new Date().toISOString()
-    });
-
-    res.json(result);
-  } catch (error) {
-    console.error('Error creating NodeClass:', error);
-
-    // 广播创建失败消息
-    broadcast({
-      type: 'karpenter_nodeclass_create_failed',
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// 获取所有 NodeClass
-app.get('/api/cluster/karpenter/nodeclass', async (req, res) => {
-  try {
-    const nodeClasses = await KarpenterManager.getNodeClasses();
-
-    res.json({
-      success: true,
-      data: nodeClasses
-    });
-  } catch (error) {
-    console.error('Error getting NodeClasses:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      data: []
-    });
-  }
-});
-
-// 删除 NodeClass
-app.delete('/api/cluster/karpenter/nodeclass/:name', async (req, res) => {
-  try {
-    const { name } = req.params;
-    const activeCluster = clusterManager.getActiveCluster();
-
-    console.log(`Deleting NodeClass: ${name} from cluster: ${activeCluster}`);
-
-    const result = await KarpenterManager.deleteNodeClass(name);
-
-    // 广播删除成功消息
-    broadcast({
-      type: 'karpenter_nodeclass_deleted',
-      clusterTag: activeCluster,
-      nodeClassName: name,
-      message: result.message,
-      timestamp: new Date().toISOString()
-    });
-
-    res.json(result);
-  } catch (error) {
-    console.error('Error deleting NodeClass:', error);
-
-    // 广播删除失败消息
-    broadcast({
-      type: 'karpenter_nodeclass_delete_failed',
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// ===== Karpenter NodePool 管理 API =====
-
-// 创建 NodePool
-app.post('/api/cluster/karpenter/nodepool', async (req, res) => {
-  try {
-    const activeCluster = clusterManager.getActiveCluster();
-    if (!activeCluster) {
-      return res.status(400).json({
-        success: false,
-        error: 'No active cluster selected'
-      });
-    }
-
-    const config = req.body;
-
-    // 验证必需字段
-    if (!config.nodePoolName) {
-      return res.status(400).json({
-        success: false,
-        error: 'NodePool name is required'
-      });
-    }
-
-    if (!config.nodeClassRef) {
-      return res.status(400).json({
-        success: false,
-        error: 'NodeClass reference is required'
-      });
-    }
-
-    console.log(`Creating NodePool: ${config.nodePoolName} for cluster: ${activeCluster}`);
-
-    const result = await KarpenterManager.createNodePool(activeCluster, config, clusterManager);
-
-    // 广播创建成功消息
-    broadcast({
-      type: 'karpenter_nodepool_created',
-      clusterTag: activeCluster,
-      nodePoolName: config.nodePoolName,
-      message: result.message,
-      timestamp: new Date().toISOString()
-    });
-
-    res.json(result);
-  } catch (error) {
-    console.error('Error creating NodePool:', error);
-
-    // 广播创建失败消息
-    broadcast({
-      type: 'karpenter_nodepool_create_failed',
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// 获取所有 NodePool
-app.get('/api/cluster/karpenter/nodepool', async (req, res) => {
-  try {
-    const nodePools = await KarpenterManager.getNodePools();
-
-    res.json({
-      success: true,
-      data: nodePools
-    });
-  } catch (error) {
-    console.error('Error getting NodePools:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      data: []
-    });
-  }
-});
-
-// 删除 NodePool
-app.delete('/api/cluster/karpenter/nodepool/:name', async (req, res) => {
-  try {
-    const { name } = req.params;
-    const activeCluster = clusterManager.getActiveCluster();
-
-    console.log(`Deleting NodePool: ${name} from cluster: ${activeCluster}`);
-
-    const result = await KarpenterManager.deleteNodePool(name);
-
-    // 广播删除成功消息
-    broadcast({
-      type: 'karpenter_nodepool_deleted',
-      clusterTag: activeCluster,
-      nodePoolName: name,
-      message: result.message,
-      timestamp: new Date().toISOString()
-    });
-
-    res.json(result);
-  } catch (error) {
-    console.error('Error deleting NodePool:', error);
-
-    // 广播删除失败消息
-    broadcast({
-      type: 'karpenter_nodepool_delete_failed',
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// ===== Karpenter 综合资源状态 API =====
-
-// 统一创建 Karpenter 资源 (NodeClass + NodePool)
-app.post('/api/cluster/karpenter/unified-resources', async (req, res) => {
-  try {
-    const activeCluster = clusterManager.getActiveCluster();
-    if (!activeCluster) {
-      return res.status(400).json({
-        success: false,
-        error: 'No active cluster selected'
-      });
-    }
-
-    const config = req.body;
-
-    // 验证必需字段
-    if (!config.nodeClassName || !config.nodePoolName) {
-      return res.status(400).json({
-        success: false,
-        error: 'NodeClass name and NodePool name are required'
-      });
-    }
-
-    console.log(`Creating unified Karpenter resources for cluster: ${activeCluster}`);
-    console.log(`NodeClass: ${config.nodeClassName}, NodePool: ${config.nodePoolName}`);
-
-    const result = await KarpenterManager.createUnifiedKarpenterResources(activeCluster, config, clusterManager);
-
-    // 广播创建成功消息
-    broadcast({
-      type: 'karpenter_unified_resources_created',
-      clusterTag: activeCluster,
-      nodeClassName: config.nodeClassName,
-      nodePoolName: config.nodePoolName,
-      message: result.message,
-      timestamp: new Date().toISOString()
-    });
-
-    res.json(result);
-  } catch (error) {
-    console.error('Error creating unified Karpenter resources:', error);
-
-    // 广播创建失败消息
-    broadcast({
-      type: 'karpenter_unified_resources_create_failed',
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// 获取 HyperPod 计算节点所在的子网
-app.get('/api/cluster/karpenter/hyperpod-subnets', async (req, res) => {
-  try {
-    const activeCluster = clusterManager.getActiveCluster();
-    const subnets = await KarpenterManager.getHyperPodComputeSubnets(activeCluster, clusterManager);
-
-    // 获取子网的详细信息（名称和AZ）
-    const subnetDetails = [];
-    if (subnets && subnets.length > 0) {
-      for (const subnetId of subnets) {
-        try {
-          const cmd = `aws ec2 describe-subnets --subnet-ids ${subnetId} --query 'Subnets[0].[SubnetId,AvailabilityZone,Tags[?Key==\`Name\`].Value|[0]]' --output text`;
-          const result = execSync(cmd, { encoding: 'utf8', timeout: 15000 }).trim();
-          const [id, az, name] = result.split('\t');
-          subnetDetails.push({
-            subnetId: id,
-            availabilityZone: az,
-            name: name || `subnet-${az}`,
-            displayName: `${name || id} (${az})`
-          });
-        } catch (error) {
-          console.warn(`Failed to get details for subnet ${subnetId}:`, error.message);
-          subnetDetails.push({
-            subnetId: subnetId,
-            availabilityZone: 'unknown',
-            name: subnetId,
-            displayName: `${subnetId} (unknown AZ)`
-          });
-        }
-      }
-    }
-
-    res.json({
-      success: true,
-      data: {
-        subnets: subnetDetails,
-        count: subnetDetails.length
-      }
-    });
-  } catch (error) {
-    console.error('Error getting HyperPod compute subnets:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      data: {
-        subnets: [],
-        count: 0
-      }
-    });
-  }
-});
-
-// 获取所有 Karpenter 资源
-app.get('/api/cluster/karpenter/resources', async (req, res) => {
-  try {
-    const activeCluster = clusterManager.getActiveCluster();
-    const resources = await KarpenterManager.getKarpenterResources(activeCluster);
-
-    res.json({
-      success: true,
-      data: resources
-    });
-  } catch (error) {
-    console.error('Error getting Karpenter resources:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      data: {
-        nodeClasses: [],
-        nodePools: [],
-        nodes: [],
-        summary: {
-          nodeClassCount: 0,
-          nodePoolCount: 0,
-          nodeCount: 0
-        }
-      }
-    });
-  }
-});
-
-console.log('Karpenter NodeClass/NodePool Management APIs loaded');
-console.log('Karpenter Management APIs loaded');
 
 // ==========================================
 // HyperPod Karpenter Management APIs
@@ -2356,7 +1869,7 @@ console.log('Karpenter Management APIs loaded');
 app.get('/api/cluster/hyperpod-karpenter/resources', async (req, res) => {
   try {
     const resources = await HyperPodKarpenterManager.getHyperPodKarpenterResources();
-    
+
     res.json({
       success: true,
       data: resources
@@ -2379,7 +1892,7 @@ app.delete('/api/cluster/hyperpod-karpenter/nodepool/:name', async (req, res) =>
   try {
     const { name } = req.params;
     const result = await HyperPodKarpenterManager.deleteNodePool(name);
-    
+
     res.json(result);
   } catch (error) {
     console.error('Error deleting HyperPod Karpenter NodePool:', error);
@@ -2395,7 +1908,7 @@ app.delete('/api/cluster/hyperpod-karpenter/nodeclass/:name', async (req, res) =
   try {
     const { name } = req.params;
     const result = await HyperPodKarpenterManager.deleteNodeClass(name);
-    
+
     res.json(result);
   } catch (error) {
     console.error('Error deleting HyperpodNodeClass:', error);
@@ -2405,16 +1918,15 @@ app.delete('/api/cluster/hyperpod-karpenter/nodeclass/:name', async (req, res) =
     });
   }
 });
-
 // 安装 HyperPod Karpenter
 app.post('/api/cluster/hyperpod-karpenter/install', async (req, res) => {
   try {
     const { clusterTag, hyperPodClusterName } = req.body;
-    
+
     console.log(`Installing HyperPod Karpenter for cluster: ${clusterTag}, HyperPod: ${hyperPodClusterName}`);
-    
+
     const result = await HyperPodKarpenterInstaller.installHyperPodKarpenter(clusterTag, hyperPodClusterName);
-    
+
     res.json(result);
   } catch (error) {
     console.error('Error installing HyperPod Karpenter:', error);
@@ -2430,7 +1942,7 @@ app.get('/api/cluster/hyperpod-karpenter/status', async (req, res) => {
   try {
     const activeCluster = clusterManager.getActiveCluster();
     const status = await HyperPodKarpenterInstaller.getInstallationStatus(activeCluster);
-    
+
     res.json({
       success: true,
       data: status
@@ -2449,16 +1961,16 @@ app.get('/api/cluster/hyperpod-karpenter/status', async (req, res) => {
 app.post('/api/cluster/hyperpod-karpenter/create-resource', async (req, res) => {
   try {
     const { instanceGroups } = req.body;
-    
+
     if (!instanceGroups || instanceGroups.length === 0) {
       return res.status(400).json({
         success: false,
         error: 'Instance groups are required'
       });
     }
-    
+
     const result = await HyperPodKarpenterManager.createHyperPodKarpenterResource(instanceGroups);
-    
+
     res.json(result);
   } catch (error) {
     console.error('Error creating HyperPod Karpenter resource:', error);
@@ -2466,6 +1978,26 @@ app.post('/api/cluster/hyperpod-karpenter/create-resource', async (req, res) => 
       success: false,
       error: error.message
     });
+  }
+});
+
+// 获取指定 instance group 的 NodeClaim 列表
+app.get('/api/cluster/hyperpod-karpenter/nodeclaims/:instanceGroupName', async (req, res) => {
+  try {
+    const nodeClaims = await HyperPodKarpenterManager.getNodeClaimsByInstanceGroup(req.params.instanceGroupName);
+    res.json({ success: true, data: nodeClaims });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 删除 NodeClaim
+app.delete('/api/cluster/hyperpod-karpenter/nodeclaim/:name', async (req, res) => {
+  try {
+    const result = await HyperPodKarpenterManager.deleteNodeClaim(req.params.name);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -2610,9 +2142,9 @@ app.get('/api/cluster/amp-workspace', async (req, res) => {
     res.json(result);
   } catch (error) {
     console.error('Error fetching AMP workspace:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: error.message 
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
 });
@@ -2815,7 +2347,7 @@ app.get('/api/inference-operator/deployments', async (req, res) => {
       `kubectl get deployments -A -l deploying-service=hyperpod-inference -o json`
     );
     const result = JSON.parse(stdout);
-    
+
     const deployments = result.items.map(item => ({
       name: item.metadata.name,
       namespace: item.metadata.namespace,
@@ -2823,7 +2355,7 @@ app.get('/api/inference-operator/deployments', async (req, res) => {
       availableReplicas: item.status.availableReplicas || 0,
       creationTimestamp: item.metadata.creationTimestamp
     }));
-    
+
     res.json({ success: true, deployments });
   } catch (error) {
     console.error('Error fetching inference operator deployments:', error);
@@ -2840,8 +2372,8 @@ app.get('/api/inference-operator/deployment/:name/metrics', async (req, res) => 
     res.json(result);
   } catch (error) {
     console.error('Error fetching deployment metrics:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       error: error.message,
       businessMetrics: [],
       vllmMetrics: []
@@ -3138,17 +2670,27 @@ app.delete('/api/routers', async (req, res) => {
 
 console.log('Advanced Scaling (SGLang Router) API loaded');
 
-app.listen(PORT, () => {
+// SPA fallback: serve index.html for non-API routes (must be LAST route)
+const indexHtmlPath = path.join(__dirname, '../client/build/index.html');
+if (fs.existsSync(indexHtmlPath)) {
+  app.get('*', (req, res) => {
+    if (req.path.startsWith('/api/')) {
+      return res.status(404).json({ error: 'API endpoint not found' });
+    }
+    res.sendFile(indexHtmlPath);
+  });
+}
+
+server.listen(PORT, () => {
   console.log('🚀 ========================================');
   console.log('🚀 HyperPod InstantStart Server Started');
   console.log('🚀 ========================================');
-  console.log(`📡 HTTP Server: http://localhost:${PORT}`);
-  console.log(`🔌 WebSocket Server: ws://localhost:${WS_PORT}`);
+  console.log(`🌐 HTTP + WebSocket: http://localhost:${PORT}  (ws at /ws)`);
   console.log(`🌐 Multi-cluster management: enabled`);
   console.log(`⏰ Server started at: ${new Date().toISOString()}`);
   console.log(`🖥️  Node.js version: ${process.version}`);
   console.log(`💾 Memory usage: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`);
-  console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'} (${IS_PRODUCTION ? 'prod' : 'dev'} mode)`);
   console.log('🚀 ========================================');
   console.log('✅ Server is ready to accept connections');
 });

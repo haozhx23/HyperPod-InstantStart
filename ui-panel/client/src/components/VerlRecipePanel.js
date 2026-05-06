@@ -1,6 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState } from 'react';
+import { useSelector } from 'react-redux';
+import { selectDeploymentStatus } from '../store/selectors';
+import useInstanceInfo from '../hooks/useInstanceInfo';
+import { useRecipeConfig } from '../utils/useRecipeConfig';
+import RecipeConfigActions from './RecipeConfigActions';
 import {
-  Card,
   Form,
   Input,
   InputNumber,
@@ -10,15 +14,11 @@ import {
   Col,
   Alert,
   Typography,
-  message,
-  Tooltip,
   Select
 } from 'antd';
 import {
   RocketOutlined,
   PlayCircleOutlined,
-  SaveOutlined,
-  ReloadOutlined,
   SettingOutlined,
   ThunderboltOutlined,
   CodeOutlined,
@@ -28,75 +28,21 @@ import {
 
 const { Text } = Typography;
 
-const VerlRecipePanel = ({ onLaunch, deploymentStatus, hyperPodInstanceTypes, instanceTypesLoading, refreshInstanceTypes }) => {
+const VerlRecipePanel = ({ onLaunch, hyperPodInstanceTypes, instanceTypesLoading, refreshInstanceTypes }) => {
+  const deploymentStatus = useSelector(selectDeploymentStatus);
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const hasLoadedConfig = useRef(false);
+  const { fetchInstanceInfo, infoLoading } = useInstanceInfo(form, { gpu: 'gpuPerNode', efa: 'efaPerNode' });
 
-  useEffect(() => {
-    if (!hasLoadedConfig.current) {
-      hasLoadedConfig.current = true;
-      loadSavedConfig();
-    }
-  }, []);
-
-  const loadSavedConfig = async () => {
-    try {
-      const response = await fetch('/api/verl-config/load');
-      const result = await response.json();
-      
-      if (result.success) {
-        form.setFieldsValue(result.config);
-        if (!result.isDefault) {
-          message.success('Previous configuration loaded');
-        }
-      }
-    } catch (error) {
-      console.error('Error loading config:', error);
-      message.error('Failed to load saved configuration');
-    }
-  };
-
-  const saveConfig = async () => {
-    try {
-      setSaving(true);
-      const values = await form.validateFields();
-      
-      const response = await fetch('/api/verl-config/save', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(values),
-      });
-      
-      const result = await response.json();
-      
-      if (result.success) {
-        message.success('Configuration saved successfully');
-      } else {
-        message.error(`Failed to save configuration: ${result.error}`);
-      }
-    } catch (error) {
-      console.error('Error saving config:', error);
-      message.error('Failed to save configuration');
-    } finally {
-      setSaving(false);
-    }
-  };
+  const { saving, loadConfig, saveConfig } = useRecipeConfig({
+    endpoint: '/api/verl-config',
+    form,
+  });
 
   const handleSubmit = async (values) => {
     setLoading(true);
     try {
-      await fetch('/api/verl-config/save', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(values),
-      });
-      
+      await saveConfig({ silent: true, values }).catch(() => {});
       await onLaunch({ ...values, recipeType: 'verl' });
     } finally {
       setLoading(false);
@@ -124,25 +70,15 @@ const VerlRecipePanel = ({ onLaunch, deploymentStatus, hyperPodInstanceTypes, in
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-        <Space>
-          <Tooltip title="Save Configuration">
-            <Button
-              icon={<SaveOutlined />}
-              onClick={saveConfig}
-              loading={saving}
-              size="small"
-            />
-          </Tooltip>
-          <Tooltip title="Reload Configuration and Refresh Instance Types">
-            <Button
-              icon={<ReloadOutlined />}
-              onClick={() => { loadSavedConfig(); if (refreshInstanceTypes) refreshInstanceTypes(); }}
-              size="small"
-            />
-          </Tooltip>
-        </Space>
-      </div>
+      <RecipeConfigActions
+        saving={saving}
+        onSave={() => saveConfig()}
+        onReload={async () => {
+          await loadConfig().catch(() => {});
+          await refreshInstanceTypes?.();
+        }}
+        reloadTooltip="Reload Configuration and Refresh Instance Types"
+      />
       {getStatusAlert()}
 
       <Form
@@ -201,6 +137,7 @@ const VerlRecipePanel = ({ onLaunch, deploymentStatus, hyperPodInstanceTypes, in
                   // 如果选择的是从集群获取的选项，提取实例类型；否则使用原值
                   const instanceType = option.instanceType || value.split('-')[0];
                   form.setFieldValue('instanceType', instanceType);
+                  fetchInstanceInfo(instanceType);
                 }}
                 style={{ width: '100%' }}
               />
@@ -303,6 +240,7 @@ const VerlRecipePanel = ({ onLaunch, deploymentStatus, hyperPodInstanceTypes, in
             htmlType="submit"
             icon={<PlayCircleOutlined />}
             loading={loading}
+            disabled={infoLoading}
             size="large"
             block
           >

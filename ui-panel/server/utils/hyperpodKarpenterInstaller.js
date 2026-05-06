@@ -2,6 +2,7 @@ const { execSync } = require('child_process');
 const fs = require('fs-extra');
 const path = require('path');
 const { getCurrentAccountId, getCurrentRegion } = require('./awsHelpers');
+const MetadataUtils = require('./metadataUtils');
 
 /**
  * HyperPod Karpenter 安装管理器
@@ -70,9 +71,10 @@ class HyperPodKarpenterInstaller {
         }
       }
       
-      // 2. 添加 Inline Policy
-      await fs.appendFile(logFile, `Step 2: Adding inline policy\n`);
+      // 2. 创建 Managed Policy 并 Attach
+      await fs.appendFile(logFile, `Step 2: Creating and attaching managed policy\n`);
       
+      const policyName = `SageMakerHyperPodKarpenterPolicy-${clusterTag}`;
       const policyDocument = {
         Version: "2012-10-17",
         Statement: [
@@ -119,27 +121,36 @@ class HyperPodKarpenterInstaller {
         ]
       };
       
-      const putPolicyCmd = `aws iam put-role-policy --role-name "${roleName}" --policy-name "${roleName}-Karpenter-Policy" --policy-document '${JSON.stringify(policyDocument)}' --region ${region}`;
+      let policyArn = `arn:aws:iam::${accountId}:policy/${policyName}`;
+      try {
+        const createPolicyCmd = `aws iam create-policy --policy-name "${policyName}" --policy-document '${JSON.stringify(policyDocument)}'`;
+        const policyOutput = execSync(createPolicyCmd, { encoding: 'utf8' });
+        policyArn = JSON.parse(policyOutput).Policy.Arn;
+        await fs.appendFile(logFile, `Policy created: ${policyArn}\n`);
+      } catch (error) {
+        if (error.message.includes('EntityAlreadyExists')) {
+          await fs.appendFile(logFile, `Policy already exists, continuing...\n`);
+        } else {
+          throw error;
+        }
+      }
       
-      const policyOutput = execSync(putPolicyCmd, { encoding: 'utf8' });
-      await fs.appendFile(logFile, `Policy added successfully\n${policyOutput}\n\n`);
-      
-      // 3. 添加 Tag
-      await fs.appendFile(logFile, `Step 3: Adding tag to role\n`);
-      
-      const tagCmd = `aws iam tag-role --role-name "${roleName}" --tags Key=aws-sagemaker-hyperpod-prerequisite,Value="${roleName}" --region ${region}`;
-      
-      const tagOutput = execSync(tagCmd, { encoding: 'utf8' });
-      await fs.appendFile(logFile, `Tag added successfully\n${tagOutput}\n\n`);
+      try {
+        const attachPolicyCmd = `aws iam attach-role-policy --role-name "${roleName}" --policy-arn "${policyArn}"`;
+        execSync(attachPolicyCmd, { encoding: 'utf8' });
+        await fs.appendFile(logFile, `Policy attached to role successfully\n\n`);
+      } catch (error) {
+        await fs.appendFile(logFile, `Policy attach: ${error.message} (may already be attached)\n\n`);
+      }
       
       // 等待 IAM 资源传播（最终一致性）
       await fs.appendFile(logFile, `Waiting 20 seconds for IAM resources to propagate...\n`);
       await new Promise(resolve => setTimeout(resolve, 20000));
       await fs.appendFile(logFile, `Wait completed\n\n`);
       
-      // 4. Update Cluster
+      // 3. Update Cluster
       const roleArn = `arn:aws:iam::${accountId}:role/${roleName}`;
-      await fs.appendFile(logFile, `Step 4: Updating HyperPod cluster with Karpenter\n`);
+      await fs.appendFile(logFile, `Step 3: Updating HyperPod cluster with Karpenter\n`);
       await fs.appendFile(logFile, `Role ARN: ${roleArn}\n`);
       
       const updateClusterCmd = `aws sagemaker update-cluster --cluster-name "${hyperPodClusterName}" --auto-scaling Mode=Enable,AutoScalerType=Karpenter --cluster-role "${roleArn}" --node-recovery Automatic --region ${region}`;
@@ -161,7 +172,7 @@ class HyperPodKarpenterInstaller {
         }
       }
       
-      // 5. 更新 metadata
+      // 4. 更新 metadata
       await this.updateMetadata(clusterTag, {
         installed: true,
         roleName: roleName,

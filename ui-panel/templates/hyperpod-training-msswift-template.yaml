@@ -4,65 +4,65 @@ metadata:
   labels:
     app.kubernetes.io/name: HyperPod
     app.kubernetes.io/managed-by: kustomize
-    app: TRAINING_JOB_NAME
-  name: TRAINING_JOB_NAME
+    app: "${JOB_NAME}"
+  name: "${JOB_NAME}"
 spec:
-  nprocPerNode: "NPROC_PER_NODE"
+  nprocPerNode: "${NPROC_PER_NODE}"
   replicaSpecs:
     - name: pods
-      replicas: REPLICAS_COUNT
+      replicas: ${REPLICAS}
       template:
         metadata:
           labels:
             hami.io/webhook: ignore
         spec:
-          SERVICE_ACCOUNT_CONFIG
+          # serviceAccountName: mlflow-service-account
           nodeSelector:
-            beta.kubernetes.io/instance-type: INSTANCE_TYPE
+            beta.kubernetes.io/instance-type: "${INSTANCE_TYPE}"
           containers:
             - name: pytorch
-              image: DOCKER_IMAGE
+              image: "${DOCKER_IMAGE}"
               imagePullPolicy: Always
               ports:
                 - containerPort: 8080
               resources:
                 requests:
-                  nvidia.com/gpu: NPROC_PER_NODE
-                  vpc.amazonaws.com/efa: EFA_PER_NODE
+                  nvidia.com/gpu: ${NPROC_PER_NODE}
+                  vpc.amazonaws.com/efa: ${EFA_PER_NODE}
                 limits:
-                  nvidia.com/gpu: NPROC_PER_NODE
-                  vpc.amazonaws.com/efa: EFA_PER_NODE
+                  nvidia.com/gpu: ${NPROC_PER_NODE}
+                  vpc.amazonaws.com/efa: ${EFA_PER_NODE}
               env:
-              - name: LOGLEVEL
-                value: "INFO"
-              - name: SERVER_LOG_LEVEL
-                value: "warning"
-              - name: FI_PROVIDER
-                value: "efa"
-              # - name: FI_EFA_USE_DEVICE_RDMA
-              #   value: "1"
-              - name: NCCL_DEBUG
-                value: "DEBUG"
-              - name: NCCL_SOCKET_IFNAME
-                value: "eth0"
-              - name: MLFLOW_TRACKING_URI
-                value: SM_MLFLOW_ARN
-              - name: MLFLOW_EXPERIMENT_NAME
-                value: TRAINING_JOB_NAME
-              - name: MLFLOW_TAG_NPROCPERNODE
-                value: "NPROC_PER_NODE"
-              - name: MLFLOW_TAG_REPLICAS
-                value: "REPLICAS_COUNT"
-              - name: MLFLOW_TAG_EFAPERNODE
-                value: "EFA_PER_NODE"
-              - name: MLFLOW_TAG_INSTANCETYPE
-                value: INSTANCE_TYPE
-              - name: MSSWIFT_RECIPE_RUN_PATH
-                value: MSSWIFT_RECIPE_RUNPATH_PH
-              - name: MSSWIFT_COMMAND_TYPE
-                value: MSSWIFT_COMMAND_TYPE_PH
-              - name: MSSWIFT_RECIPE_YAML_FILE
-                value: MSSWIFT_RECIPE_YAMLFILE_PH
+                - name: LOGLEVEL
+                  value: "INFO"
+                - name: SERVER_LOG_LEVEL
+                  value: "warning"
+                - name: FI_PROVIDER
+                  value: "efa"
+                # - name: FI_EFA_USE_DEVICE_RDMA
+                #   value: "1"
+                - name: NCCL_DEBUG
+                  value: "DEBUG"
+                - name: NCCL_SOCKET_IFNAME
+                  value: "eth0"
+                - name: MLFLOW_TRACKING_URI
+                  value: ${MLFLOW_TRACKING_URI}
+                - name: MLFLOW_EXPERIMENT_NAME
+                  value: "${JOB_NAME}"
+                - name: MLFLOW_TAG_NPROCPERNODE
+                  value: "${NPROC_PER_NODE}"
+                - name: MLFLOW_TAG_REPLICAS
+                  value: "${REPLICAS}"
+                - name: MLFLOW_TAG_EFAPERNODE
+                  value: "${EFA_PER_NODE}"
+                - name: MLFLOW_TAG_INSTANCETYPE
+                  value: "${INSTANCE_TYPE}"
+                - name: MSSWIFT_RECIPE_RUN_PATH
+                  value: "${MSSWIFT_RECIPE_RUN_PATH}"
+                - name: MSSWIFT_COMMAND_TYPE
+                  value: "${MSSWIFT_COMMAND_TYPE}"
+                - name: MSSWIFT_RECIPE_YAML_FILE
+                  value: "${MSSWIFT_RECIPE_YAML_FILE}"
               # command: ["bash", "/s3/train-recipes/entries/run_msswift_recipe.sh"]
               # command: ["bash", "/s3/train-recipes/ms-swift-project/run_msswift_recipe.sh"]
               command: ["bash", "/docker_workspace/msswift_recipe_dist_run.sh"]
@@ -80,7 +80,7 @@ spec:
                   mountPath: /root/.cache
           volumes:
             - name: shmem
-              hostPath: 
+              hostPath:
                 path: /dev/shm
             - name: local
               hostPath:
@@ -100,4 +100,4 @@ spec:
       numRestartBeforeFullJobRestart: 3
       evalPeriodSeconds: 21600
       maxFullJobRestarts: 1
-    cleanPodPolicy: "All"LOG_MONITORING_CONFIG
+    cleanPodPolicy: "All"

@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Form, 
+import { useSelector } from 'react-redux';
+import { selectDeploymentStatus } from '../store/selectors';
+import {
+  Form,
   Input, 
   Button, 
   Space, 
@@ -23,7 +25,8 @@ import {
 
 const { Option } = Select;
 
-const ServiceConfigPanel = ({ onDeploy, deploymentStatus }) => {
+const ServiceConfigPanel = ({ onDeploy }) => {
+  const deploymentStatus = useSelector(selectDeploymentStatus);
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [modelPools, setModelPools] = useState([]);

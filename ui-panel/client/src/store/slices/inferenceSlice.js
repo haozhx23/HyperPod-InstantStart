@@ -23,9 +23,10 @@ export const deployModel = createAsyncThunk(
   async (deploymentConfig, { rejectWithValue }) => {
     try {
       // 根据 deploymentType 选择 API 端点
-      const apiEndpoint = deploymentConfig.deploymentType === 'managed-inference'
-        ? '/api/deploy/managed-inference'
-        : '/api/deploy/container';
+      let apiEndpoint = '/api/deploy/container';
+      if (deploymentConfig.deploymentType === 'managed-inference') {
+        apiEndpoint = '/api/deploy/managed-inference';
+      }
 
       const response = await fetch(apiEndpoint, {
         method: 'POST',

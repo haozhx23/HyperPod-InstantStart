@@ -1,6 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState } from 'react';
+import { useSelector } from 'react-redux';
+import { selectDeploymentStatus } from '../store/selectors';
+import { useRecipeConfig } from '../utils/useRecipeConfig';
+import RecipeConfigActions from './RecipeConfigActions';
 import {
-  Card,
   Form,
   Input,
   InputNumber,
@@ -10,15 +13,11 @@ import {
   Col,
   Alert,
   Typography,
-  message,
-  Tooltip,
   Switch
 } from 'antd';
 import {
   CloudOutlined,
   PlayCircleOutlined,
-  SaveOutlined,
-  ReloadOutlined,
   ThunderboltOutlined,
   CodeOutlined,
   DatabaseOutlined,
@@ -28,63 +27,15 @@ import {
 const { TextArea } = Input;
 const { Text } = Typography;
 
-const SageMakerJobPanel = ({ onLaunch, deploymentStatus }) => {
+const SageMakerJobPanel = ({ onLaunch }) => {
+  const deploymentStatus = useSelector(selectDeploymentStatus);
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const hasLoadedConfig = useRef(false);
 
-  useEffect(() => {
-    if (!hasLoadedConfig.current) {
-      hasLoadedConfig.current = true;
-      loadSavedConfig();
-    }
-  }, []);
-
-  const loadSavedConfig = async () => {
-    try {
-      const response = await fetch('/api/sagemaker-config/load');
-      const result = await response.json();
-      
-      if (result.success) {
-        form.setFieldsValue(result.config);
-        if (!result.isDefault) {
-          message.success('Previous configuration loaded');
-        }
-      }
-    } catch (error) {
-      console.error('Error loading config:', error);
-      message.error('Failed to load saved configuration');
-    }
-  };
-
-  const saveConfig = async () => {
-    try {
-      setSaving(true);
-      const values = await form.validateFields();
-      
-      const response = await fetch('/api/sagemaker-config/save', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(values),
-      });
-      
-      const result = await response.json();
-      
-      if (result.success) {
-        message.success('Configuration saved successfully');
-      } else {
-        message.error(`Failed to save configuration: ${result.error}`);
-      }
-    } catch (error) {
-      console.error('Error saving config:', error);
-      message.error('Failed to save configuration');
-    } finally {
-      setSaving(false);
-    }
-  };
+  const { saving, loadConfig, saveConfig } = useRecipeConfig({
+    endpoint: '/api/sagemaker-config',
+    form,
+  });
 
   const handleSubmit = async (values) => {
     setLoading(true);
@@ -96,14 +47,8 @@ const SageMakerJobPanel = ({ onLaunch, deploymentStatus }) => {
         trainingJobName: `${values.trainingJobName}-${uuid}`
       };
 
-      await fetch('/api/sagemaker-config/save', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(updatedValues),
-      });
-      
+      await saveConfig({ silent: true, values: updatedValues }).catch(() => {});
+
       const response = await fetch('/api/launch-sagemaker-job', {
         method: 'POST',
         headers: {
@@ -111,9 +56,9 @@ const SageMakerJobPanel = ({ onLaunch, deploymentStatus }) => {
         },
         body: JSON.stringify(updatedValues),
       });
-      
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const result = await response.json();
-      
+
       if (result.success) {
         console.log('SageMaker job launched successfully:', result.message);
       } else {
@@ -148,25 +93,12 @@ const SageMakerJobPanel = ({ onLaunch, deploymentStatus }) => {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-        <Space>
-          <Tooltip title="Save Configuration">
-            <Button
-              icon={<SaveOutlined />}
-              onClick={saveConfig}
-              loading={saving}
-              size="small"
-            />
-          </Tooltip>
-          <Tooltip title="Reload Configuration">
-            <Button
-              icon={<ReloadOutlined />}
-              onClick={loadSavedConfig}
-              size="small"
-            />
-          </Tooltip>
-        </Space>
-      </div>
+      <RecipeConfigActions
+        saving={saving}
+        onSave={() => saveConfig()}
+        onReload={() => loadConfig().catch(() => {})}
+        reloadTooltip="Reload Configuration"
+      />
       {getStatusAlert()}
 
       <Form

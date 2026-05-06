@@ -6,6 +6,7 @@ const { promisify } = require('util');
 
 const execAsync = promisify(exec);
 const { getCurrentRegion } = require('./utils/awsHelpers');
+const { renderTemplate, patches: P } = require('./utils/renderTemplate');
 
 class S3StorageManager {
   constructor() {
@@ -388,6 +389,21 @@ class S3StorageManager {
         // PV不存在，继续创建
       }
 
+      // 构建 mountOptions（性能参数）
+      const mountOptions = [
+        'allow-delete',
+        `region ${region}`,
+        '--read-part-size 25165824',
+        '--maximum-throughput-gbps 100',
+        '--metadata-ttl 3600'
+      ];
+
+      // 构建 volumeAttributes
+      const volumeAttributes = {
+        bucketName: bucketName,
+        'mount-timeout-seconds': '300'
+      };
+
       // 创建PV YAML
       const pvYaml = {
         apiVersion: 'v1',
@@ -400,17 +416,11 @@ class S3StorageManager {
             storage: '1200Gi'
           },
           accessModes: ['ReadWriteMany'],
-          mountOptions: [
-            'allow-delete',
-            `region ${region}`
-          ],
+          mountOptions,
           csi: {
             driver: 's3.csi.aws.com',
             volumeHandle: `s3-csi-driver-volume-${pvcName}`,
-            volumeAttributes: {
-              bucketName: bucketName,
-              'mount-timeout-seconds': '300'
-            }
+            volumeAttributes
           }
         }
       };
@@ -530,7 +540,6 @@ class S3StorageManager {
   async generateEnhancedDownloadJob(config) {
     try {
       const { modelId, resources, s3Storage, hfToken, instanceType, repoType, storageType = 's3' } = config;
-      const YAML = require('yaml');
 
       // 生成短的模型标签，限制长度
       let modelTag = modelId.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
@@ -544,64 +553,52 @@ class S3StorageManager {
       const jobName = `${jobPrefix}-${modelTag}-${timestamp}`;
       const finalJobName = jobName.length > 63 ? jobName.substring(0, 63) : jobName;
 
-      // 读取模板（先做字符串替换占位符，再解析）
-      const templatePath = path.join(__dirname, '../templates/hf-download-configurable-template.yaml');
-      let templateContent = fs.readFileSync(templatePath, 'utf8');
+      // 组装可选 block 的 patches
+      const containerPath = ['spec', 'template', 'spec', 'containers', 0];
+      const extraPatches = [];
 
-      // 第一步：字符串替换占位符（这些在 YAML 结构中）
-      const repoTypeArg = repoType === 'dataset' ? '--repo-type dataset ' : '';
-      const mountPath = storageType === 'fsx' ? '/fsx' : '/s3';
-      
-      templateContent = templateContent
-        .replace(/MODEL_TAG/g, finalJobName)
-        .replace(/REPO_TYPE_ARG/g, repoTypeArg)
-        .replace(/HF_MODEL_ID/g, modelId)
-        .replace(/S3_PVC_NAME/g, s3Storage)
-        .replace(/\/s3\//g, `${mountPath}/`);
-
-      // 第二步：解析 YAML 对象，做类型安全的修改
-      const job = YAML.parse(templateContent);
-      const container = job.spec.template.spec.containers[0];
-
-      // 处理资源限制（对象操作，类型安全）
-      if (resources.cpu === -1 && resources.memory === -1) {
-        delete container.resources;
-      } else {
-        container.resources = {
+      // 资源请求 / 限制（-1 表示不设置 → 模板里本就没有，跳过）
+      if (resources.cpu !== -1 || resources.memory !== -1) {
+        extraPatches.push(P.set([...containerPath, 'resources'], {
           requests: {
             cpu: resources.cpu.toString(),
-            memory: `${resources.memory}Gi`
+            memory: `${resources.memory}Gi`,
           },
           limits: {
             cpu: resources.cpu.toString(),
-            memory: `${resources.memory}Gi`
-          }
-        };
+            memory: `${resources.memory}Gi`,
+          },
+        }));
       }
 
-      // 处理 HF Token（数组操作，避免字符串拼接）
+      // HF Token 注入到 env 列表最前面
       if (hfToken) {
-        container.env.unshift({ name: 'HF_TOKEN', value: hfToken });
+        extraPatches.push(P.prepend([...containerPath, 'env'], { name: 'HF_TOKEN', value: hfToken }));
       }
 
-      // 处理 nodeSelector（对象操作）
+      // nodeSelector
       if (instanceType) {
-        job.spec.template.spec.nodeSelector = {
-          'node.kubernetes.io/instance-type': instanceType
-        };
+        extraPatches.push(P.set(['spec', 'template', 'spec', 'nodeSelector'], {
+          'node.kubernetes.io/instance-type': instanceType,
+        }));
       }
 
-      // 处理 FSx 存储时的 mountPath 替换
-      if (storageType === 'fsx') {
-        const volumeMounts = container.volumeMounts;
-        const s3Mount = volumeMounts.find(vm => vm.mountPath === '/s3');
-        if (s3Mount) {
-          s3Mount.mountPath = '/fsx';
-        }
-      }
+      // 渲染模板
+      const templateFile = storageType === 'fsx'
+        ? 'hf-download-fsx-template.yaml'
+        : 'hf-download-s3-template.yaml';
+      const templatePath = path.join(__dirname, '../templates', templateFile);
 
-      // 使用 blockQuote: 'literal' 保持 shell 脚本的块格式，避免换行问题
-      const yamlContent = YAML.stringify(job, { blockQuote: 'literal', lineWidth: 0 });
+      const yamlContent = renderTemplate(templatePath, {
+        values: {
+          JOB_NAME: finalJobName,
+          MODEL_ID: modelId,
+          REPO_TYPE_ARG: repoType === 'dataset' ? '--repo-type dataset ' : '',
+          PVC_NAME: s3Storage,
+        },
+        patches: extraPatches,
+      });
+
       return { success: true, yamlContent, jobName: finalJobName };
     } catch (error) {
       console.error('Error generating enhanced download job:', error);
@@ -636,7 +633,7 @@ class S3StorageManager {
    * @returns {Promise<Object>} { success, jobName, deploymentFile, error }
    */
   async applyEnhancedDownloadJob(config) {
-    const { modelId, hfToken, resources, s3Storage, instanceType, repoType } = config;
+    const { modelId, hfToken, resources, s3Storage, instanceType, repoType, storageType: clientStorageType } = config;
 
     try {
       const resourceLabel = repoType === 'dataset' ? 'dataset' : 'model';
@@ -646,8 +643,8 @@ class S3StorageManager {
       console.log(`📦 Repo Type: ${repoType || 'model'}`);
       if (instanceType) console.log(`🖥️ Instance Type: ${instanceType}`);
 
-      // 判断存储类型（S3 或 FSx）
-      const storageType = s3Storage.startsWith('fsx-') ? 'fsx' : 's3';
+      // 判断存储类型（优先使用前端传入的类型）
+      const storageType = clientStorageType || (s3Storage.startsWith('fsx-') ? 'fsx' : 's3');
       console.log(`📁 Storage Type: ${storageType}`);
 
       // 生成增强的下载Job
