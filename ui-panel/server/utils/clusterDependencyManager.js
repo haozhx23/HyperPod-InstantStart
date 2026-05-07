@@ -399,37 +399,6 @@ echo "=== HyperPod Helm Chart installation completed ==="'`;
     await this.executeNonBlocking(commands);
   }
 
-  /**
-   * 配置 VPC CNI Prefix Delegation 模式（托管 addon 方式）
-   *
-   * 目的：节省 Pod IP 消耗
-   *   - 默认模式：每个 Pod 占用一个辅助 IP（p5 等大机型每节点预取 50+ IP）
-   *   - Prefix 模式：每 ENI 分配一个 /28 前缀（每节点固定 16 IP，支持 110 Pod）
-   *
-   * 时机：必须在任何 worker 节点创建前执行（configure dependencies 阶段）
-   *      新节点起来后自然走 prefix 模式，无需重启
-   */
-  static async configureVpcCniPrefixDelegation(clusterConfigDir) {
-    console.log('Configuring VPC CNI prefix delegation...');
-
-    const cmd = `cd ${clusterConfigDir} && bash -c 'source cluster_envs &&
-echo "=== Ensuring vpc-cni addon exists ===" &&
-aws eks create-addon \\
-  --cluster-name \$EKS_CLUSTER_NAME \\
-  --addon-name vpc-cni \\
-  --region \$AWS_REGION \\
-  --resolve-conflicts OVERWRITE 2>/dev/null || echo "vpc-cni addon already exists" &&
-echo "=== Enabling Prefix Delegation on vpc-cni addon ===" &&
-aws eks update-addon \\
-  --cluster-name \$EKS_CLUSTER_NAME \\
-  --addon-name vpc-cni \\
-  --region \$AWS_REGION \\
-  --configuration-values '"'"'{"env":{"ENABLE_PREFIX_DELEGATION":"true","WARM_PREFIX_TARGET":"1"}}'"'"' \\
-  --resolve-conflicts OVERWRITE &&
-echo "=== VPC CNI Prefix Delegation configured ==="'`;
-
-    await this.executeNonBlocking(cmd);
-  }
 
   /**
    * 安装 EKS Pod Identity Agent（所有集群都需要）
@@ -539,13 +508,8 @@ echo "=== VPC CNI Prefix Delegation configured ==="'`;
       
       await this.configureKubectlAndOIDC(configDir);
 
-      // 启用 VPC CNI Prefix Delegation（可通过配置关闭）
       const depConfig = dependencyConfig.load();
-      if (depConfig.eks.prefixDelegation.enabled) {
-        await this.configureVpcCniPrefixDelegation(configDir);
-      } else {
-        console.log('VPC CNI Prefix Delegation is disabled in config, skipping');
-      }
+
 
       // 安装 HyperPod Helm Chart（可通过配置关闭，适用于纯 EKS Node Group 场景）
       if (depConfig.hyperpodHelmChart.enabled) {

@@ -11,9 +11,26 @@ REMOTE_REPO="public.ecr.aws/t5u4s6i0/instantstart-web:latest"
 LOCAL_IMAGE="instantstart-web:latest"
 CONTAINER_NAME="ui-panel-prod"
 
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+RELEASE_SOURCE_FILE="$SCRIPT_DIR/.release-source"
+
+# Resolve image source mode:
+#   - .release-source present → read `mode` field ("local-build" | "ecr-public")
+#     Written by sync-release.sh to tell us where this tarball expects its image
+#     from. "local-build" means this release was NOT pushed to public ECR, so we
+#     must build from the bundled Dockerfile rather than pull a mismatched image.
+#   - .release-source absent → default "ecr-public" (backward compat: old tarballs,
+#     or dev runs from -SOURCE that want the current public ECR image).
+#   - --local CLI flag → force local-build regardless of file.
+RELEASE_MODE=$(python3 -c "import json; print(json.load(open('$RELEASE_SOURCE_FILE')).get('mode', 'ecr-public'))" 2>/dev/null || echo "ecr-public")
+
 USE_LOCAL=false
 if [ "$1" = "--local" ]; then
   USE_LOCAL=true
+fi
+if [ "$USE_LOCAL" = false ] && [ "$RELEASE_MODE" = "local-build" ]; then
+  USE_LOCAL=true
+  echo "📦 .release-source declares mode=local-build → using local image"
 fi
 IMAGE_REF=$([ "$USE_LOCAL" = true ] && echo "$LOCAL_IMAGE" || echo "$REMOTE_REPO")
 
@@ -79,11 +96,23 @@ fi
 
 # Pull latest image (incremental, fast if already up-to-date)
 if [ "$USE_LOCAL" = true ]; then
-  echo "Using local image: $LOCAL_IMAGE (skipping ECR pull)"
   if ! docker image inspect "$LOCAL_IMAGE" > /dev/null 2>&1; then
-    echo "Local image $LOCAL_IMAGE not found. Run build.sh first."
-    exit 1
+    DOCKERFILE="$SCRIPT_DIR/../Dockerfile"
+    BUILD_CONTEXT="$SCRIPT_DIR/.."
+    if [ ! -f "$DOCKERFILE" ]; then
+      echo "❌ Local image $LOCAL_IMAGE not found, and Dockerfile not found at $DOCKERFILE"
+      echo "   Either build the image manually (docker build -t $LOCAL_IMAGE <context>) or verify the release bundle is complete."
+      exit 1
+    fi
+    echo "📦 Local image $LOCAL_IMAGE not found — building from $DOCKERFILE"
+    echo "   Context: $BUILD_CONTEXT"
+    (cd "$BUILD_CONTEXT" && docker build -t "$LOCAL_IMAGE" .)
+    if ! docker image inspect "$LOCAL_IMAGE" > /dev/null 2>&1; then
+      echo "❌ Build finished but image $LOCAL_IMAGE is still missing. Aborting."
+      exit 1
+    fi
   fi
+  echo "Using local image: $LOCAL_IMAGE (skipping ECR pull)"
   echo "Image ID: $(docker image inspect "$LOCAL_IMAGE" --format='{{.Id}}')"
 else
   echo "Pulling latest image..."

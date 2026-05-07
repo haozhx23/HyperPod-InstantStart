@@ -1,9 +1,6 @@
 {
   "eks": {
-    "kubernetesVersion": "1.34",
-    "prefixDelegation": {
-      "enabled": true
-    }
+    "kubernetesVersion": "1.34"
   },
   "hyperpodHelmChart": {
     "enabled": true,

@@ -13,7 +13,6 @@ const CONFIG_PATH = path.join(__dirname, '../../config/cluster-dependencies-conf
 const DEFAULTS = {
   eks: {
     kubernetesVersion: '1.34',
-    prefixDelegation: { enabled: true }
   },
   hyperpodHelmChart: {
     enabled: true,
@@ -33,9 +32,6 @@ function load() {
     return {
       eks: {
         kubernetesVersion: raw.eks?.kubernetesVersion || DEFAULTS.eks.kubernetesVersion,
-        prefixDelegation: {
-          enabled: raw.eks?.prefixDelegation?.enabled ?? DEFAULTS.eks.prefixDelegation.enabled
-        }
       },
       hyperpodHelmChart: {
         enabled: raw.hyperpodHelmChart?.enabled ?? DEFAULTS.hyperpodHelmChart.enabled,
