@@ -95,6 +95,11 @@ const ADDON_FIELD_MAP = [
     updateKey: 'certManager',
     build: (v) => ({ enabled: v.certManagerEnabled }),
   },
+  {
+    touchKeys: ['fsxCsiDriverEnabled'],
+    updateKey: 'fsxCsiDriver',
+    build: (v) => ({ enabled: v.fsxCsiDriverEnabled }),
+  },
   // HyperPod 专属
   {
     touchKeys: ['inferenceOperatorEnabled'],
@@ -493,6 +498,7 @@ const ClusterManagementRedux = () => {
         trainingOperatorEnabled: result.advancedFeatures.trainingOperator?.enabled || false,
         kuberayOperatorEnabled: result.advancedFeatures.kuberayOperator?.enabled || false,
         certManagerEnabled: result.advancedFeatures.certManager?.enabled || false,
+        fsxCsiDriverEnabled: result.advancedFeatures.fsxCsiDriver?.enabled || false,
         karpenterEnabled: result.advancedFeatures.karpenter?.enabled || false,
         karpenterConsolidationPolicy: result.advancedFeatures.karpenter?.disruption?.consolidationPolicy || 'WhenEmptyOrUnderutilized',
         karpenterConsolidateAfter: result.advancedFeatures.karpenter?.disruption?.consolidateAfter || '0s',
@@ -1028,6 +1034,23 @@ const ClusterManagementRedux = () => {
                     </Card>
 
 
+                    {/* FSx CSI Driver */}
+                    <Card size="small" style={{ backgroundColor: '#fafafa' }}>
+                      <Form.Item name="fsxCsiDriverEnabled" valuePropName="checked" style={{ marginBottom: 12 }}>
+                        <Checkbox><Text strong>FSx Lustre CSI Driver</Text></Checkbox>
+                      </Form.Item>
+                      <Form.Item noStyle shouldUpdate={(prev, curr) => prev.fsxCsiDriverEnabled !== curr.fsxCsiDriverEnabled}>
+                        {({ getFieldValue }) =>
+                          getFieldValue('fsxCsiDriverEnabled') ? (
+                            <Alert message="FSx CSI Driver enables mounting FSx for Lustre file systems as persistent volumes."
+                              type="info" showIcon style={{ marginBottom: 12 }} />
+                          ) : null
+                        }
+                      </Form.Item>
+                      {addonsData?.fsxCsiDriver?.status === 'CREATING' && (
+                        <Alert message="FSx CSI Driver is currently being installed..." type="warning" showIcon style={{ marginBottom: 12 }} />
+                      )}
+                    </Card>
                   </>
                 )
               }]}

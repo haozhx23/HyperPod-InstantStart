@@ -232,6 +232,50 @@ echo "=== HyperPod Helm Chart installation completed ==="'`;
     await this.executeNonBlocking(commands);
   }
 
+  /**
+   * 安装 FSx Dependencies
+   */
+  static async installFSxDependencies(clusterConfigDir) {
+    console.log('Installing FSx dependencies...');
+    
+    const commands = `cd ${clusterConfigDir} && bash -c 'source cluster_envs && 
+    
+    echo "=== Installing FSx CSI Driver ==="
+    
+    # 获取账户ID
+    ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+    ROLE_NAME=SM_HP_FSX_CSI_ROLE_$EKS_CLUSTER_NAME
+    
+    # 创建IAM服务账户和角色
+    echo "Creating IAM service account for FSx CSI driver..."
+    eksctl create iamserviceaccount \\
+        --name fsx-csi-controller-sa \\
+        --namespace kube-system \\
+        --override-existing-serviceaccounts \\
+        --cluster $EKS_CLUSTER_NAME \\
+        --attach-policy-arn arn:aws:iam::aws:policy/AmazonFSxFullAccess \\
+        --role-name $ROLE_NAME \\
+        --region $AWS_REGION \\
+        --approve \\
+        --role-only || echo "FSx CSI service account already exists"
+    
+    # 获取角色ARN
+    ROLE_ARN=$(aws iam get-role --role-name $ROLE_NAME --query "Role.Arn" --output text)
+    
+    # 安装 FSx CSI Driver addon
+    echo "Installing FSx CSI driver addon..."
+    eksctl create addon \\
+        --name aws-fsx-csi-driver \\
+        --cluster $EKS_CLUSTER_NAME \\
+        --service-account-role-arn $ROLE_ARN \\
+        --region $AWS_REGION \\
+        --force || echo "FSx CSI driver addon already exists"
+    
+    echo "FSx CSI Driver installation completed"
+    '`;
+
+    await this.executeNonBlocking(commands);
+  }
 
 
   static async installnlbDependencies(clusterConfigDir) {

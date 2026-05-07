@@ -46,6 +46,7 @@ class ManagedFeaturesManager {
       this.inferenceOpManager.checkStatus(),
       this._getCertManagerStatusFast(eksClusterName, region),
       this._getTrainingOperatorStatusFast(eksClusterName, region),
+      this._getFsxCsiDriverStatusFast(eksClusterName, region),
       this._getKuberayOperatorStatusFast(eksClusterName, region),
       eksClusterName ? this._getTieredStorageIRSAStatus(eksClusterName, region) : Promise.resolve({ installed: false, status: 'NOT_FOUND' })
     ];
@@ -64,6 +65,7 @@ class ManagedFeaturesManager {
       inferenceOpStatus,
       certManagerStatus,
       trainingOpStatus,
+      fsxCsiDriverStatus,
       kuberayOperatorStatus,
       tieredStorageIRSA
     ] = await Promise.all(generalChecks);
@@ -85,6 +87,10 @@ class ManagedFeaturesManager {
       certManager: {
         enabled: certManagerStatus.installed,
         status: certManagerStatus.status
+      },
+      fsxCsiDriver: {
+        enabled: fsxCsiDriverStatus.installed,
+        status: fsxCsiDriverStatus.status
       },
       kuberayOperator: {
         enabled: kuberayOperatorStatus.installed,
@@ -198,6 +204,7 @@ class ManagedFeaturesManager {
       inferenceOperator: null,
       trainingOperator: null,
       certManager: null,
+      fsxCsiDriver: null,
       kuberayOperator: null,
       karpenter: null
     };
@@ -223,6 +230,10 @@ class ManagedFeaturesManager {
     }
 
 
+    // 6. 更新 FSx CSI Driver (如果有变化)
+    if (updates.fsxCsiDriver !== undefined) {
+      results.fsxCsiDriver = await this._updateFsxCsiDriver(updates.fsxCsiDriver);
+    }
 
     // 7. 更新 KubeRay Operator (如果有变化)
     if (updates.kuberayOperator !== undefined) {
@@ -752,6 +763,112 @@ class ManagedFeaturesManager {
   }
 
 
+  /**
+   * 获取 FSx CSI Driver 状态（快速版）
+   */
+  async _getFsxCsiDriverStatusFast(eksClusterName, region) {
+    try {
+      if (!eksClusterName) return { installed: false, status: 'NOT_FOUND' };
+      const cmd = `aws eks describe-addon --cluster-name ${eksClusterName} --addon-name aws-fsx-csi-driver --region ${region} --query "addon.status" --output text 2>/dev/null || echo "NOT_FOUND"`;
+      const { stdout } = await execAsync(cmd);
+      const status = stdout.trim();
+      return { installed: status === 'ACTIVE', status };
+    } catch (error) {
+      return { installed: false, status: 'NOT_FOUND' };
+    }
+  }
+
+  /**
+   * 获取 FSx CSI Driver 状态（兼容旧调用）
+   */
+  async _getFsxCsiDriverStatus() {
+    try {
+      const activeClusterName = this.clusterManager.getActiveCluster();
+      const { region } = await this._getClusterInfo(activeClusterName);
+      const clusterInfo = JSON.parse(fs.readFileSync(
+        path.join(this.clusterManager.getClusterDir(activeClusterName), 'metadata', 'cluster_info.json'), 'utf8'
+      ));
+      const eksClusterName = clusterInfo.eksCluster?.name;
+      return this._getFsxCsiDriverStatusFast(eksClusterName, region);
+    } catch (error) {
+      return { installed: false, status: 'NOT_FOUND' };
+    }
+  }
+
+  /**
+   * 更新 FSx CSI Driver
+   */
+  async _updateFsxCsiDriver(fsxCsiDriver) {
+    const activeClusterName = this.clusterManager.getActiveCluster();
+    const { region, configDir } = await this._getClusterInfo(activeClusterName);
+    const clusterInfo = JSON.parse(fs.readFileSync(
+      path.join(this.clusterManager.getClusterDir(activeClusterName), 'metadata', 'cluster_info.json'), 'utf8'
+    ));
+    const eksClusterName = clusterInfo.eksCluster?.name;
+    if (!eksClusterName) throw new Error('EKS cluster not found');
+
+    const currentStatus = await this._getFsxCsiDriverStatus();
+
+    if (fsxCsiDriver.enabled && !currentStatus.installed) {
+      return await this._installFsxCsiDriver(eksClusterName, region, configDir);
+    } else if (!fsxCsiDriver.enabled && currentStatus.installed) {
+      return await this._uninstallFsxCsiDriver(eksClusterName, region);
+    }
+
+    return { success: true, message: 'No changes needed' };
+  }
+
+  /**
+   * 安装 FSx CSI Driver（创建 IAM Role + EKS Addon）
+   */
+  async _installFsxCsiDriver(eksClusterName, region, configDir) {
+    const addonName = 'aws-fsx-csi-driver';
+    const statusCmd = `aws eks describe-addon --cluster-name ${eksClusterName} --addon-name ${addonName} --region ${region} --query "addon.status" --output text 2>/dev/null || echo "NOT_FOUND"`;
+    const { stdout: status } = await execAsync(statusCmd);
+    const currentStatus = status.trim();
+
+    if (currentStatus === 'ACTIVE') {
+      return { success: true, message: 'FSx CSI Driver is already installed' };
+    }
+    if (currentStatus === 'CREATING') {
+      return { success: true, message: 'FSx CSI Driver is being installed', status: 'CREATING' };
+    }
+
+    if (currentStatus === 'CREATE_FAILED' || currentStatus === 'DEGRADED') {
+      await execAsync(`aws eks delete-addon --cluster-name ${eksClusterName} --addon-name ${addonName} --region ${region} 2>/dev/null || true`);
+      await new Promise(r => setTimeout(r, 30000));
+    }
+
+    // 创建 IAM Role
+    const roleName = `SM_HP_FSX_CSI_ROLE_${eksClusterName}`;
+    await execAsync(`eksctl create iamserviceaccount --name fsx-csi-controller-sa --namespace kube-system --override-existing-serviceaccounts --cluster ${eksClusterName} --attach-policy-arn arn:aws:iam::aws:policy/AmazonFSxFullAccess --role-name ${roleName} --region ${region} --approve --role-only 2>/dev/null || true`);
+
+    const { stdout: roleArn } = await execAsync(`aws iam get-role --role-name ${roleName} --query "Role.Arn" --output text`);
+
+    await execAsync(`aws eks create-addon --addon-name ${addonName} --cluster-name ${eksClusterName} --service-account-role-arn ${roleArn.trim()} --region ${region} --resolve-conflicts OVERWRITE`);
+    return { success: true, message: 'FSx CSI Driver installation initiated', status: 'CREATING' };
+  }
+
+  /**
+   * 卸载 FSx CSI Driver
+   */
+  async _uninstallFsxCsiDriver(eksClusterName, region) {
+    const addonName = 'aws-fsx-csi-driver';
+    const statusCmd = `aws eks describe-addon --cluster-name ${eksClusterName} --addon-name ${addonName} --region ${region} --query "addon.status" --output text 2>/dev/null || echo "NOT_FOUND"`;
+    const { stdout: status } = await execAsync(statusCmd);
+
+    if (status.trim() === 'NOT_FOUND') {
+      return { success: true, message: 'FSx CSI Driver is not installed' };
+    }
+
+    await execAsync(`aws eks delete-addon --cluster-name ${eksClusterName} --addon-name ${addonName} --region ${region}`);
+
+    // 清理 eksctl 创建的 IAM service account 及其 CloudFormation stack
+    const roleName = `SM_HP_FSX_CSI_ROLE_${eksClusterName}`;
+    await execAsync(`eksctl delete iamserviceaccount --name fsx-csi-controller-sa --namespace kube-system --cluster ${eksClusterName} --region ${region} 2>/dev/null || true`);
+
+    return { success: true, message: 'FSx CSI Driver uninstalled successfully' };
+  }
 
   /**
    * 获取 KubeRay Operator 状态（快速版）
