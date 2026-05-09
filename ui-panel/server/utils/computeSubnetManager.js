@@ -76,7 +76,7 @@ class ComputeSubnetManager {
       --vpc-id ${vpcId} \
       --cidr-block ${cidr} \
       --availability-zone-id ${azId} \
-      --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=${subnetName}},{Key=karpenter.sh/discovery,Value=${clusterName}}]' \
+      --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=${subnetName}},{Key=karpenter.sh/discovery,Value=${clusterName}},{Key=kubernetes.io/role/internal-elb,Value=1},{Key=kubernetes.io/cluster/${clusterName},Value=shared}]' \
       --query 'Subnet.SubnetId' --output text`;
 
     const subnetId = execSync(createSubnetCmd, { encoding: 'utf8' }).trim();

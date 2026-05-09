@@ -1,0 +1,76 @@
+{
+  "date": "2026-05-09",
+  "region": "us-east-2",
+  "cluster": "leap-world",
+  "goal": "Use InstantStart to launch a private-subnet Spot EFA nodegroup and run leap_world EFA/NCCL validation.",
+  "network": {
+    "nat_gateway_id": "nat-096ebcbc3a2f9fb69",
+    "nat_eip_allocation_id": "eipalloc-0939826309d72135b",
+    "s3_vpc_endpoint_id": "vpce-016007d2eecb88881",
+    "private_subnets": [
+      {
+        "subnet_id": "subnet-0bcfc20f6b0e5f29c",
+        "availability_zone": "us-east-2b",
+        "cidr": "172.31.64.0/20",
+        "name": "hp-compute-us-east-2b"
+      },
+      {
+        "subnet_id": "subnet-0245e620ed4f40137",
+        "availability_zone": "us-east-2c",
+        "cidr": "172.31.80.0/20",
+        "name": "hp-compute-us-east-2c"
+      }
+    ],
+    "route_tables": [
+      "rtb-046ec86b04ab60732",
+      "rtb-0d5e49b78c72c4d9a"
+    ]
+  },
+  "eks_update": {
+    "update_id": "849ee616-c94f-3924-be66-71e00a668a64",
+    "status": "Successful",
+    "type": "VpcConfigUpdate",
+    "cluster_subnet_ids": [
+      "subnet-0e620ab50b1526027",
+      "subnet-088ba5d2aed6aebbe",
+      "subnet-0bcab1ccb5526245b",
+      "subnet-0bcfc20f6b0e5f29c",
+      "subnet-0245e620ed4f40137"
+    ]
+  },
+  "instantstart_nodegroup": {
+    "name": "efa-spot-g6e-2b-nat",
+    "capacity_type": "SPOT",
+    "instance_type": "g6e.48xlarge",
+    "target_subnet_id": "subnet-0bcfc20f6b0e5f29c",
+    "cloudformation_stack": "eksctl-leap-world-nodegroup-efa-spot-g6e-2b-nat",
+    "autoscaling_group": "eks-efa-spot-g6e-2b-nat-eecf05a9-9920-acdc-0e04-d0187d3c70b6",
+    "status": "DELETING",
+    "cleanup_reason": "Nodegroup deletion requested after repeated MaxSpotInstanceCountExceeded failures."
+  },
+  "benchmark": {
+    "script": "/Users/chenshengdong/workspace/leap_world-ops-efa/scripts/aws/instantstart/run_nodegroup_efa_bench.sh",
+    "status": "blocked_before_start",
+    "reason": "No Spot instances were allocated for the nodegroup."
+  },
+  "blocker": {
+    "type": "account_spot_quota_or_current_spot_usage",
+    "autoscaling_error": "Could not launch Spot Instances. MaxSpotInstanceCountExceeded",
+    "details": "The account already had many unrelated running GPU Spot instances in us-east-2, so the new g6e.48xlarge x2 nodegroup could not allocate instances.",
+    "observed_running_gpu_spot_counts": {
+      "g6.4xlarge": 54,
+      "g6.12xlarge": 27,
+      "p5en.48xlarge": 1
+    }
+  },
+  "repo_changes": {
+    "hyperpod_instantstart": [
+      "/Users/chenshengdong/workspace/HyperPod-InstantStart/ui-panel/server/utils/computeSubnetManager.js"
+    ],
+    "leap_world_ops_efa": [
+      "/Users/chenshengdong/workspace/leap_world-ops-efa/scripts/aws/instantstart/env/leap-world-efa-g6e-2b-nat.env",
+      "/Users/chenshengdong/workspace/leap_world-ops-efa/scripts/aws/cluster_validation/02_nccl_allreduce.sh",
+      "/Users/chenshengdong/workspace/leap_world-ops-efa/scripts/aws/cluster_validation/03_nccl_alltoall.sh"
+    ]
+  }
+}

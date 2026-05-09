@@ -1,0 +1,44 @@
+{
+  "date": "2026-05-09",
+  "region": "us-east-2",
+  "account_id": "829115578968",
+  "quota": {
+    "quota_name": "All G and VT Spot Instance Requests",
+    "quota_code": "L-3819A6DF",
+    "current_value": 2500,
+    "unit": "vCPU",
+    "desired_multiplier": 2,
+    "desired_value": 5000
+  },
+  "existing_open_request": {
+    "request_id": "a563318b44bb471998180bed2500a0f7bXlZR5VI",
+    "case_id": "177822574900799",
+    "desired_value": 8000,
+    "status": "CASE_OPENED",
+    "created": "2026-05-08T15:35:48.293000+08:00",
+    "last_updated": "2026-05-08T15:35:51.040000+08:00",
+    "requester": "arn:aws:iam::829115578968:user/seedleap-server"
+  },
+  "attempted_duplicate_request": {
+    "desired_value": 5000,
+    "result": "rejected",
+    "error_type": "ResourceAlreadyExistsException",
+    "message": "Only one open service quota increase request is allowed per quota."
+  },
+  "usage_evidence": {
+    "metric_namespace": "AWS/Usage",
+    "metric_name": "ResourceCount",
+    "dimensions": {
+      "Class": "G/Spot",
+      "Resource": "vCPU",
+      "Service": "EC2",
+      "Type": "Resource"
+    },
+    "observed_maximum_today": 2496
+  },
+  "conclusion": {
+    "new_request_created": false,
+    "reason": "A higher open request already exists and AWS only allows one open increase request per quota.",
+    "covered_by_existing_request": true
+  }
+}

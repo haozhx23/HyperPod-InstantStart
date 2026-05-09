@@ -1,0 +1,130 @@
+{
+  "date": "2026-05-09",
+  "cluster": "leap-world",
+  "region": "us-east-2",
+  "managementHost": {
+    "instanceId": "i-0266ec2ccd31e0ab1",
+    "publicIp": "18.224.72.219"
+  },
+  "nodegroup": {
+    "name": "efa-spot-g6e12-2b-nat",
+    "status": "ACTIVE",
+    "capacityType": "SPOT",
+    "instanceTypes": [
+      "g6e.12xlarge"
+    ],
+    "subnets": [
+      "subnet-0bcfc20f6b0e5f29c"
+    ],
+    "autoScalingGroup": "eks-efa-spot-g6e12-2b-nat-c6cf05dc-1ee5-cdf3-7ef7-5ee889ac04b5",
+    "instances": [
+      {
+        "instanceId": "i-061a87876a5c83dae",
+        "privateIp": "172.31.66.12",
+        "instanceType": "g6e.12xlarge",
+        "az": "us-east-2b",
+        "subnetId": "subnet-0bcfc20f6b0e5f29c",
+        "efa": "efa",
+        "state": "running"
+      },
+      {
+        "instanceId": "i-0b9de18fe6504b9a8",
+        "privateIp": "172.31.78.183",
+        "instanceType": "g6e.12xlarge",
+        "az": "us-east-2b",
+        "subnetId": "subnet-0bcfc20f6b0e5f29c",
+        "efa": "efa",
+        "state": "running"
+      }
+    ]
+  },
+  "run": {
+    "id": "efa-spot-g6e12-2b-nat-20260509_161826",
+    "startedAt": "2026-05-09T16:19:21.692+08:00",
+    "finishedAt": "2026-05-09T16:44:13.842+08:00",
+    "remoteBenchSsmCommandId": "34626afd-8c1d-43d2-956d-523d9d48b95d",
+    "bundle": "s3://leap-world-us-east-2/ops/efa-validation/efa-spot-g6e12-2b-nat-20260509_161826/cluster-validation-bundle.tgz",
+    "resultsPrefix": "s3://leap-world-us-east-2/ops/efa-validation/efa-spot-g6e12-2b-nat-20260509_161826/results/"
+  },
+  "transport": {
+    "efaValidated": true,
+    "provider": "efa",
+    "network": "Libfabric",
+    "gdrDisabled": true,
+    "ncclProto": "simple",
+    "evidence": [
+      "NET/OFI Selected provider is efa",
+      "Using network Libfabric",
+      "disabling GDR",
+      "Adding NCCL_PROTO=simple"
+    ]
+  },
+  "benchmarks": {
+    "allreduce": {
+      "intra": {
+        "status": "success",
+        "gpusPerNode": 4,
+        "nodes": 1,
+        "iterations": 20,
+        "avgBusBwGBps": 3.00928,
+        "largeMessageBusBwGBps": {
+          "4GiB": 5.87,
+          "8GiB": 5.81
+        }
+      },
+      "inter": {
+        "status": "success",
+        "gpusPerNode": 4,
+        "nodes": 2,
+        "iterations": 100,
+        "avgBusBwGBps": 2.94021,
+        "largeMessageBusBwGBps": {
+          "32MiB": 6.32,
+          "4GiB": 6.16,
+          "8GiB": 6.10
+        }
+      }
+    },
+    "alltoall": {
+      "intra": {
+        "status": "success",
+        "gpusPerNode": 4,
+        "nodes": 1,
+        "iterations": 20,
+        "avgBusBwGBps": 1.79954,
+        "largeMessageBusBwGBps": {
+          "256MiB": 3.70,
+          "1GiB": 3.67,
+          "2GiB": 3.64
+        }
+      },
+      "inter": {
+        "status": "success",
+        "gpusPerNode": 4,
+        "nodes": 2,
+        "iterations": 100,
+        "avgBusBwGBps": 1.63728,
+        "largeMessageBusBwGBps": {
+          "256MiB": 3.47,
+          "1GiB": 3.47,
+          "2GiB": 3.41
+        }
+      }
+    }
+  },
+  "runner": {
+    "localStatus": "failed_after_remote_success",
+    "rootCause": "Invalid jq string concatenation in FINAL_JSON assembly",
+    "fixed": true,
+    "fixedFile": "/Users/chenshengdong/workspace/leap_world-ops-efa/scripts/aws/instantstart/run_nodegroup_efa_bench.sh"
+  },
+  "assessment": {
+    "instantStartEfaPathWorking": true,
+    "crossNodeThroughputSuitableAsFinalWan22Baseline": false,
+    "notes": [
+      "Nodegroup creation, EFA device readiness, and NCCL over efa/libfabric are validated.",
+      "Observed cross-node bandwidth on g6e.12xlarge x2 is much lower than the intended final 2-node training target.",
+      "The current stack is running with GDR disabled and NCCL simple protocol forced."
+    ]
+  }
+}

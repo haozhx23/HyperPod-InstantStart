@@ -11,6 +11,30 @@ class MultiClusterAPIs {
     this.clusterManager = new ClusterManager();
   }
 
+  normalizeKubeconfigExecApiVersion(kubeconfigPath) {
+    try {
+      if (!kubeconfigPath || !fs.existsSync(kubeconfigPath)) {
+        return false;
+      }
+
+      const originalContent = fs.readFileSync(kubeconfigPath, 'utf8');
+      if (!originalContent.includes('client.authentication.k8s.io/v1alpha1')) {
+        return false;
+      }
+
+      const updatedContent = originalContent.replaceAll(
+        'client.authentication.k8s.io/v1alpha1',
+        'client.authentication.k8s.io/v1beta1'
+      );
+      fs.writeFileSync(kubeconfigPath, updatedContent, 'utf8');
+      console.log(`Normalized kubeconfig exec apiVersion to v1beta1: ${kubeconfigPath}`);
+      return true;
+    } catch (error) {
+      console.warn(`Failed to normalize kubeconfig exec apiVersion for ${kubeconfigPath}:`, error.message);
+      return false;
+    }
+  }
+
   // 获取所有集群列表
   async handleGetClusters(req, res) {
     try {
@@ -129,6 +153,7 @@ class MultiClusterAPIs {
             console.error(`Stderr: ${stderr}`);
             reject(error);
           } else {
+            this.normalizeKubeconfigExecApiVersion(kubeconfigPath);
             console.log(`Successfully updated kubectl config for cluster: ${eksClusterName}`);
             console.log(`Stdout: ${stdout}`);
             resolve(stdout);
@@ -761,6 +786,8 @@ class MultiClusterAPIs {
               });
               return;
             }
+
+            this.normalizeKubeconfigExecApiVersion(kubeconfigPath);
 
             // 4. 测试kubectl连接
             exec('kubectl get nodes --no-headers | wc -l', (nodeError, nodeStdout) => {
