@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
-import { useSelector } from 'react-redux';
+import { useSelector, useDispatch } from 'react-redux';
 import { selectDeploymentStatus } from '../store/selectors';
+import { clearDeploymentStatus } from '../store/slices/webSocketSlice';
 import resourceEventBus from '../utils/resourceEventBus';
 import {
   Form,
@@ -45,10 +46,19 @@ const { Option } = Select;
 const { Panel } = Collapse;
 const { Text, Paragraph } = Typography;
 
-const ManagedInferencePanel = () => {
+const ManagedInferencePanel = ({ engine = 'vllm' }) => {
   const deploymentStatus = useSelector(selectDeploymentStatus);
+  const dispatch = useDispatch();
   const [deploymentForm] = Form.useForm();
   const [loading, setLoading] = useState(false);
+
+  // Engine-aware 默认值。两个 tab 共用本组件，通过 engine prop 区分。
+  // sglang 隐藏 Advanced Features，并把默认镜像/端口/启动命令切到 SGLang 风格。
+  const isVllm = engine === 'vllm';
+  const defaultDockerImage = isVllm
+    ? 'vllm/vllm-openai:latest'
+    : 'lmsysorg/sglang:latest';
+  const defaultPort = isVllm ? 8000 : 22022;
 
   // KV Cache 和 Intelligent Routing 状态
   const [enableKvCache, setEnableKvCache] = useState(false);
@@ -57,6 +67,9 @@ const ManagedInferencePanel = () => {
   const [l2CacheBackend, setL2CacheBackend] = useState('tieredstorage'); // 'tieredstorage' or 'redis'
   const [enableIntelligentRouting, setEnableIntelligentRouting] = useState(false);
   const [routingStrategy, setRoutingStrategy] = useState('prefixaware');
+
+  // Prefetch：默认开启 —— operator init container 预拉模型到 /opt/ml/model
+  const [prefetchEnabled, setPrefetchEnabled] = useState(true);
 
   // 实例类型相关状态 - 只需要 HyperPod 实例类型
   const [instanceTypes, setInstanceTypes] = useState({
@@ -121,6 +134,7 @@ const ManagedInferencePanel = () => {
 --host 0.0.0.0 \\
 --port 22022 \\
 --tp-size 1 \\
+--enable-metrics \\
 --trust-remote-code`;
     } else {
       // vLLM: 显示完整命令（用户友好），后端会自动去掉 vllm serve
@@ -257,6 +271,7 @@ const ManagedInferencePanel = () => {
     try {
       const deploymentConfig = {
         ...values,
+        prefetchEnabled,
         // KV Cache 配置
         kvCache: enableKvCache ? {
           enableL1Cache: enableL1Cache,
@@ -308,6 +323,7 @@ const ManagedInferencePanel = () => {
     if (!deploymentStatus) return null;
 
     const { status, message: msg } = deploymentStatus;
+    const onClose = () => dispatch(clearDeploymentStatus());
 
     if (status === 'success') {
       return (
@@ -318,6 +334,7 @@ const ManagedInferencePanel = () => {
           icon={<CheckCircleOutlined />}
           showIcon
           closable
+          onClose={onClose}
           style={{ marginBottom: 16 }}
         />
       );
@@ -330,6 +347,7 @@ const ManagedInferencePanel = () => {
           icon={<ExclamationCircleOutlined />}
           showIcon
           closable
+          onClose={onClose}
           style={{ marginBottom: 16 }}
         />
       );
@@ -350,11 +368,12 @@ const ManagedInferencePanel = () => {
           replicas: 1,
           gpuCount: 1,
           gpuMemory: -1,
-          port: 8000,
+          port: defaultPort,
           cpuRequest: -1,
           memoryRequest: -1,
           s3Region: '',
-          workerCommand: ''
+          dockerImage: defaultDockerImage,
+          workerCommand: getDefaultCommandByImage(defaultDockerImage)
         }}
       >
         <Row gutter={16}>
@@ -626,7 +645,21 @@ const ManagedInferencePanel = () => {
         </Row>
 
         <Alert
-          message="S3 Model Source: Configure the S3 location where your model is stored"
+          message={
+            <Space>
+              <span>S3 Model Source: Configure the S3 location where your model is stored.</span>
+              <Divider type="vertical" />
+              <Switch
+                checked={prefetchEnabled}
+                onChange={setPrefetchEnabled}
+                size="small"
+              />
+              <Text strong>Prefetch model to local storage</Text>
+              <Tooltip title="When ON, an init container pre-downloads the model from S3 to /opt/ml/model before the inference container starts. Avoids cold-start network stall. Default: ON.">
+                <InfoCircleOutlined />
+              </Tooltip>
+            </Space>
+          }
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
@@ -716,22 +749,24 @@ const ManagedInferencePanel = () => {
           />
         </Form.Item>
 
-        <Alert
-          message={
-            <Space>
-              <ThunderboltOutlined />
-              <Text strong>Advanced Features (Optional, vLLM support only)</Text>
-            </Space>
-          }
-          type="info"
-          showIcon={false}
-          style={{ marginBottom: 16, marginTop: 16 }}
-        />
+        {isVllm && (
+          <>
+            <Alert
+              message={
+                <Space>
+                  <ThunderboltOutlined />
+                  <Text strong>Advanced Features (Optional, vLLM support only)</Text>
+                </Space>
+              }
+              type="info"
+              showIcon={false}
+              style={{ marginBottom: 16, marginTop: 16 }}
+            />
 
-        <Collapse
-          defaultActiveKey={[]}
-          style={{ marginBottom: 24 }}
-        >
+            <Collapse
+              defaultActiveKey={[]}
+              style={{ marginBottom: 24 }}
+            >
           {/* KV Cache Configuration */}
           <Panel
             header={
@@ -986,6 +1021,8 @@ const ManagedInferencePanel = () => {
             )}
           </Panel>
         </Collapse>
+          </>
+        )}
 
         <Form.Item>
           <Button

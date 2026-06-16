@@ -3,10 +3,24 @@
     "hypd-inst": {
       "type": "stdio",
       "command": "docker",
-      "args": ["exec", "-i", "ui-panel-dev", "python3", "/app/mcp-server/server.py"],
+      "args": [
+        "exec",
+        "-i",
+        "ui-panel-prod",
+        "python3",
+        "/app/mcp-server/server.py"
+      ],
       "env": {
         "PYTHONUNBUFFERED": "1"
       }
+    },
+    "aws-mcp": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "mcp-proxy-for-aws@latest",
+        "https://aws-mcp.us-east-1.api.aws/mcp"
+      ]
     }
   }
 }

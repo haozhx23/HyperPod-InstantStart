@@ -16,8 +16,9 @@ HyperPod InstantStart is a training-and-inference integrated platform built on S
 HyperPod-InstantStart provides a unified interface for managing ML infrastructure, from cluster provisioning to training job orchestration and model serving.
 
 - For training, it leverages HyperPod Training Operator (significantly simplifying distributed configuration with process-level recovery and log exception monitoring; optional), or KubeRay (as an orchestrator for the reinforcement learning framework VERL).
-- For inference, it supports deployment on single or multi-node setups using arbitrary containers, such as standard vLLM/SGLang or self-buit containers, while also providing standardized API exposure (e.g., OpenAI-compatible API). 
+- For inference, it supports deployment on single or multi-node setups using arbitrary containers, such as standard vLLM/SGLang or self-built containers, while also providing standardized API exposure (e.g., OpenAI-compatible API). You can self-manage serving with intelligent routing and metrics, or use the HyperPod-managed Inference Operator for built-in routing, L1/L2 KV-cache sharing, and integrated observability.
 - Additionally, it offers managed MLFlow Tracking Server for storing training metrics, enabling sharing and collaboration with fine-grained IAM permission controls.
+- It also introduces Agent-Driven AI Infra: launch the Kiro Agent and build production-grade clusters, model deployments, and managed Operator configurations from scratch through minimal interaction, powered by MCP tools (wrapping project backend APIs for best-practice compliance) and project-level Agent SKILLs that orchestrate complete end-to-end workflows.
 
 ## Architecture
 
@@ -54,9 +55,13 @@ HyperPod-InstantStart provides a unified interface for managing ML infrastructur
 For detailed setup instructions, please refer to [Feishu Doc (zh_cn)](https://amzn-chn.feishu.cn/docx/VZfAdXTJKor7TCxPrZdcbGYXnaf?from=from_copylink), or [Lark Doc (en)](https://amzn-chn.feishu.cn/wiki/KKgVwwfiuiof9KkAP0CcYXfnnqd?from=from_copylink)
 
 
-## Upcoming Features
+## Key Features
 
-| Type | Feature | Updated At | Target Date |
-|------|---------|-----------|-------------------|
-| Agentic | MCP Server for HyperPod InstantStart | 2025-12-25 | AVAILABLE |
-| Training | RL SandBox as Cluster Service | 2025-12-25 | Done |
+- **Agent-driven AI infrastructure** — Just launch the Kiro Agent and, through minimal interaction, build production-grade HyperPod clusters, model deployments, and managed Operator configurations from scratch. Unlike directly letting a coding agent call AWS CLI/SDKs, the project's MCP tools wrap backend APIs to enforce AI-workload best practices (avoiding agent improvisation while cutting interaction rounds and context usage), and project-level Agent SKILLs orchestrate complete business workflows for robust, reproducible multi-step operations — all running in-container with zero local setup. AWS [`agent-plugins/sagemaker-ai`](https://github.com/awslabs/agent-plugins/tree/main/plugins/sagemaker-ai) skills additionally supplement cluster troubleshooting (NCCL, node/GPU, performance, creation failures). See the **[Agentic]** section of the project manual.
+- **One-click cluster provisioning & node management** — End-to-end EKS + HyperPod creation, dependency configuration, scaling, and node lifecycle operations from a single interface.
+- **High-resilience distributed training** — HyperPod Training Operator greatly simplifies Torch distributed setup and adds business-log anomaly monitoring with process-level restart recovery.
+- **RL training orchestration** — Standard KubeRay acts as the orchestrator for the Verl reinforcement-learning framework. The platform can also deploy **sandbox-as-a-service** — isolated, on-demand execution sandboxes exposed as a service — to serve as the interactive environment for agent RL training (e.g. tool-use / code-execution rollouts).
+- **Flexible inference serving** — Self-manage any container (e.g. OSS vLLM/SGLang) with intelligent routing and metrics, or use the HyperPod-managed Inference Operator with built-in intelligent routing, L1/L2 KV-cache sharing, and integrated observability.
+- **Karpenter-based autoscaling** — Just-in-time GPU node provisioning, including HyperPod Spot instances, that scales capacity to match workload demand.
+- **Model & storage management** — HuggingFace model downloads and flexible S3 storage mounting for training and inference assets.
+- **Training observability** — Managed MLflow tracking server for storing metrics, with sharing and collaboration under fine-grained IAM permission controls.

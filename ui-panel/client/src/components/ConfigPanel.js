@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
-import { useSelector } from 'react-redux';
+import { useSelector, useDispatch } from 'react-redux';
 import { selectDeploymentStatus } from '../store/selectors';
+import { clearDeploymentStatus } from '../store/slices/webSocketSlice';
 import resourceEventBus from '../utils/resourceEventBus';
 import {
   Form,
@@ -38,6 +39,7 @@ const { Option, OptGroup } = Select;
 
 const ConfigPanel = () => {
   const deploymentStatus = useSelector(selectDeploymentStatus);
+  const dispatch = useDispatch();
   const [deploymentForm] = Form.useForm();
   const [loading, setLoading] = useState(false);
 
@@ -256,6 +258,7 @@ const ConfigPanel = () => {
     if (!deploymentStatus) return null;
     
     const { status, message } = deploymentStatus;
+    const onClose = () => dispatch(clearDeploymentStatus());
     
     if (status === 'success') {
       return (
@@ -266,6 +269,7 @@ const ConfigPanel = () => {
           icon={<CheckCircleOutlined />}
           showIcon
           closable
+          onClose={onClose}
           style={{ marginBottom: 16 }}
         />
       );
@@ -278,6 +282,7 @@ const ConfigPanel = () => {
           icon={<ExclamationCircleOutlined />}
           showIcon
           closable
+          onClose={onClose}
           style={{ marginBottom: 16 }}
         />
       );

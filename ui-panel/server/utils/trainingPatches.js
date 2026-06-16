@@ -104,12 +104,41 @@ function appendEnvPatches(envList, envPaths) {
   return list;
 }
 
+// Selectable persistent-storage mounts (PVCs). hostPath mounts (shmem/local/...) stay in templates.
+const STORAGE_MOUNTS = {
+  s3:  { name: 'persistent-storage-s3',  mountPath: '/s3',  claimName: 's3-claim',  readOnly: false },
+  fsx: { name: 'persistent-storage-fsx', mountPath: '/fsx', claimName: 'fsx-claim' },
+};
+
+/**
+ * Build patches that append the selected PVC volumeMounts + volumes to a pod.
+ * Falls back to ['s3'] when nothing valid is selected so a pod always has storage.
+ *
+ * @param {string[]} mounts - selected keys, e.g. ['s3','fsx']
+ * @param {{mountPaths: Array<Array<string|number>>, volumePaths: Array<Array<string|number>>}} paths
+ */
+function storageMountPatches(mounts, { mountPaths = [], volumePaths = [] } = {}) {
+  const selected = (Array.isArray(mounts) && mounts.length ? mounts : ['s3'])
+    .filter((m) => STORAGE_MOUNTS[m]);
+  const list = [];
+  for (const key of selected) {
+    const s = STORAGE_MOUNTS[key];
+    const volumeMount = { name: s.name, mountPath: s.mountPath };
+    if (s.readOnly !== undefined) volumeMount.readOnly = s.readOnly;
+    const volume = { name: s.name, persistentVolumeClaim: { claimName: s.claimName } };
+    for (const p of mountPaths) list.push(P.append(p, volumeMount));
+    for (const p of volumePaths) list.push(P.append(p, volume));
+  }
+  return list;
+}
+
 module.exports = {
   formatPythonParams,
   mlflowPatches,
   logMonitoringPatch,
   normalizeEnvList,
   appendEnvPatches,
+  storageMountPatches,
   POD_SPEC_PATH,
   RUN_POLICY_PATH,
 };

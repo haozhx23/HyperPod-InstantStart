@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { useSelector } from 'react-redux';
+import { useSelector, useDispatch } from 'react-redux';
 import { selectDeploymentStatus } from '../store/selectors';
+import { clearDeploymentStatus } from '../store/slices/webSocketSlice';
 import {
   Form,
   Input, 
@@ -27,6 +28,7 @@ const { Option } = Select;
 
 const ServiceConfigPanel = ({ onDeploy }) => {
   const deploymentStatus = useSelector(selectDeploymentStatus);
+  const dispatch = useDispatch();
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [modelPools, setModelPools] = useState([]);
@@ -81,6 +83,7 @@ const ServiceConfigPanel = ({ onDeploy }) => {
     if (!deploymentStatus) return null;
     
     const { status, message } = deploymentStatus;
+    const onClose = () => dispatch(clearDeploymentStatus());
     
     if (status === 'success') {
       return (
@@ -91,6 +94,7 @@ const ServiceConfigPanel = ({ onDeploy }) => {
           icon={<CheckCircleOutlined />}
           showIcon
           closable
+          onClose={onClose}
           style={{ marginBottom: 16 }}
         />
       );
@@ -103,6 +107,7 @@ const ServiceConfigPanel = ({ onDeploy }) => {
           icon={<ExclamationCircleOutlined />}
           showIcon
           closable
+          onClose={onClose}
           style={{ marginBottom: 16 }}
         />
       );

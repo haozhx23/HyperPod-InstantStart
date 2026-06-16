@@ -9,6 +9,7 @@ import ScaleDebugOverlay from './components/debug/ScaleDebugOverlay';
 import useWebSocket from './hooks/useWebSocket';
 import { fetchAppStatusConfig } from './store/slices/appStatusSlice';
 import InferencePage from './pages/InferencePage';
+import ManagedInferencePage from './pages/ManagedInferencePage';
 import TrainingPage from './pages/TrainingPage';
 import TrainingJobsPage from './pages/TrainingJobsPage';
 import TrainingHistoryPage from './pages/TrainingHistoryPage';
@@ -43,6 +44,7 @@ function App() {
               <Route element={<NewRoot />}>
                 <Route path="/" element={<Navigate to="/cluster-management" replace />} />
                 <Route path="/inference" element={<InferencePage />} />
+                <Route path="/managed-inference" element={<ManagedInferencePage />} />
                 <Route path="/training" element={<TrainingJobsPage />} />
                 <Route path="/training-recipes" element={<TrainingPage />} />
                 <Route path="/training-history" element={<TrainingHistoryPage />} />

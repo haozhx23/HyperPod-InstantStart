@@ -22,6 +22,7 @@ const {
   mlflowPatches,
   logMonitoringPatch,
   appendEnvPatches,
+  storageMountPatches,
 } = require('./utils/trainingPatches');
 
 // 依赖注入
@@ -940,6 +941,7 @@ router.post('/launch-verl-training', async (req, res) => {
       workerReplicas = 1,
       gpuPerNode = 4,
       efaPerNode = 1,
+      mounts = ['s3'],
       recipeType
     } = req.body;
 
@@ -981,6 +983,8 @@ router.post('/launch-verl-training', async (req, res) => {
 
     // 渲染VERL训练任务模板
     const templatePath = path.join(__dirname, '../templates/verl-training-template.yaml');
+    const headSpec = ['spec', 'rayClusterSpec', 'headGroupSpec', 'template', 'spec'];
+    const workerSpec = ['spec', 'rayClusterSpec', 'workerGroupSpecs', 0, 'template', 'spec'];
     const newYamlContent = renderTemplate(templatePath, {
       values: {
         JOB_NAME: jobName,
@@ -993,6 +997,10 @@ router.post('/launch-verl-training', async (req, res) => {
         EFA_PER_NODE: efaPerNode,
         TOT_NUM_NODES: totNumNodes,
       },
+      patches: storageMountPatches(mounts, {
+        mountPaths: [[...headSpec, 'containers', 0, 'volumeMounts'], [...workerSpec, 'containers', 0, 'volumeMounts']],
+        volumePaths: [[...headSpec, 'volumes'], [...workerSpec, 'volumes']],
+      }),
     });
 
     console.log('Generated VERL YAML content preview:', newYamlContent.substring(0, 500) + '...');

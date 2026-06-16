@@ -1,0 +1,20 @@
+# DevOps-Gym sandbox tool config for EKS-backed veRL multi-turn rollouts.
+tools:
+  - class_name: "tooluse.envs.k8s_sandbox_tool.K8sDevOpsSandboxTool"
+    config:
+      timeout: 120
+      setup_timeout: 300
+      max_output_len: 8000
+      type: native
+    tool_schema:
+      type: "function"
+      function:
+        name: "bash"
+        description: "Run a bash command in the DevOps sandbox."
+        parameters:
+          type: "object"
+          properties:
+            command:
+              type: "string"
+              description: "Bash command to execute in the workspace"
+          required: ["command"]

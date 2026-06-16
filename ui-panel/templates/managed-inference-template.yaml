@@ -18,9 +18,9 @@ spec:
       bucketName: "${S3_BUCKET}"
       region: "${AWS_REGION}"
     modelLocation: "${MODEL_LOCATION}"
+    prefetchEnabled: ${PREFETCH_ENABLED}
   worker:
     image: "${DOCKER_IMAGE}"
-    args:
     modelInvocationPort:
       containerPort: ${PORT}
     modelVolumeMount:

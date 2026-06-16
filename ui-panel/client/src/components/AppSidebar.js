@@ -10,6 +10,7 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   ReadOutlined,
+  CloudServerOutlined,
 } from '@ant-design/icons';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useSelector } from 'react-redux';
@@ -25,6 +26,7 @@ const MENU_ITEMS = [
   { key: '/cluster-management', pageKey: 'cluster-management', icon: <SettingOutlined />, label: 'Cluster Management' },
   { key: '/storage', pageKey: 'storage', icon: <DatabaseOutlined />, label: 'Storage' },
   { key: '/inference', pageKey: 'inference', icon: <RocketOutlined />, label: 'Inference' },
+  { key: '/managed-inference', pageKey: 'managed-inference', icon: <CloudServerOutlined />, label: 'Managed Inference' },
   { key: '/training', pageKey: 'training', icon: <ExperimentOutlined />, label: 'Training' },
   { key: '/training-recipes', pageKey: 'training-recipes', icon: <ReadOutlined />, label: 'Training Recipes' },
   { key: '/training-history', pageKey: 'training-history', icon: <HistoryOutlined />, label: 'Training History' },

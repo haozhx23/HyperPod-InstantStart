@@ -1,0 +1,20 @@
+# Terminal sandbox tool config for EKS-backed veRL multi-turn rollouts.
+tools:
+  - class_name: "tooluse.envs.k8s_sandbox_tool.K8sTerminalSandboxTool"
+    config:
+      image: "ubuntu:22.04"
+      timeout: 60
+      max_output_len: 4000
+      type: native
+    tool_schema:
+      type: "function"
+      function:
+        name: "bash"
+        description: "Run a bash command in the terminal sandbox."
+        parameters:
+          type: "object"
+          properties:
+            command:
+              type: "string"
+              description: "Bash command to execute"
+          required: ["command"]

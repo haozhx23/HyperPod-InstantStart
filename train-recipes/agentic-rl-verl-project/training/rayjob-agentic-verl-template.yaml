@@ -1,0 +1,156 @@
+# Standalone RayJob template for direct kubectl launches.
+#
+# HyperPod InstantStart UI normally renders ui-panel/templates/verl-training-template.yaml
+# from the Verl Recipe panel. This file is here as a recipe-local, readable YAML
+# equivalent for operators who want to launch without the UI. Keep this aligned
+# with the UI path: ui-panel/templates/verl-training-template.yaml plus an FSx
+# storage mount patch from server/utils/trainingPatches.js.
+#
+# Replace:
+#   __JOB_NAME__
+#   __DOCKER_IMAGE__
+#   __ENTRYPOINT__
+#   __INSTANCE_TYPE__
+#   __WORKER_REPLICAS__
+#   __MAX_REPLICAS__
+#   __GPU_PER_NODE__
+#   __EFA_PER_NODE__
+#   __TOTAL_NODES__
+#
+apiVersion: ray.io/v1
+kind: RayJob
+metadata:
+  name: "__JOB_NAME__"
+  namespace: default
+spec:
+  entrypoint: "bash __ENTRYPOINT__"
+  shutdownAfterJobFinishes: true
+  ttlSecondsAfterFinished: 3600
+  submitterPodTemplate:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: ray-job-submitter
+          image: rayproject/ray:2.9.0
+  rayClusterSpec:
+    rayVersion: "2.9.0"
+    headGroupSpec:
+      rayStartParams:
+        dashboard-host: "0.0.0.0"
+        dashboard-port: "8265"
+      template:
+        metadata:
+          labels:
+            hami.io/webhook: ignore
+        spec:
+          nodeSelector:
+            beta.kubernetes.io/instance-type: "__INSTANCE_TYPE__"
+          containers:
+            - name: ray-head
+              image: "__DOCKER_IMAGE__"
+              resources:
+                limits:
+                  nvidia.com/gpu: __GPU_PER_NODE__
+                  vpc.amazonaws.com/efa: __EFA_PER_NODE__
+                requests:
+                  nvidia.com/gpu: __GPU_PER_NODE__
+                  vpc.amazonaws.com/efa: __EFA_PER_NODE__
+              env:
+                - name: FI_PROVIDER
+                  value: efa
+                - name: NCCL_DEBUG
+                  value: INFO
+                - name: NCCL_SOCKET_IFNAME
+                  value: eth0
+                - name: INSTRT_NUM_NODES
+                  value: "__TOTAL_NODES__"
+                - name: INSTRT_PROC_PER_NODE
+                  value: "__GPU_PER_NODE__"
+              volumeMounts:
+                - name: shmem
+                  mountPath: /dev/shm
+                - name: local
+                  mountPath: /local
+                - name: inst-nvme
+                  mountPath: /ckpt-path
+                - name: local-cache
+                  mountPath: /root/.cache
+                - name: persistent-storage-fsx
+                  mountPath: /fsx
+          volumes:
+            - name: shmem
+              hostPath:
+                path: /dev/shm
+            - name: local
+              hostPath:
+                path: /mnt/k8s-disks/0
+            - name: local-cache
+              hostPath:
+                path: /opt/dlami/nvme/.cache
+            - name: inst-nvme
+              hostPath:
+                path: /opt/dlami/nvme/checkpoints/
+            - name: persistent-storage-fsx
+              persistentVolumeClaim:
+                claimName: fsx-claim
+    workerGroupSpecs:
+      - replicas: __WORKER_REPLICAS__
+        minReplicas: 0
+        maxReplicas: __MAX_REPLICAS__
+        groupName: worker-group
+        rayStartParams: {}
+        template:
+          metadata:
+            labels:
+              hami.io/webhook: ignore
+          spec:
+            nodeSelector:
+              beta.kubernetes.io/instance-type: "__INSTANCE_TYPE__"
+            containers:
+              - name: ray-worker
+                image: "__DOCKER_IMAGE__"
+                resources:
+                  limits:
+                    nvidia.com/gpu: __GPU_PER_NODE__
+                    vpc.amazonaws.com/efa: __EFA_PER_NODE__
+                  requests:
+                    nvidia.com/gpu: __GPU_PER_NODE__
+                    vpc.amazonaws.com/efa: __EFA_PER_NODE__
+                env:
+                  - name: FI_PROVIDER
+                    value: efa
+                  - name: NCCL_DEBUG
+                    value: INFO
+                  - name: NCCL_SOCKET_IFNAME
+                    value: eth0
+                  - name: INSTRT_NUM_NODES
+                    value: "__TOTAL_NODES__"
+                  - name: INSTRT_PROC_PER_NODE
+                    value: "__GPU_PER_NODE__"
+                volumeMounts:
+                  - name: shmem
+                    mountPath: /dev/shm
+                  - name: local
+                    mountPath: /local
+                  - name: inst-nvme
+                    mountPath: /ckpt-path
+                  - name: local-cache
+                    mountPath: /root/.cache
+                  - name: persistent-storage-fsx
+                    mountPath: /fsx
+            volumes:
+              - name: shmem
+                hostPath:
+                  path: /dev/shm
+              - name: local
+                hostPath:
+                  path: /mnt/k8s-disks/0
+              - name: local-cache
+                hostPath:
+                  path: /opt/dlami/nvme/.cache
+              - name: inst-nvme
+                hostPath:
+                  path: /opt/dlami/nvme/checkpoints/
+              - name: persistent-storage-fsx
+                persistentVolumeClaim:
+                  claimName: fsx-claim

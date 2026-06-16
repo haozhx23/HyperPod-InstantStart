@@ -58,17 +58,30 @@ function generateNLBAnnotations(isExternal) {
  *
  * @param {string} commandString - 启动命令字符串
  * @returns {Object} 解析结果
- * @returns {string[]} returns.fullCommand - 完整命令数组
- * @returns {string[]} returns.args - 参数部分（排除入口点）
+ * @returns {string[]} returns.command - K8s container.command 部分（entrypoint tokens）
+ * @returns {string[]} returns.args - K8s container.args 部分（entrypoint 之后的参数；custom 时为空）
  * @returns {string} returns.commandType - 命令类型: 'vllm' | 'sglang' | 'custom'
  *
+ * 拆分规则（"全局唯一一种写法"，无向后兼容）：
+ *   - vllm serve <args>                                       → command=['vllm','serve'],                                      args=<args>
+ *   - python3 -m vllm.entrypoints.openai.api_server <args>    → command=['python3','-m','vllm.entrypoints.openai.api_server'], args=<args>
+ *   - python3 -m sglang.launch_server <args>                  → command=['python3','-m','sglang.launch_server'],               args=<args>
+ *   - 其它（custom）                                           → command=<整条命令>,                                            args=[]
+ *
+ * 设计意图：textarea 写啥，K8s 就跑啥（"host 体验"）。command 覆盖 ENTRYPOINT，
+ * 不依赖镜像作者的 ENTRYPOINT 设计。
+ *
  * @example
- * const result = parseInferenceCommand('vllm serve meta-llama/Llama-3-8b --tensor-parallel-size 4');
- * // result = {
- * //   fullCommand: ['vllm', 'serve', 'meta-llama/Llama-3-8b', '--tensor-parallel-size', '4'],
- * //   args: ['meta-llama/Llama-3-8b', '--tensor-parallel-size', '4'],
- * //   commandType: 'vllm'
- * // }
+ * parseInferenceCommand('vllm serve --model /opt/ml/model --tensor-parallel-size 4')
+ * // → { command: ['vllm','serve'],
+ * //     args: ['--model','/opt/ml/model','--tensor-parallel-size','4'],
+ * //     commandType: 'vllm' }
+ *
+ * @example
+ * parseInferenceCommand('python3 -m sglang.launch_server --model-path /opt/ml/model --port 8000')
+ * // → { command: ['python3','-m','sglang.launch_server'],
+ * //     args: ['--model-path','/opt/ml/model','--port','8000'],
+ * //     commandType: 'sglang' }
  */
 function parseInferenceCommand(commandString) {
   // 移除换行符和多余空格，处理反斜杠换行
@@ -96,28 +109,45 @@ function parseInferenceCommand(commandString) {
     throw new Error('Command cannot be empty');
   }
 
-  // 检查是否为已知的命令格式（用于框架识别）
-  const isVllmCommand = parts.includes('python3') && parts.includes('-m') && parts.includes('vllm.entrypoints.openai.api_server');
+  // 入口校验：第一个 token 不能是 - 或 -- 开头（必须是可执行命令名）
+  if (parts[0].startsWith('-')) {
+    throw new Error(
+      `Command must start with an executable (e.g. 'vllm', 'python3'), got '${parts[0]}'. ` +
+      `Type the full command as you would on host.`
+    );
+  }
+
+  // 框架识别：检测已知的 entrypoint 模式
+  const isVllmPyCommand = parts.includes('python3') && parts.includes('-m') && parts.includes('vllm.entrypoints.openai.api_server');
   const isVllmServeCommand = parts.includes('vllm') && parts.includes('serve');
   const isSglangCommand = parts.includes('python3') && parts.includes('-m') && parts.includes('sglang.launch_server');
 
-  let entrypointIndex = -1;
+  let entrypointEnd = -1;  // 包含 entrypoint 最后一个 token 的索引
 
-  if (isVllmCommand) {
-    entrypointIndex = parts.findIndex(part => part === 'vllm.entrypoints.openai.api_server');
+  if (isVllmPyCommand) {
+    entrypointEnd = parts.findIndex(p => p === 'vllm.entrypoints.openai.api_server');
   } else if (isVllmServeCommand) {
-    entrypointIndex = parts.findIndex(part => part === 'serve');
+    entrypointEnd = parts.findIndex(p => p === 'serve');
   } else if (isSglangCommand) {
-    entrypointIndex = parts.findIndex(part => part === 'sglang.launch_server');
+    entrypointEnd = parts.findIndex(p => p === 'sglang.launch_server');
   }
 
-  const args = entrypointIndex >= 0 ? parts.slice(entrypointIndex + 1) : parts.slice(1);
+  let command, args;
+  if (entrypointEnd >= 0) {
+    // 已知框架：拆分 command + args
+    command = parts.slice(0, entrypointEnd + 1);
+    args = parts.slice(entrypointEnd + 1);
+  } else {
+    // custom：全部塞 command，没有 args
+    command = parts;
+    args = [];
+  }
 
-  return {
-    fullCommand: parts,
-    args: args,
-    commandType: (isVllmCommand || isVllmServeCommand) ? 'vllm' : (isSglangCommand ? 'sglang' : 'custom')
-  };
+  const commandType = (isVllmPyCommand || isVllmServeCommand)
+    ? 'vllm'
+    : (isSglangCommand ? 'sglang' : 'custom');
+
+  return { command, args, commandType };
 }
 
 

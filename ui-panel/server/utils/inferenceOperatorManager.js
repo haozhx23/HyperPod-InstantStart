@@ -175,10 +175,13 @@ class InferenceOperatorManager {
     await this._tagSubnetsForAlb(vpcId, region);
     steps.push({ step: 'subnetTags', status: 'done' });
 
-    // Step 5: 创建 S3 VPC Gateway endpoint（幂等）
-    console.log('[InferenceOperator] Step 5: Ensuring S3 VPC endpoint...');
-    const s3VpceResult = await this._ensureS3VpcEndpoint(vpcId, region);
-    steps.push({ step: 's3VpcEndpoint', ...s3VpceResult });
+    // Step 5: 确保 S3 VPC Gateway endpoint 覆盖 EKS cluster 控制面子网对应的 RT
+    // 这是 inference operator 特有的需求：SageMaker VPC-mode managed container
+    // 会被调度到 EKS cluster subnet，它需要通过 S3 VPCE 到你的 TLS bucket 拉 CA 证书。
+    // hp-compute-* 子网的 S3 VPCE 关联由 cluster 创建流程负责，这里不碰。
+    console.log('[InferenceOperator] Step 5: Ensuring S3 VPC endpoint for EKS cluster subnets...');
+    const s3VpceResult = await this._ensureS3VpcEndpointForEksClusterSubnets(eksClusterName, vpcId, region);
+    steps.push({ step: 's3VpcEndpointForEksClusterSubnets', ...s3VpceResult });
 
     // Step 6: 获取 HyperPod Cluster ARN
     const hyperPodClusterArn = await this._getHyperPodClusterArn(activeClusterName);
@@ -205,7 +208,15 @@ class InferenceOperatorManager {
     await this._waitAddonActive(eksClusterName, region);
     steps.push({ step: 'waitActive', status: 'ACTIVE' });
 
-    // Step 9: 保存 metadata
+    // Step 9: 等待 controller-manager pod Ready
+    // EKS Addon 的 ACTIVE 只保证 manifests 被 apply，不保证 controller pod 真的能启动。
+    // 如果 operator 新版本引入了老 IAM policy 里没有的新 action，pod 会 CrashLoopBackOff。
+    // 这一步兜底保证 install 返回成功前 controller 真的 Ready，失败时带出 manager 日志帮助排查。
+    console.log('[InferenceOperator] Step 9: Waiting for controller-manager pod Ready...');
+    await this._waitControllerReady(region);
+    steps.push({ step: 'controllerReady', status: 'Ready' });
+
+    // Step 10: 保存 metadata
     await this._saveMetadata(activeClusterName, { tlsBucket, roles, addonConfig });
 
     console.log('[InferenceOperator] Installation complete');
@@ -408,6 +419,68 @@ class InferenceOperatorManager {
     throw new Error('Timed out waiting for addon to be deleted');
   }
 
+  /**
+   * 等待 controller-manager deployment 变为 Ready。
+   *
+   * 为什么需要这一步：
+   *   EKS Addon 的 status=ACTIVE 只表示 manifests 被 apply 且 Deployment 对象存在，
+   *   并不保证底层 pod 真的能启动。如果 operator 新版本引入的新 AWS API 调用没有
+   *   对应 IAM 权限（常见于 operator 升级后 execution role 没跟进），pod 会在
+   *   startup probe 上失败并 CrashLoopBackOff。这一步兜底保证 install 返回前
+   *   controller 真的健康，否则抛错并带上 manager 容器的最后日志。
+   */
+  async _waitControllerReady(region) {
+    const timeoutMs = 3 * 60 * 1000; // 3 分钟
+    const intervalMs = 10000;
+    const start = Date.now();
+    const ns = InferenceOperatorManager.NAMESPACE;
+    const deploymentName = 'hyperpod-inference-controller-manager';
+
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const { stdout } = await execAsync(
+          `kubectl get deployment ${deploymentName} -n ${ns} -o jsonpath='{.status.readyReplicas}/{.status.replicas}' 2>/dev/null`
+        );
+        const raw = stdout.trim();
+        const parts = raw.split('/');
+        const ready = Number(parts[0]) || 0;
+        const total = Number(parts[1]) || 0;
+        if (ready >= 1 && ready === total) {
+          console.log(`[InferenceOperator] Controller Ready: ${raw}`);
+          return;
+        }
+        console.log(`[InferenceOperator] Controller not Ready yet: ${raw || '(empty)'}`);
+      } catch (e) {
+        console.log(`[InferenceOperator] kubectl probe not ready yet: ${e.message.split('\n')[0]}`);
+      }
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+
+    // 超时：抓取 manager 容器最后日志帮助排查（current + previous 都试一下）
+    let tail = '(no logs available)';
+    try {
+      const { stdout } = await execAsync(
+        `kubectl logs -n ${ns} -l control-plane=controller-manager -c manager --tail=30 2>&1 || true`
+      );
+      if (stdout.trim()) tail = stdout;
+    } catch {}
+    try {
+      if (tail === '(no logs available)') {
+        const { stdout } = await execAsync(
+          `kubectl logs -n ${ns} -l control-plane=controller-manager -c manager --previous --tail=30 2>&1 || true`
+        );
+        if (stdout.trim()) tail = stdout;
+      }
+    } catch {}
+
+    throw new Error(
+      `Inference Operator controller-manager did not become Ready within 3 min.\n` +
+      `This usually means the operator role is missing an IAM permission introduced by a newer operator version, ` +
+      `or a dependency (ALB/KEDA) is not healthy.\n` +
+      `Last manager container logs:\n${tail}`
+    );
+  }
+
   // ================================================================
   // 前置依赖 addon 检查 + 自动补装
   // ================================================================
@@ -547,48 +620,55 @@ class InferenceOperatorManager {
   async _createExecutionRole(clusterTag, accountId, region, oidcId) {
     const roleName = this._roleNames(clusterTag).execution;
 
-    // 已存在则直接返回
+    // Reconcile 语义：role 存在则复用，不存在则创建；无论如何都确保 policy 挂上
+    let roleArn = null;
     try {
       const { stdout } = await execAsync(`aws iam get-role --role-name ${roleName} --query 'Role.Arn' --output text 2>/dev/null`);
       if (stdout.trim()) {
-        console.log(`[InferenceOperator][iam] Execution role already exists: ${roleName}`);
-        return stdout.trim();
+        roleArn = stdout.trim();
+        console.log(`[InferenceOperator][iam] Execution role already exists: ${roleName}, reconciling policy`);
       }
     } catch {}
 
-    const trustPolicy = {
-      Version: '2012-10-17',
-      Statement: [
-        {
-          Effect: 'Allow',
-          Principal: { Service: 'sagemaker.amazonaws.com' },
-          Action: 'sts:AssumeRole',
-        },
-        {
-          Effect: 'Allow',
-          Principal: { Federated: `arn:aws:iam::${accountId}:oidc-provider/oidc.eks.${region}.amazonaws.com/id/${oidcId}` },
-          Action: 'sts:AssumeRoleWithWebIdentity',
-          Condition: {
-            StringLike: {
-              [`oidc.eks.${region}.amazonaws.com/id/${oidcId}:aud`]: 'sts.amazonaws.com',
-              [`oidc.eks.${region}.amazonaws.com/id/${oidcId}:sub`]: `system:serviceaccount:${InferenceOperatorManager.NAMESPACE}:hyperpod-inference-controller-manager`,
+    if (!roleArn) {
+      const trustPolicy = {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Principal: { Service: 'sagemaker.amazonaws.com' },
+            Action: 'sts:AssumeRole',
+          },
+          {
+            Effect: 'Allow',
+            Principal: { Federated: `arn:aws:iam::${accountId}:oidc-provider/oidc.eks.${region}.amazonaws.com/id/${oidcId}` },
+            Action: 'sts:AssumeRoleWithWebIdentity',
+            Condition: {
+              StringLike: {
+                [`oidc.eks.${region}.amazonaws.com/id/${oidcId}:aud`]: 'sts.amazonaws.com',
+                [`oidc.eks.${region}.amazonaws.com/id/${oidcId}:sub`]: `system:serviceaccount:${InferenceOperatorManager.NAMESPACE}:hyperpod-inference-controller-manager`,
+              },
             },
           },
-        },
-      ],
-    };
+        ],
+      };
 
-    const trustPath = `/tmp/inf-exec-trust-${Date.now()}.json`;
-    fs.writeFileSync(trustPath, JSON.stringify(trustPolicy));
-    try {
-      await execAsync(`aws iam create-role --role-name ${roleName} --assume-role-policy-document file://${trustPath}`);
-      await execAsync(`aws iam attach-role-policy --role-name ${roleName} --policy-arn ${InferenceOperatorManager.MANAGED_INFERENCE_ACCESS}`);
-      const { stdout } = await execAsync(`aws iam get-role --role-name ${roleName} --query 'Role.Arn' --output text`);
-      console.log(`[InferenceOperator][iam] Created execution role: ${roleName}`);
-      return stdout.trim();
-    } finally {
-      fs.unlinkSync(trustPath);
+      const trustPath = `/tmp/inf-exec-trust-${Date.now()}.json`;
+      fs.writeFileSync(trustPath, JSON.stringify(trustPolicy));
+      try {
+        await execAsync(`aws iam create-role --role-name ${roleName} --assume-role-policy-document file://${trustPath}`);
+        const { stdout } = await execAsync(`aws iam get-role --role-name ${roleName} --query 'Role.Arn' --output text`);
+        roleArn = stdout.trim();
+        console.log(`[InferenceOperator][iam] Created execution role: ${roleName}`);
+      } finally {
+        if (fs.existsSync(trustPath)) fs.unlinkSync(trustPath);
+      }
     }
+
+    // 无论新建还是已存在，都 reconcile policy（attach-role-policy 对已挂 arn 是幂等的）
+    await execAsync(`aws iam attach-role-policy --role-name ${roleName} --policy-arn ${InferenceOperatorManager.MANAGED_INFERENCE_ACCESS}`);
+    console.log(`[InferenceOperator][iam] Ensured managed policy on ${roleName}: AmazonSageMakerHyperPodInferenceAccess`);
+    return roleArn;
   }
 
   async _createAlbRole(clusterTag, accountId, region, oidcId) {
@@ -596,51 +676,59 @@ class InferenceOperatorManager {
     const policyName = this._policyNames(clusterTag).alb;
     const policyArn = `arn:aws:iam::${accountId}:policy/${policyName}`;
 
-    // 幂等
+    // Reconcile 语义：role 存在则复用，不存在则创建；无论如何都确保 policy 存在并挂上
+    let roleArn = null;
     try {
       const { stdout } = await execAsync(`aws iam get-role --role-name ${roleName} --query 'Role.Arn' --output text 2>/dev/null`);
       if (stdout.trim()) {
-        console.log(`[InferenceOperator][iam] ALB role already exists: ${roleName}`);
-        return stdout.trim();
+        roleArn = stdout.trim();
+        console.log(`[InferenceOperator][iam] ALB role already exists: ${roleName}, reconciling policy`);
       }
     } catch {}
 
-    const trustPolicy = {
-      Version: '2012-10-17',
-      Statement: [
-        {
-          Effect: 'Allow',
-          Principal: { Federated: `arn:aws:iam::${accountId}:oidc-provider/oidc.eks.${region}.amazonaws.com/id/${oidcId}` },
-          Action: 'sts:AssumeRoleWithWebIdentity',
-          Condition: {
-            StringEquals: {
-              [`oidc.eks.${region}.amazonaws.com/id/${oidcId}:sub`]: `system:serviceaccount:${InferenceOperatorManager.NAMESPACE}:aws-load-balancer-controller`,
-              [`oidc.eks.${region}.amazonaws.com/id/${oidcId}:aud`]: 'sts.amazonaws.com',
-            },
-          },
-        },
-      ],
-    };
-
-    // 下载官方 ALB controller iam_policy.json
+    // 下载官方 ALB controller iam_policy.json（无论是否需要 create-policy 都要用一次）
     const policyFilePath = `/tmp/alb-iam-policy-${Date.now()}.json`;
     await execAsync(`curl -fsSL -o ${policyFilePath} ${InferenceOperatorManager.ALB_IAM_POLICY_URL}`);
 
-    const trustPath = `/tmp/inf-alb-trust-${Date.now()}.json`;
-    fs.writeFileSync(trustPath, JSON.stringify(trustPolicy));
-
     try {
-      // 创建 policy（幂等）
+      // 创建 policy（已存在会 EntityAlreadyExists，被 `|| true` 吞掉）
       await execAsync(`aws iam create-policy --policy-name ${policyName} --policy-document file://${policyFilePath} 2>/dev/null || true`);
-      // 创建 role
-      await execAsync(`aws iam create-role --role-name ${roleName} --assume-role-policy-document file://${trustPath}`);
+
+      if (!roleArn) {
+        const trustPolicy = {
+          Version: '2012-10-17',
+          Statement: [
+            {
+              Effect: 'Allow',
+              Principal: { Federated: `arn:aws:iam::${accountId}:oidc-provider/oidc.eks.${region}.amazonaws.com/id/${oidcId}` },
+              Action: 'sts:AssumeRoleWithWebIdentity',
+              Condition: {
+                StringEquals: {
+                  [`oidc.eks.${region}.amazonaws.com/id/${oidcId}:sub`]: `system:serviceaccount:${InferenceOperatorManager.NAMESPACE}:aws-load-balancer-controller`,
+                  [`oidc.eks.${region}.amazonaws.com/id/${oidcId}:aud`]: 'sts.amazonaws.com',
+                },
+              },
+            },
+          ],
+        };
+        const trustPath = `/tmp/inf-alb-trust-${Date.now()}.json`;
+        fs.writeFileSync(trustPath, JSON.stringify(trustPolicy));
+        try {
+          await execAsync(`aws iam create-role --role-name ${roleName} --assume-role-policy-document file://${trustPath}`);
+          const { stdout } = await execAsync(`aws iam get-role --role-name ${roleName} --query 'Role.Arn' --output text`);
+          roleArn = stdout.trim();
+          console.log(`[InferenceOperator][iam] Created ALB role: ${roleName}`);
+        } finally {
+          if (fs.existsSync(trustPath)) fs.unlinkSync(trustPath);
+        }
+      }
+
+      // reconcile policy attachment（对已挂是幂等的）
       await execAsync(`aws iam attach-role-policy --role-name ${roleName} --policy-arn ${policyArn}`);
-      const { stdout } = await execAsync(`aws iam get-role --role-name ${roleName} --query 'Role.Arn' --output text`);
-      console.log(`[InferenceOperator][iam] Created ALB role: ${roleName}`);
-      return stdout.trim();
+      console.log(`[InferenceOperator][iam] Ensured policy on ${roleName}: ${policyName}`);
+      return roleArn;
     } finally {
       if (fs.existsSync(policyFilePath)) fs.unlinkSync(policyFilePath);
-      if (fs.existsSync(trustPath)) fs.unlinkSync(trustPath);
     }
   }
 
@@ -649,30 +737,15 @@ class InferenceOperatorManager {
     const policyName = this._policyNames(clusterTag).keda;
     const policyArn = `arn:aws:iam::${accountId}:policy/${policyName}`;
 
+    // Reconcile 语义
+    let roleArn = null;
     try {
       const { stdout } = await execAsync(`aws iam get-role --role-name ${roleName} --query 'Role.Arn' --output text 2>/dev/null`);
       if (stdout.trim()) {
-        console.log(`[InferenceOperator][iam] KEDA role already exists: ${roleName}`);
-        return stdout.trim();
+        roleArn = stdout.trim();
+        console.log(`[InferenceOperator][iam] KEDA role already exists: ${roleName}, reconciling policy`);
       }
     } catch {}
-
-    const trustPolicy = {
-      Version: '2012-10-17',
-      Statement: [
-        {
-          Effect: 'Allow',
-          Principal: { Federated: `arn:aws:iam::${accountId}:oidc-provider/oidc.eks.${region}.amazonaws.com/id/${oidcId}` },
-          Action: 'sts:AssumeRoleWithWebIdentity',
-          Condition: {
-            StringEquals: {
-              [`oidc.eks.${region}.amazonaws.com/id/${oidcId}:sub`]: `system:serviceaccount:${InferenceOperatorManager.NAMESPACE}:keda-operator`,
-              [`oidc.eks.${region}.amazonaws.com/id/${oidcId}:aud`]: 'sts.amazonaws.com',
-            },
-          },
-        },
-      ],
-    };
 
     const permissionPolicy = {
       Version: '2012-10-17',
@@ -690,20 +763,45 @@ class InferenceOperatorManager {
       ],
     };
 
-    const trustPath = `/tmp/inf-keda-trust-${Date.now()}.json`;
     const policyPath = `/tmp/inf-keda-policy-${Date.now()}.json`;
-    fs.writeFileSync(trustPath, JSON.stringify(trustPolicy));
     fs.writeFileSync(policyPath, JSON.stringify(permissionPolicy));
 
     try {
       await execAsync(`aws iam create-policy --policy-name ${policyName} --policy-document file://${policyPath} 2>/dev/null || true`);
-      await execAsync(`aws iam create-role --role-name ${roleName} --assume-role-policy-document file://${trustPath}`);
+
+      if (!roleArn) {
+        const trustPolicy = {
+          Version: '2012-10-17',
+          Statement: [
+            {
+              Effect: 'Allow',
+              Principal: { Federated: `arn:aws:iam::${accountId}:oidc-provider/oidc.eks.${region}.amazonaws.com/id/${oidcId}` },
+              Action: 'sts:AssumeRoleWithWebIdentity',
+              Condition: {
+                StringEquals: {
+                  [`oidc.eks.${region}.amazonaws.com/id/${oidcId}:sub`]: `system:serviceaccount:${InferenceOperatorManager.NAMESPACE}:keda-operator`,
+                  [`oidc.eks.${region}.amazonaws.com/id/${oidcId}:aud`]: 'sts.amazonaws.com',
+                },
+              },
+            },
+          ],
+        };
+        const trustPath = `/tmp/inf-keda-trust-${Date.now()}.json`;
+        fs.writeFileSync(trustPath, JSON.stringify(trustPolicy));
+        try {
+          await execAsync(`aws iam create-role --role-name ${roleName} --assume-role-policy-document file://${trustPath}`);
+          const { stdout } = await execAsync(`aws iam get-role --role-name ${roleName} --query 'Role.Arn' --output text`);
+          roleArn = stdout.trim();
+          console.log(`[InferenceOperator][iam] Created KEDA role: ${roleName}`);
+        } finally {
+          if (fs.existsSync(trustPath)) fs.unlinkSync(trustPath);
+        }
+      }
+
       await execAsync(`aws iam attach-role-policy --role-name ${roleName} --policy-arn ${policyArn}`);
-      const { stdout } = await execAsync(`aws iam get-role --role-name ${roleName} --query 'Role.Arn' --output text`);
-      console.log(`[InferenceOperator][iam] Created KEDA role: ${roleName}`);
-      return stdout.trim();
+      console.log(`[InferenceOperator][iam] Ensured policy on ${roleName}: ${policyName}`);
+      return roleArn;
     } finally {
-      if (fs.existsSync(trustPath)) fs.unlinkSync(trustPath);
       if (fs.existsSync(policyPath)) fs.unlinkSync(policyPath);
     }
   }
@@ -711,47 +809,54 @@ class InferenceOperatorManager {
   async _createGatedRole(clusterTag, accountId, region, oidcId) {
     const roleName = this._roleNames(clusterTag).gated;
 
+    // Reconcile 语义
+    let roleArn = null;
     try {
       const { stdout } = await execAsync(`aws iam get-role --role-name ${roleName} --query 'Role.Arn' --output text 2>/dev/null`);
       if (stdout.trim()) {
-        console.log(`[InferenceOperator][iam] Gated role already exists: ${roleName}`);
-        return stdout.trim();
+        roleArn = stdout.trim();
+        console.log(`[InferenceOperator][iam] Gated role already exists: ${roleName}, reconciling policy`);
       }
     } catch {}
 
-    const trustPolicy = {
-      Version: '2012-10-17',
-      Statement: [
-        {
-          Effect: 'Allow',
-          Principal: { Federated: `arn:aws:iam::${accountId}:oidc-provider/oidc.eks.${region}.amazonaws.com/id/${oidcId}` },
-          Action: 'sts:AssumeRoleWithWebIdentity',
-          Condition: {
-            StringLike: {
-              [`oidc.eks.${region}.amazonaws.com/id/${oidcId}:sub`]: 'system:serviceaccount:*:hyperpod-inference-service-account*',
-              [`oidc.eks.${region}.amazonaws.com/id/${oidcId}:aud`]: 'sts.amazonaws.com',
+    if (!roleArn) {
+      const trustPolicy = {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Principal: { Federated: `arn:aws:iam::${accountId}:oidc-provider/oidc.eks.${region}.amazonaws.com/id/${oidcId}` },
+            Action: 'sts:AssumeRoleWithWebIdentity',
+            Condition: {
+              StringLike: {
+                [`oidc.eks.${region}.amazonaws.com/id/${oidcId}:sub`]: 'system:serviceaccount:*:hyperpod-inference-service-account*',
+                [`oidc.eks.${region}.amazonaws.com/id/${oidcId}:aud`]: 'sts.amazonaws.com',
+              },
             },
           },
-        },
-        {
-          Effect: 'Allow',
-          Principal: { Service: 'sagemaker.amazonaws.com' },
-          Action: 'sts:AssumeRole',
-        },
-      ],
-    };
+          {
+            Effect: 'Allow',
+            Principal: { Service: 'sagemaker.amazonaws.com' },
+            Action: 'sts:AssumeRole',
+          },
+        ],
+      };
 
-    const trustPath = `/tmp/inf-gated-trust-${Date.now()}.json`;
-    fs.writeFileSync(trustPath, JSON.stringify(trustPolicy));
-    try {
-      await execAsync(`aws iam create-role --role-name ${roleName} --assume-role-policy-document file://${trustPath}`);
-      await execAsync(`aws iam attach-role-policy --role-name ${roleName} --policy-arn ${InferenceOperatorManager.MANAGED_GATED_MODEL_ACCESS}`);
-      const { stdout } = await execAsync(`aws iam get-role --role-name ${roleName} --query 'Role.Arn' --output text`);
-      console.log(`[InferenceOperator][iam] Created gated role: ${roleName}`);
-      return stdout.trim();
-    } finally {
-      fs.unlinkSync(trustPath);
+      const trustPath = `/tmp/inf-gated-trust-${Date.now()}.json`;
+      fs.writeFileSync(trustPath, JSON.stringify(trustPolicy));
+      try {
+        await execAsync(`aws iam create-role --role-name ${roleName} --assume-role-policy-document file://${trustPath}`);
+        const { stdout } = await execAsync(`aws iam get-role --role-name ${roleName} --query 'Role.Arn' --output text`);
+        roleArn = stdout.trim();
+        console.log(`[InferenceOperator][iam] Created gated role: ${roleName}`);
+      } finally {
+        if (fs.existsSync(trustPath)) fs.unlinkSync(trustPath);
+      }
     }
+
+    await execAsync(`aws iam attach-role-policy --role-name ${roleName} --policy-arn ${InferenceOperatorManager.MANAGED_GATED_MODEL_ACCESS}`);
+    console.log(`[InferenceOperator][iam] Ensured managed policy on ${roleName}: AmazonSageMakerHyperPodGatedModelAccess`);
+    return roleArn;
   }
 
   async _deleteAllIamRoles(clusterTag, accountId) {
@@ -958,6 +1063,98 @@ class InferenceOperatorManager {
     );
     console.log(`[InferenceOperator][vpce] Created S3 VPC endpoint: ${createStd.trim()}`);
     return { status: 'created', vpceId: createStd.trim() };
+  }
+
+  /**
+   * 确保 EKS cluster 控制面 private subnet 对应的 route table 挂上 S3 VPC Gateway endpoint。
+   *
+   * 为什么这是一个单独的函数（不与 _ensureS3VpcEndpoint 合并）：
+   *   两类子网逻辑和职责完全不同：
+   *   - hp-compute-*（计算子网）：由 HyperPod cluster 创建流程负责其 RT 上的 S3 VPCE 关联
+   *   - EKS Cluster Private Subnet（EKS 控制面子网）：由 Inference Operator 创建流程负责
+   *     因为 SageMaker VPC-mode managed container 会被调度到这些 subnet 上，它需要 S3
+   *     路由去你的 TLS bucket 拉 CA 证书；没有这个路由 → ConnectTimeout → endpoint ping
+   *     health check 失败 → CreationFailed（见 EXEC-LOG 2026-05-12 T04:05）。
+   *
+   * 本项目约定：EKS cluster subnet 与 hp-compute-* subnet 不重合（项目创建流程保证），
+   * 所以这个函数只关心 EKS cluster subnet 那一侧。
+   *
+   * 逻辑：
+   *   1. 从 EKS 拿 cluster.resourcesVpcConfig.subnetIds
+   *   2. 对每个 subnet 解析其实际 RT（显式关联 RT 或 VPC main RT）
+   *   3. 查 S3 Gateway VPCE
+   *      - 不存在：创建并关联到上述 RT
+   *      - 存在但缺某个 RT：modify-vpc-endpoint --add-route-table-ids 补齐
+   *      - 已完整：no-op
+   */
+  async _ensureS3VpcEndpointForEksClusterSubnets(eksClusterName, vpcId, region) {
+    // 1. EKS cluster 注册的 subnetIds（控制面/VPC-mode 工作负载子网）
+    const { stdout: subnetStd } = await execAsync(
+      `aws eks describe-cluster --name ${eksClusterName} --region ${region} --query 'cluster.resourcesVpcConfig.subnetIds' --output text`
+    );
+    const eksSubnets = subnetStd.trim().split(/\s+/).filter(Boolean);
+    if (eksSubnets.length === 0) {
+      console.warn('[InferenceOperator][vpce-eks] No EKS cluster subnets found, skipping');
+      return { status: 'no_eks_subnets' };
+    }
+    console.log(`[InferenceOperator][vpce-eks] EKS cluster subnets: ${eksSubnets.join(', ')}`);
+
+    // 2. VPC main RT 兜底（没有显式关联的 subnet 会用它）
+    const { stdout: mainRtStd } = await execAsync(
+      `aws ec2 describe-route-tables --region ${region} --filters "Name=vpc-id,Values=${vpcId}" "Name=association.main,Values=true" --query 'RouteTables[0].RouteTableId' --output text`
+    );
+    const mainRtId = mainRtStd.trim();
+
+    const requiredRtIds = new Set();
+    for (const sn of eksSubnets) {
+      const { stdout: rtStd } = await execAsync(
+        `aws ec2 describe-route-tables --region ${region} --filters "Name=vpc-id,Values=${vpcId}" "Name=association.subnet-id,Values=${sn}" --query 'RouteTables[0].RouteTableId' --output text`
+      );
+      const explicit = rtStd.trim();
+      if (explicit && explicit !== 'None') {
+        requiredRtIds.add(explicit);
+      } else if (mainRtId && mainRtId !== 'None') {
+        requiredRtIds.add(mainRtId);
+      }
+    }
+    const requiredRts = [...requiredRtIds];
+    if (requiredRts.length === 0) {
+      console.warn('[InferenceOperator][vpce-eks] Could not resolve any RT for EKS cluster subnets, skipping');
+      return { status: 'no_rts_resolved' };
+    }
+    console.log(`[InferenceOperator][vpce-eks] EKS cluster subnets resolve to RTs: ${requiredRts.join(', ')}`);
+
+    // 3. 查/创建 S3 Gateway VPCE
+    //    加 Name=vpc-endpoint-type,Values=Gateway 过滤，避免极罕见情况下 VPC 里同时存在
+    //    S3 Interface Endpoint 时误取。
+    const { stdout: existingStd } = await execAsync(
+      `aws ec2 describe-vpc-endpoints --region ${region} --filters "Name=vpc-id,Values=${vpcId}" "Name=service-name,Values=com.amazonaws.${region}.s3" "Name=vpc-endpoint-type,Values=Gateway" --query 'VpcEndpoints[0].{Id:VpcEndpointId,RTs:RouteTableIds}' --output json`
+    );
+    let existing = null;
+    try { existing = JSON.parse(existingStd.trim() || 'null'); } catch {}
+
+    if (!existing || !existing.Id) {
+      // VPCE 不存在 → 创建并只关联 EKS cluster 子网对应的 RT
+      const { stdout: createStd } = await execAsync(
+        `aws ec2 create-vpc-endpoint --region ${region} --vpc-id ${vpcId} --vpc-endpoint-type Gateway --service-name com.amazonaws.${region}.s3 --route-table-ids ${requiredRts.join(' ')} --query 'VpcEndpoint.VpcEndpointId' --output text`
+      );
+      console.log(`[InferenceOperator][vpce-eks] Created S3 VPC endpoint ${createStd.trim()} for EKS cluster RTs (${requiredRts.length})`);
+      return { status: 'created', vpceId: createStd.trim(), rts: requiredRts };
+    }
+
+    // VPCE 已存在 → 补齐缺失的 RT（reconcile）
+    const currentRts = new Set(existing.RTs || []);
+    const missingRts = requiredRts.filter(id => !currentRts.has(id));
+    if (missingRts.length === 0) {
+      console.log(`[InferenceOperator][vpce-eks] S3 VPC endpoint ${existing.Id} already covers all EKS cluster RTs`);
+      return { status: 'exists', vpceId: existing.Id, rts: requiredRts };
+    }
+    console.log(`[InferenceOperator][vpce-eks] S3 VPC endpoint ${existing.Id} missing ${missingRts.length} EKS RT(s), adding: ${missingRts.join(', ')}`);
+    await execAsync(
+      `aws ec2 modify-vpc-endpoint --region ${region} --vpc-endpoint-id ${existing.Id} --add-route-table-ids ${missingRts.join(' ')}`
+    );
+    console.log(`[InferenceOperator][vpce-eks] Added ${missingRts.length} EKS RT(s) to ${existing.Id}`);
+    return { status: 'reconciled', vpceId: existing.Id, addedRts: missingRts };
   }
 
   // ================================================================

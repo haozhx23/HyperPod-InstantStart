@@ -996,9 +996,14 @@ router.post('/deploy/container', async (req, res) => {
       generateResourcesSection({ gpuCount, gpuMemory, cpuRequest, memoryRequest })
     ));
 
-    // 启动命令（可选）
+    // 启动命令（可选）—— "host 体验" 一致写法：command + args 双注入
     if (parsedCommand) {
-      extraPatches.push(P.set([...containerPath, 'command'], parsedCommand.fullCommand));
+      if (parsedCommand.command.length > 0) {
+        extraPatches.push(P.set([...containerPath, 'command'], parsedCommand.command));
+      }
+      if (parsedCommand.args.length > 0) {
+        extraPatches.push(P.set([...containerPath, 'args'], parsedCommand.args));
+      }
     }
 
     // HuggingFace Token 注入到 env 列表最前面
@@ -1006,6 +1011,14 @@ router.post('/deploy/container', async (req, res) => {
       extraPatches.push(P.prepend([...containerPath, 'env'], {
         name: 'HUGGING_FACE_HUB_TOKEN',
         value: huggingFaceToken,
+      }));
+    }
+
+    // SGLang 镜像：跳过项目遥测请求（隔离 VPC 启动时间 + 安全合规）
+    if (typeof dockerImage === 'string' && dockerImage.includes('sglang')) {
+      extraPatches.push(P.append([...containerPath, 'env'], {
+        name: 'SGLANG_DISABLE_USAGE_STATS',
+        value: '1',
       }));
     }
 
@@ -1136,6 +1149,7 @@ router.post('/deploy/managed-inference', async (req, res) => {
       s3BucketName,
       s3Region,
       modelLocation,
+      prefetchEnabled = true,
       workerCommand,
       // KV Cache and Intelligent Routing
       kvCache,
@@ -1173,19 +1187,19 @@ router.post('/deploy/managed-inference', async (req, res) => {
     // 生成 NLB 注解
     const nlbAnnotations = generateNLBAnnotations(isExternal);
 
-    // 解析 workerCommand
+    // 解析 workerCommand —— "host 体验" 一致写法
     const parsedCommand = parseInferenceCommand(workerCommand);
     console.log('Parsed managed inference command:', parsedCommand);
-    const argsToUse = parsedCommand.commandType === 'vllm'
-      ? (parsedCommand.args || [])
-      : (parsedCommand.fullCommand || []);
-    console.log(`Using ${parsedCommand.commandType === 'vllm' ? 'args only (vLLM ENTRYPOINT)' : 'full command'}`);
 
     // 组装可选 block 的 patches —— 每个条件一段，结构清晰
     const extraPatches = [];
 
-    if (argsToUse.length > 0) {
-      extraPatches.push(P.set(['spec', 'worker', 'args'], argsToUse));
+    // command + args 双注入（command 覆盖 ENTRYPOINT，避免依赖镜像作者设计）
+    if (parsedCommand.command.length > 0) {
+      extraPatches.push(P.set(['spec', 'worker', 'command'], parsedCommand.command));
+    }
+    if (parsedCommand.args.length > 0) {
+      extraPatches.push(P.set(['spec', 'worker', 'args'], parsedCommand.args));
     }
 
     // CPU / Memory 请求
@@ -1200,6 +1214,14 @@ router.post('/deploy/managed-inference', async (req, res) => {
     if (gpuMemory && gpuMemory !== -1 && gpuMemory > 0) {
       extraPatches.push(P.set(['spec', 'worker', 'resources', 'requests', 'nvidia.com/gpumem'], gpuMemory));
       extraPatches.push(P.set(['spec', 'worker', 'resources', 'limits', 'nvidia.com/gpumem'], gpuMemory));
+    }
+
+    // SGLang 镜像：跳过项目遥测请求（隔离 VPC 启动时间 + 安全合规）
+    if (typeof dockerImage === 'string' && dockerImage.includes('sglang')) {
+      extraPatches.push(P.append(['spec', 'worker', 'environmentVariables'], {
+        name: 'SGLANG_DISABLE_USAGE_STATS',
+        value: '1',
+      }));
     }
 
     // KV Cache
@@ -1269,6 +1291,7 @@ router.post('/deploy/managed-inference', async (req, res) => {
         S3_BUCKET: s3BucketName,
         AWS_REGION: s3Region,
         MODEL_LOCATION: modelLocation,
+        PREFETCH_ENABLED: !!prefetchEnabled,
         DOCKER_IMAGE: dockerImage,
         GPU_COUNT: gpuCount,
       },

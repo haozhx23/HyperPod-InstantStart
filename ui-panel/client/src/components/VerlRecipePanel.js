@@ -14,7 +14,8 @@ import {
   Col,
   Alert,
   Typography,
-  Select
+  Select,
+  Checkbox
 } from 'antd';
 import {
   RocketOutlined,
@@ -92,7 +93,8 @@ const VerlRecipePanel = ({ onLaunch, hyperPodInstanceTypes, instanceTypesLoading
           dockerImage: '633205212955.dkr.ecr.us-west-2.amazonaws.com/hypd-verl:latest',
           workerReplicas: 1,
           gpuPerNode: 4,
-          efaPerNode: 1
+          efaPerNode: 1,
+          mounts: ['s3']
         }}
       >
         {/* 基础配置 */}
@@ -157,6 +159,25 @@ const VerlRecipePanel = ({ onLaunch, hyperPodInstanceTypes, instanceTypesLoading
           rules={[{ required: true, message: 'Please input docker image!' }]}
         >
           <Input placeholder="633205212955.dkr.ecr.us-west-2.amazonaws.com/hypd-verl:latest" />
+        </Form.Item>
+
+        {/* 挂载选择：S3 默认勾选，FSx 可选；勾选项会注入到 RayJob YAML 的 volumes/volumeMounts */}
+        <Form.Item
+          label={
+            <Space>
+              <DatabaseOutlined />
+              <Text strong>Storage Mounts</Text>
+            </Space>
+          }
+          name="mounts"
+          extra="S3 mounts at /s3, FSx at /fsx. Select what to mount into head & worker pods."
+        >
+          <Checkbox.Group
+            options={[
+              { label: 'S3 (/s3, s3-claim)', value: 's3' },
+              { label: 'FSx (/fsx, fsx-claim)', value: 'fsx' },
+            ]}
+          />
         </Form.Item>
 
         {/* Entry Point配置 */}

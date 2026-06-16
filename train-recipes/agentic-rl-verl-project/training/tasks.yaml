@@ -1,0 +1,71 @@
+# Agentic-RL veRL training task index.
+#
+# This YAML is intentionally small and UI-friendly: VerlRecipePanel still
+# submits a KubeRay RayJob from ui-panel/templates/verl-training-template.yaml.
+# Use the `entryPointPath` below directly in the UI, or render
+# rayjob-agentic-verl-template.yaml for a kubectl-only launch.
+
+defaults:
+  projectDir: /fsx/rl-agentic-on-aws
+  modelPath: /fsx/models/Qwen3-0.6B
+  mounts:
+    - fsx
+  workerReplicas: 0
+  gpuPerNode: 8
+  efaPerNode: 1
+  trainGpus: 4
+  rolloutGpus: 4
+  batchSize: 8
+  rolloutN: 4
+  epochs: 1
+
+tasks:
+  gsm8k:
+    description: GSM8K tool-use GRPO smokeable task, in-process Python tool.
+    jobName: agentic-verl-gsm8k-a1
+    entryPointPath: /fsx/rl-agentic-on-aws/aws/entry-gsm8k.sh
+    taskConfig: /fsx/rl-agentic-on-aws/aws/training/configs/gsm8k.yaml
+    trainData: /fsx/data/gsm8k/train.parquet
+    valData: /fsx/data/gsm8k/test.parquet
+    toolConfig: /workspace/verl/verl/examples/sglang_multiturn/config/tool_config/gsm8k_tool_config.yaml
+    sandboxServiceRequired: false
+
+  swe-k8s:
+    description: SWE-bench style code task using EKS sandbox pods.
+    jobName: agentic-verl-swe-k8s-a1
+    entryPointPath: /fsx/rl-agentic-on-aws/aws/entry-swe-k8s.sh
+    taskConfig: /fsx/rl-agentic-on-aws/aws/training/configs/swe-k8s.yaml
+    trainData: /fsx/data/swe/train_verl.parquet
+    valData: /fsx/data/swe/validation_verl.parquet
+    sourceData:
+      train: /fsx/data/swe/train_skyrl.parquet
+      validation: /fsx/data/swe/validation_skyrl.parquet
+    toolConfig: /fsx/rl-agentic-on-aws/tooluse/configs/swe_k8s_tool_config.yaml
+    rewardFunction: /fsx/rl-agentic-on-aws/tooluse/rewards/swe_reward.py:compute_score
+    sandboxServiceRequired: true
+    sandboxServiceUrlConfigPath: tool.sandboxApiUrl
+
+  devops-k8s:
+    description: DevOps-Gym task using EKS sandbox pods.
+    jobName: agentic-verl-devops-k8s-a1
+    entryPointPath: /fsx/rl-agentic-on-aws/aws/entry-devops-k8s.sh
+    taskConfig: /fsx/rl-agentic-on-aws/aws/training/configs/devops-k8s.yaml
+    trainData: /fsx/data/devops_gym_verl/train.parquet
+    valData: /fsx/data/devops_gym_verl/validation.parquet
+    sourceDataDir: /fsx/rl-agentic-on-aws/data/devops_gym
+    toolConfig: /fsx/rl-agentic-on-aws/tooluse/configs/devops_k8s_tool_config.yaml
+    rewardFunction: /fsx/rl-agentic-on-aws/tooluse/rewards/devops_reward.py:compute_score
+    sandboxServiceRequired: true
+    sandboxServiceUrlConfigPath: tool.sandboxApiUrl
+
+  terminal-k8s:
+    description: Terminal task using EKS sandbox pods.
+    jobName: agentic-verl-terminal-k8s-a1
+    entryPointPath: /fsx/rl-agentic-on-aws/aws/entry-terminal-k8s.sh
+    taskConfig: /fsx/rl-agentic-on-aws/aws/training/configs/terminal-k8s.yaml
+    trainData: /fsx/data/terminal_verl/train.parquet
+    valData: /fsx/data/terminal_verl/validation.parquet
+    toolConfig: /fsx/rl-agentic-on-aws/tooluse/configs/terminal_k8s_tool_config.yaml
+    rewardFunction: /fsx/rl-agentic-on-aws/tooluse/rewards/terminal_reward.py:compute_score
+    sandboxServiceRequired: true
+    sandboxServiceUrlConfigPath: tool.sandboxApiUrl

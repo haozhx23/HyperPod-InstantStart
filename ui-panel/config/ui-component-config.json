@@ -16,8 +16,14 @@
         "modelConfig": "on",
         "serviceConfig": "on",
         "sglRouting": "on",
-        "kedaScaling": "on",
-        "managedInference": "on",
+        "kedaScaling": "on"
+      }
+    },
+    "managed-inference": {
+      "enabled": "on",
+      "tabs": {
+        "managedVllmInference": "on",
+        "managedSglangInference": "on",
         "managedScaling": "on"
       }
     },

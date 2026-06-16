@@ -5,8 +5,6 @@ import PageHeader from '../components/PageHeader';
 import { selectPageTabs } from '../store/selectors';
 import ConfigPanel from '../components/ConfigPanel';
 import ServiceConfigPanel from '../components/ServiceConfigPanel';
-import ManagedInferencePanel from '../components/ManagedInferencePanel';
-import ManagedInferenceScalingPanel from '../components/ManagedInferenceScalingPanel';
 import AdvancedScalingPanelV2 from '../components/AdvancedScalingPanelV2';
 import ScalingPanel from '../components/ScalingPanel';
 import TestPanel from '../components/TestPanel';
@@ -52,9 +50,6 @@ export default function InferencePage() {
                   isTabVisible('serviceConfig') && { key: 'service-config', label: 'Service Binding', children: <ServiceConfigPanel onDeploy={deployService} /> },
                   isTabVisible('sglRouting') && { key: 'advanced-scaling-preview', label: 'SGL Routing', children: <AdvancedScalingPanelV2 onDeploy={deployAdvancedScaling} /> },
                   isTabVisible('kedaScaling') && { key: 'keda-scaling-preview', label: 'Unified Scaling', children: <ScalingPanel onDeploy={deployScaling} /> },
-                  (isTabVisible('managedInference') || isTabVisible('managedScaling')) && { key: 'divider-managed', label: '|', disabled: true, className: 'tab-divider', children: <div /> },
-                  isTabVisible('managedInference') && { key: 'managed-inference', label: 'Managed Inference', children: <ManagedInferencePanel /> },
-                  isTabVisible('managedScaling') && { key: 'managed-inference-scaling', label: 'Managed Scaling', children: <ManagedInferenceScalingPanel /> },
                 ].filter(Boolean)}
               />
             </Card>

@@ -55,9 +55,6 @@ spec:
                 - name: INSTRT_PROC_PER_NODE
                   value: "${GPU_PER_NODE}"
               volumeMounts:
-                - name: persistent-storage-s3
-                  mountPath: /s3
-                  readOnly: false
                 - name: shmem
                   mountPath: /dev/shm
                 - name: local
@@ -79,9 +76,6 @@ spec:
             - name: inst-nvme
               hostPath:
                 path: /opt/dlami/nvme/checkpoints/
-            - name: persistent-storage-s3
-              persistentVolumeClaim:
-                claimName: s3-claim
     workerGroupSpecs:
       - replicas: ${WORKER_REPLICAS}
         minReplicas: 0
@@ -123,9 +117,6 @@ spec:
                   - name: INSTRT_PROC_PER_NODE
                     value: "${GPU_PER_NODE}"
                 volumeMounts:
-                  - name: persistent-storage-s3
-                    mountPath: /s3
-                    readOnly: false
                   - name: shmem
                     mountPath: /dev/shm
                   - name: local
@@ -147,6 +138,3 @@ spec:
               - name: inst-nvme
                 hostPath:
                   path: /opt/dlami/nvme/checkpoints/
-              - name: persistent-storage-s3
-                persistentVolumeClaim:
-                  claimName: s3-claim

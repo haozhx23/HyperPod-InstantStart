@@ -1,0 +1,31 @@
+task: swe-k8s
+projectDir: /fsx/rl-agentic-on-aws
+modelPath: /fsx/models/Qwen3-0.6B
+
+data:
+  train: /fsx/data/swe/train_verl.parquet
+  validation: /fsx/data/swe/validation_verl.parquet
+  sourceTrain: /fsx/data/swe/train_skyrl.parquet
+  sourceValidation: /fsx/data/swe/validation_skyrl.parquet
+
+tool:
+  config: /fsx/rl-agentic-on-aws/tooluse/configs/swe_k8s_tool_config.yaml
+  # Replace with the ClusterIP URL returned by Inference -> Model Deployment.
+  sandboxApiUrl: http://agentic-rl-sandbox.default.svc.cluster.local:8080
+
+reward:
+  path: /fsx/rl-agentic-on-aws/tooluse/rewards/swe_reward.py
+  name: compute_score
+
+verl:
+  projectName: agentic-rl-swe-k8s
+  batchSize: 8
+  rolloutN: 4
+  epochs: 1
+  quick: false
+  trainGpus: 4
+  rolloutGpus: 4
+  promptLength: 4096
+  responseLength: 8196
+  maxAssistantTurns: 25
+  maxToolResponseLength: 8000

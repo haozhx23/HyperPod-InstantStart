@@ -4,51 +4,36 @@
   "mcpServers": {
     "hypd-inst": {
       "command": "docker",
-      "args": ["exec", "-i", "ui-panel-prod", "python3", "/app/mcp-server/server.py"],
+      "args": [
+        "exec",
+        "-i",
+        "ui-panel-prod",
+        "python3",
+        "/app/mcp-server/server.py"
+      ],
       "env": {
         "PYTHONUNBUFFERED": "1"
-      },
-      "autoApprove": ["*"]
+      }
+    },
+    "aws-mcp": {
+      "command": "uvx",
+      "args": [
+        "mcp-proxy-for-aws@latest",
+        "https://aws-mcp.us-east-1.api.aws/mcp"
+      ]
     }
   },
-  "tools": ["*"],
+  "tools": [
+    "*"
+  ],
   "allowedTools": [
-    "read",
-    "write",
-    "glob",
-    "grep",
-    "code",
-    "shell",
-    "aws",
-    "web_search",
-    "web_fetch",
-    "introspect",
-    "todo_list",
-    "subagent",
-    "@hypd-inst"
+    "@builtin",
+    "@*/*"
   ],
   "resources": [
     "file://.kiro/steering/*.md",
     "skill://.kiro/skills/**/SKILL.md"
   ],
-  "toolsSettings": {
-    "aws": {
-      "allowedServices": ["s3", "s3api", "eks", "sagemaker", "cloudformation", "ec2", "iam", "sts"],
-      "autoAllowReadonly": true
-    },
-    "shell": {
-      "allowedCommands": [
-        "kubectl get *", "kubectl describe *", "kubectl logs *", "kubectl top *", "kubectl cluster-info *",
-        "docker ps *", "docker logs *",
-        "cat *", "ls *", "head *", "tail *", "wc *", "find *",
-        "grep", "echo", "which", "whoami", "pwd", "env", "printenv *",
-        "hostname", "date", "uname *", "df *", "du *", "ps *", "id"
-      ],
-      "deniedCommands": [],
-      "autoAllowReadonly": true
-    }
-  },
   "keyboardShortcut": "ctrl+shift+h",
-  "welcomeMessage": "HyperPod InstantStart agent ready. What would you like to do?",
-  "includeMcpJson": true
+  "welcomeMessage": "HyperPod InstantStart agent ready. What would you like to do?"
 }
