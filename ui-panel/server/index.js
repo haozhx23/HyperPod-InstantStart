@@ -1176,6 +1176,19 @@ app.get('/api/config/instance-type-options', (req, res) => {
   }
 });
 
+// 获取支持 EFA-only 网络接口的机型白名单（从 config/efa-only-instance-types.json 读取）
+// 用于 UI 判断"加节点组"时是否显示 efa-only 开关。判定标准：EFA-supported 且多网卡。
+app.get('/api/config/efa-only-instance-types', (req, res) => {
+  try {
+    const configPath = path.join(__dirname, '../config/efa-only-instance-types.json');
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    res.json({ success: true, instanceTypes: cfg.instanceTypes || [] });
+  } catch (error) {
+    console.error('Error reading efa-only-instance-types.json:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.get('/api/config/instance-info', async (req, res) => {
   const { instanceType } = req.query;
   if (!instanceType) {

@@ -1146,7 +1146,9 @@ async def hyperpod_add_instance_group(
     availabilityZone: str,
     volumeSize: int = 500,
     trainingPlanArn: str = "",
-    isSpot: bool = False
+    isSpot: bool = False,
+    efaOnly: bool = False,
+    dedicatedSubnet: bool = False
 ) -> str:
     """向现有 HyperPod 集群添加新的实例组
 
@@ -1158,6 +1160,12 @@ async def hyperpod_add_instance_group(
         volumeSize: EBS 卷大小 GB（默认 500）
         trainingPlanArn: Training Plan ARN（可选，用于预留容量）
         isSpot: 是否使用 Spot 实例（默认 false）
+        efaOnly: 是否使用 EFA-only 网络接口（默认 false）。创建时定死、不可变，
+                 仅多网卡 EFA 机型支持（如 p4d/p5/p5en/p6/g6e.24xlarge+/g7e.24xlarge+），
+                 非法机型会被 AWS 校验拒绝。
+        dedicatedSubnet: 是否为该实例组创建专属 subnet（默认 false）。开启后创建
+                 hp-compute-{instanceGroupName}-{az} 而非共用按 AZ 共享的 subnet，
+                 用于避免 IP 耗尽；删除该实例组时会自动清理该 subnet。
     """
     try:
         userConfig = {
@@ -1170,6 +1178,10 @@ async def hyperpod_add_instance_group(
         }
         if trainingPlanArn:
             userConfig["trainingPlanArn"] = trainingPlanArn
+        if efaOnly:
+            userConfig["efaOnly"] = True
+        if dedicatedSubnet:
+            userConfig["dedicatedSubnet"] = True
 
         async with httpx.AsyncClient(timeout=300) as client:
             response = await client.post(f"{BASE_URL}/api/cluster/hyperpod/add-instance-group", json={"userConfig": userConfig})

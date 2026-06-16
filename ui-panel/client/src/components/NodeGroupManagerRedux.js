@@ -60,6 +60,12 @@ const NodeGroupManagerRedux = ({ activeCluster, refreshTrigger, cluster }) => {
   const [hyperPodForm] = Form.useForm();
   const [instanceGroupForm] = Form.useForm();
 
+  // EFA-only 支持机型白名单（来自 /api/config/efa-only-instance-types）。
+  // 仅当"加节点组"所选机型在白名单内时，才渲染 efa-only 开关。
+  const [efaOnlyTypes, setEfaOnlyTypes] = useState([]);
+  const addIgInstanceType = Form.useWatch('instanceType', instanceGroupForm);
+  const efaOnlyEligible = !!addIgInstanceType && efaOnlyTypes.includes(addIgInstanceType);
+
 
 
 
@@ -503,6 +509,25 @@ const NodeGroupManagerRedux = ({ activeCluster, refreshTrigger, cluster }) => {
     }
   }, []); // 完全空的依赖数组
 
+  // 加载 EFA-only 支持机型白名单（静态 config，加载一次即可）
+  useEffect(() => {
+    fetch('/api/config/efa-only-instance-types')
+      .then(r => r.json())
+      .then(d => {
+        if (d && d.success && Array.isArray(d.instanceTypes)) {
+          setEfaOnlyTypes(d.instanceTypes);
+        }
+      })
+      .catch(err => console.warn('Failed to load efa-only instance types:', err));
+  }, []);
+
+  // 机型变为不支持时，清掉残留的 efaOnly 值，避免提交时把 efa-only 发给非法机型
+  useEffect(() => {
+    if (!efaOnlyEligible && instanceGroupForm.getFieldValue('efaOnly')) {
+      instanceGroupForm.setFieldsValue({ efaOnly: false });
+    }
+  }, [efaOnlyEligible, instanceGroupForm]);
+
   // Response to external triggers
   useEffect(() => {
     if (refreshTrigger > 0) {
@@ -667,6 +692,9 @@ const NodeGroupManagerRedux = ({ activeCluster, refreshTrigger, cluster }) => {
             <Tag color={config.color}>{config.label}</Tag>
             {isManaged && (
               <Tag color="blue">Karpenter</Tag>
+            )}
+            {record.interfaceType === 'efa-only' && (
+              <Tag color="geekblue">EFA-only</Tag>
             )}
           </Space>
         );
@@ -1251,6 +1279,39 @@ const NodeGroupManagerRedux = ({ activeCluster, refreshTrigger, cluster }) => {
             <Input placeholder="arn:aws:sagemaker:region:account:training-plan/..." />
           </Form.Item>
 
+          {/* EFA-only：仅当所选机型支持（多网卡 EFA 机型）时才显示。创建时定死、不可变。 */}
+          {efaOnlyEligible && (
+            <details style={{ marginBottom: 8 }}>
+              <summary style={{ cursor: 'pointer', color: '#888', marginBottom: 8 }}>
+                (Optional) Advanced network
+              </summary>
+              <Form.Item
+                name="efaOnly"
+                label="EFA-only network interface"
+                valuePropName="checked"
+                style={{ marginTop: 8, marginBottom: 0 }}
+                extra="Use EFA-only interfaces (EFA device without ENA IP networking) to avoid subnet IP exhaustion in large clusters. Fixed at creation time and cannot be changed afterwards."
+              >
+                <Switch />
+              </Form.Item>
+            </details>
+          )}
+
+          <details style={{ marginBottom: 8 }}>
+            <summary style={{ cursor: 'pointer', color: '#888', marginBottom: 8 }}>
+              (Optional) Create dedicated subnet
+            </summary>
+            <Form.Item
+              name="dedicatedSubnet"
+              label="Dedicated subnet for this instance group"
+              valuePropName="checked"
+              style={{ marginTop: 8, marginBottom: 0 }}
+              extra="When on, creates a dedicated subnet (hp-compute-{name}-{az}) for this instance group instead of sharing the per-AZ subnet — useful to avoid IP exhaustion. It is automatically deleted when this instance group is removed. Ignored if a Compute Subnet ID is specified below (explicit subnet takes precedence)."
+            >
+              <Switch />
+            </Form.Item>
+          </details>
+
           <details style={{ marginBottom: 8 }}>
             <summary style={{ cursor: 'pointer', color: '#888', marginBottom: 8 }}>
               (Optional) Compute Subnet ID
@@ -1258,6 +1319,7 @@ const NodeGroupManagerRedux = ({ activeCluster, refreshTrigger, cluster }) => {
             <Form.Item
               name="subnetId"
               style={{ marginTop: 8, marginBottom: 0 }}
+              extra="Use a specific existing subnet. Takes precedence over the dedicated subnet switch above."
             >
               <Input placeholder="subnet-0123456789abcdef0" />
             </Form.Item>

@@ -615,17 +615,18 @@ router.post('/hyperpod/add-instance-group', async (req, res) => {
       let computeSubnetId;
 
       if (userConfig.subnetId) {
-        // 用户明确指定
+        // 用户明确指定（优先级最高）
         computeSubnetId = userConfig.subnetId;
         console.log(`Using user-specified compute subnet: ${computeSubnetId}`);
       } else {
-        // 自动检测/创建
+        // 自动检测/创建：dedicatedSubnet 开关决定是否为该 IG 建专属 subnet
         const eksClusterName = clusterInfo.cloudFormation?.outputs?.OutputEKSClusterName || activeClusterName;
+        const dedicatedIgName = userConfig.dedicatedSubnet ? userConfig.instanceGroupName : null;
         const result = await NetworkManager.ensureComputeSubnet(
-          vpcId, userConfig.availabilityZone, region, eksClusterName
+          vpcId, userConfig.availabilityZone, region, eksClusterName, dedicatedIgName
         );
         computeSubnetId = result.subnetId;
-        console.log(`Using compute subnet: ${computeSubnetId} (created: ${result.created})`);
+        console.log(`Using ${dedicatedIgName ? 'dedicated' : 'shared'} compute subnet: ${computeSubnetId} (created: ${result.created})`);
       }
 
       newInstanceGroup.OverrideVpcConfig = {
@@ -637,6 +638,11 @@ router.post('/hyperpod/add-instance-group', async (req, res) => {
     // 如果有 TrainingPlanArn
     if (userConfig.trainingPlanArn) {
       newInstanceGroup.TrainingPlanArn = userConfig.trainingPlanArn;
+    }
+
+    // EFA-only 网络接口（创建时定死、不可变；仅多网卡 EFA 机型支持，非法机型由 AWS 校验拒绝）
+    if (userConfig.efaOnly) {
+      newInstanceGroup.NetworkInterface = { InterfaceType: 'efa-only' };
     }
 
     // 构建完整的实例组配置
@@ -708,15 +714,55 @@ router.post('/hyperpod/delete-instance-group', async (req, res) => {
 
     console.log(`Deleting instance group "${instanceGroupName}" from cluster "${hyperPodCluster.ClusterName}"`);
 
+    // 删除前定位该 IG 使用的 subnet，判断是否为专属 subnet（需在删除后清理）
+    let dedicatedSubnetId = null;
+    try {
+      const describeCmd = `aws sagemaker describe-cluster --cluster-name ${hyperPodCluster.ClusterName} --region ${region} --output json`;
+      const clusterData = JSON.parse((await execAsync(describeCmd)).stdout);
+      const targetIg = (clusterData.InstanceGroups || []).find(g => g.InstanceGroupName === instanceGroupName);
+      const subnetId = targetIg?.OverrideVpcConfig?.Subnets?.[0];
+      if (subnetId) {
+        // 只有带 hyperpod:dedicated-ig=该IG 名的 subnet 才会被清理（deleteDedicatedSubnet 内部再次校验）
+        const tagCmd = `aws ec2 describe-subnets --region ${region} --subnet-ids ${subnetId} \
+          --query "Subnets[0].Tags[?Key=='hyperpod:dedicated-ig'].Value | [0]" --output text`;
+        const dedicatedTag = execSync(tagCmd, { encoding: 'utf8' }).trim();
+        if (dedicatedTag && dedicatedTag === instanceGroupName) {
+          dedicatedSubnetId = subnetId;
+          console.log(`Instance group "${instanceGroupName}" uses dedicated subnet ${subnetId}, will clean up after deletion`);
+        }
+      }
+    } catch (e) {
+      console.log(`Could not resolve dedicated subnet for "${instanceGroupName}": ${e.message}`);
+    }
+
     // 调用 AWS CLI 删除实例组
     const deleteCmd = `aws sagemaker update-cluster --cluster-name ${hyperPodCluster.ClusterName} --instance-groups-to-delete ${instanceGroupName} --region ${region}`;
     const deleteResult = await execAsync(deleteCmd);
 
     console.log('Instance group deletion result:', deleteResult.stdout);
 
+    // 专属 subnet：异步 best-effort 清理（等节点/ENI 排空后删 subnet + RT），不阻塞 HTTP 响应
+    if (dedicatedSubnetId) {
+      (async () => {
+        try {
+          const result = await NetworkManager.deleteDedicatedSubnet(dedicatedSubnetId, region);
+          broadcast({
+            type: 'dedicated_subnet_cleanup',
+            instanceGroupName,
+            subnetId: dedicatedSubnetId,
+            ...result
+          });
+          console.log(`Dedicated subnet cleanup for "${instanceGroupName}":`, JSON.stringify(result));
+        } catch (e) {
+          console.log(`Dedicated subnet cleanup error for "${instanceGroupName}": ${e.message}`);
+        }
+      })();
+    }
+
     res.json({
       success: true,
-      message: `Instance group "${instanceGroupName}" deletion initiated successfully`
+      message: `Instance group "${instanceGroupName}" deletion initiated successfully`,
+      dedicatedSubnetCleanup: dedicatedSubnetId ? 'scheduled' : 'none'
     });
 
   } catch (error) {

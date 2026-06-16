@@ -179,10 +179,11 @@ class NetworkManager {
    * @param {string} availabilityZone - AZ name
    * @param {string} region - AWS region
    * @param {string} clusterName - EKS cluster name (for karpenter discovery tag)
+   * @param {string|null} instanceGroupName - if set, create a dedicated subnet for this IG
    * @returns {Object} { subnetId, created }
    */
-  static async ensureComputeSubnet(vpcId, availabilityZone, region, clusterName) {
-    return ComputeSubnetManager.ensureComputeSubnet(vpcId, availabilityZone, region, clusterName);
+  static async ensureComputeSubnet(vpcId, availabilityZone, region, clusterName, instanceGroupName = null) {
+    return ComputeSubnetManager.ensureComputeSubnet(vpcId, availabilityZone, region, clusterName, instanceGroupName);
   }
 
   /**
@@ -190,10 +191,21 @@ class NetworkManager {
    * @param {string} vpcId - VPC ID
    * @param {string} availabilityZone - AZ name
    * @param {string} region - AWS region
+   * @param {string|null} instanceGroupName - if set, look up the dedicated subnet name
    * @returns {Object|null} { subnetId, cidrBlock } or null
    */
-  static async findComputeSubnet(vpcId, availabilityZone, region) {
-    return ComputeSubnetManager.findComputeSubnet(vpcId, availabilityZone, region);
+  static async findComputeSubnet(vpcId, availabilityZone, region, instanceGroupName = null) {
+    return ComputeSubnetManager.findComputeSubnet(vpcId, availabilityZone, region, instanceGroupName);
+  }
+
+  /**
+   * Delete a dedicated compute subnet (and its route table / S3 endpoint association).
+   * Best-effort; never deletes a shared subnet (those lack the dedicated tag).
+   * @param {string} subnetId
+   * @param {string} region
+   */
+  static async deleteDedicatedSubnet(subnetId, region) {
+    return ComputeSubnetManager.deleteDedicatedSubnet(subnetId, region);
   }
 
   /**

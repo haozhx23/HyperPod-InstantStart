@@ -12,18 +12,31 @@ class ComputeSubnetManager {
   static SUBNET_PREFIX = 'hp-compute';
 
   /**
+   * 计算 compute subnet 的 Name tag
+   * - 传 instanceGroupName -> hp-compute-{instanceGroupName}-{az}（专属 subnet）
+   * - 不传 -> hp-compute-{az}（按 AZ 共享，保持原行为）
+   */
+  static computeSubnetName(availabilityZone, instanceGroupName = null) {
+    return instanceGroupName
+      ? `${this.SUBNET_PREFIX}-${instanceGroupName}-${availabilityZone}`
+      : `${this.SUBNET_PREFIX}-${availabilityZone}`;
+  }
+
+  /**
    * 确保指定 AZ 存在 compute subnet，不存在则创建
    * @param {string} vpcId - VPC ID
    * @param {string} availabilityZone - 可用区名称 (如 us-east-2a)
    * @param {string} region - AWS 区域
    * @param {string} clusterName - EKS 集群名称 (用于 karpenter discovery tag)
+   * @param {string|null} instanceGroupName - 传入则创建该 IG 专属 subnet，否则按 AZ 共享
    * @returns {Promise<{subnetId: string, created: boolean}>}
    */
-  static async ensureComputeSubnet(vpcId, availabilityZone, region, clusterName) {
-    console.log(`[ComputeSubnetManager] Ensuring compute subnet in AZ: ${availabilityZone}`);
+  static async ensureComputeSubnet(vpcId, availabilityZone, region, clusterName, instanceGroupName = null) {
+    const subnetName = this.computeSubnetName(availabilityZone, instanceGroupName);
+    console.log(`[ComputeSubnetManager] Ensuring compute subnet "${subnetName}" in AZ: ${availabilityZone}`);
 
     // 1. 检查是否已存在
-    const existingSubnet = await this.findComputeSubnet(vpcId, availabilityZone, region);
+    const existingSubnet = await this.findComputeSubnet(vpcId, availabilityZone, region, instanceGroupName);
     if (existingSubnet) {
       console.log(`[ComputeSubnetManager] Found existing compute subnet: ${existingSubnet.subnetId}`);
       return { subnetId: existingSubnet.subnetId, created: false };
@@ -31,16 +44,17 @@ class ComputeSubnetManager {
 
     // 2. 不存在则创建
     console.log(`[ComputeSubnetManager] No compute subnet found, creating new one...`);
-    const newSubnet = await this.createComputeSubnet(vpcId, availabilityZone, region, clusterName);
+    const newSubnet = await this.createComputeSubnet(vpcId, availabilityZone, region, clusterName, instanceGroupName);
     return { subnetId: newSubnet.subnetId, created: true };
   }
 
   /**
    * 查找指定 AZ 的 compute subnet
+   * @param {string|null} instanceGroupName - 传入则查找专属 subnet 名，否则查找共享名
    */
-  static async findComputeSubnet(vpcId, availabilityZone, region) {
+  static async findComputeSubnet(vpcId, availabilityZone, region, instanceGroupName = null) {
     try {
-      const subnetName = `${this.SUBNET_PREFIX}-${availabilityZone}`;
+      const subnetName = this.computeSubnetName(availabilityZone, instanceGroupName);
       const cmd = `aws ec2 describe-subnets --region ${region} \
         --filters "Name=vpc-id,Values=${vpcId}" "Name=tag:Name,Values=${subnetName}" \
         --query "Subnets[0].{SubnetId:SubnetId,CidrBlock:CidrBlock}" --output json`;
@@ -58,8 +72,9 @@ class ComputeSubnetManager {
 
   /**
    * 创建 compute subnet
+   * @param {string|null} instanceGroupName - 传入则创建该 IG 专属 subnet（命名 + dedicated tag）
    */
-  static async createComputeSubnet(vpcId, availabilityZone, region, clusterName) {
+  static async createComputeSubnet(vpcId, availabilityZone, region, clusterName, instanceGroupName = null) {
     // 1. 获取可用的 CIDR
     const cidr = await this.getAvailableCidr(vpcId, region);
     console.log(`[ComputeSubnetManager] Using CIDR: ${cidr}`);
@@ -71,12 +86,16 @@ class ComputeSubnetManager {
     const natGwId = await this.getNatGateway(vpcId, region);
 
     // 4. 创建子网
-    const subnetName = `${this.SUBNET_PREFIX}-${availabilityZone}`;
+    const subnetName = this.computeSubnetName(availabilityZone, instanceGroupName);
+    // 专属 subnet 额外打 dedicated tag，便于删除 IG 时精确识别该删哪个 subnet
+    const dedicatedTag = instanceGroupName
+      ? `,{Key=hyperpod:dedicated-ig,Value=${instanceGroupName}}`
+      : '';
     const createSubnetCmd = `aws ec2 create-subnet --region ${region} \
       --vpc-id ${vpcId} \
       --cidr-block ${cidr} \
       --availability-zone-id ${azId} \
-      --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=${subnetName}},{Key=karpenter.sh/discovery,Value=${clusterName}}]' \
+      --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=${subnetName}},{Key=karpenter.sh/discovery,Value=${clusterName}}${dedicatedTag}]' \
       --query 'Subnet.SubnetId' --output text`;
 
     const subnetId = execSync(createSubnetCmd, { encoding: 'utf8' }).trim();
@@ -244,6 +263,113 @@ class ComputeSubnetManager {
       }
     } catch (error) {
       console.log(`[ComputeSubnetManager] S3 endpoint config warning: ${error.message}`);
+    }
+  }
+
+  static sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * 等待 subnet 上的 ENI 排空（删 IG 后节点异步终止，ENI 残留时无法删 subnet）
+   * @returns {Promise<boolean>} true=已排空, false=超时仍有 ENI
+   */
+  static async waitForSubnetEnisDrained(subnetId, region, { timeoutMs = 600000, intervalMs = 15000 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const cmd = `aws ec2 describe-network-interfaces --region ${region} \
+          --filters "Name=subnet-id,Values=${subnetId}" \
+          --query "length(NetworkInterfaces)" --output text`;
+        const count = parseInt(execSync(cmd, { encoding: 'utf8' }).trim(), 10);
+        if (!count || count === 0) {
+          return true;
+        }
+        console.log(`[ComputeSubnetManager] Subnet ${subnetId} still has ${count} ENI(s), waiting...`);
+      } catch (error) {
+        console.log(`[ComputeSubnetManager] ENI check failed (will retry): ${error.message}`);
+      }
+      await this.sleep(intervalMs);
+    }
+    return false;
+  }
+
+  /**
+   * 删除某个 IG 的专属 compute subnet 及其配套资源（route table、S3 endpoint 关联）。
+   * Best-effort：失败只记日志，不抛错。绝不删共享 subnet（无 dedicated tag 的一律跳过）。
+   * @param {string} subnetId
+   * @param {string} region
+   */
+  static async deleteDedicatedSubnet(subnetId, region) {
+    try {
+      // 安全校验：必须带 hyperpod:dedicated-ig tag，否则视为共享/外部 subnet，拒绝删除
+      const tagCmd = `aws ec2 describe-subnets --region ${region} --subnet-ids ${subnetId} \
+        --query "Subnets[0].Tags[?Key=='hyperpod:dedicated-ig'].Value | [0]" --output text`;
+      const dedicatedTag = execSync(tagCmd, { encoding: 'utf8' }).trim();
+      if (!dedicatedTag || dedicatedTag === 'None') {
+        console.log(`[ComputeSubnetManager] Subnet ${subnetId} is not a dedicated subnet (no dedicated tag), skip deletion`);
+        return { deleted: false, reason: 'not-dedicated' };
+      }
+
+      // 等待 ENI 排空
+      const drained = await this.waitForSubnetEnisDrained(subnetId, region);
+      if (!drained) {
+        console.log(`[ComputeSubnetManager] Subnet ${subnetId} still has ENIs after timeout, leaving it (manual cleanup needed)`);
+        return { deleted: false, reason: 'enis-remain' };
+      }
+
+      // 找到关联到该 subnet 的 route table
+      const rtCmd = `aws ec2 describe-route-tables --region ${region} \
+        --filters "Name=association.subnet-id,Values=${subnetId}" \
+        --query "RouteTables[0].{RtId:RouteTableId,Assoc:Associations[?SubnetId=='${subnetId}'].RouteTableAssociationId | [0]}" \
+        --output json`;
+      let rtId = null, assocId = null;
+      try {
+        const rt = JSON.parse(execSync(rtCmd, { encoding: 'utf8' }));
+        if (rt) { rtId = rt.RtId; assocId = rt.Assoc; }
+      } catch { /* 无关联 RT，跳过 */ }
+
+      if (rtId) {
+        // 从 S3 VPC Endpoint 移除该 RT 关联（否则删 RT 可能受阻）
+        try {
+          const epCmd = `aws ec2 describe-vpc-endpoints --region ${region} \
+            --filters "Name=route-table-id,Values=${rtId}" \
+            --query "VpcEndpoints[0].VpcEndpointId" --output text`;
+          const epId = execSync(epCmd, { encoding: 'utf8' }).trim();
+          if (epId && epId !== 'None') {
+            execSync(`aws ec2 modify-vpc-endpoint --region ${region} \
+              --vpc-endpoint-id ${epId} --remove-route-table-ids ${rtId}`, { encoding: 'utf8', stdio: 'pipe' });
+            console.log(`[ComputeSubnetManager] Removed RT ${rtId} from S3 endpoint ${epId}`);
+          }
+        } catch (error) {
+          console.log(`[ComputeSubnetManager] S3 endpoint detach warning: ${error.message}`);
+        }
+
+        // 解除 RT 与 subnet 的关联
+        if (assocId && assocId !== 'None') {
+          try {
+            execSync(`aws ec2 disassociate-route-table --region ${region} --association-id ${assocId}`, { encoding: 'utf8', stdio: 'pipe' });
+          } catch (error) {
+            console.log(`[ComputeSubnetManager] Disassociate RT warning: ${error.message}`);
+          }
+        }
+
+        // 删除 RT
+        try {
+          execSync(`aws ec2 delete-route-table --region ${region} --route-table-id ${rtId}`, { encoding: 'utf8', stdio: 'pipe' });
+          console.log(`[ComputeSubnetManager] Deleted route table ${rtId}`);
+        } catch (error) {
+          console.log(`[ComputeSubnetManager] Delete RT warning: ${error.message}`);
+        }
+      }
+
+      // 删除 subnet
+      execSync(`aws ec2 delete-subnet --region ${region} --subnet-id ${subnetId}`, { encoding: 'utf8', stdio: 'pipe' });
+      console.log(`[ComputeSubnetManager] Deleted dedicated subnet ${subnetId} (ig=${dedicatedTag})`);
+      return { deleted: true };
+    } catch (error) {
+      console.log(`[ComputeSubnetManager] deleteDedicatedSubnet failed for ${subnetId}: ${error.message}`);
+      return { deleted: false, reason: error.message };
     }
   }
 

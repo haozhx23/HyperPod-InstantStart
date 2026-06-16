@@ -125,7 +125,9 @@ router.get('/nodegroups', async (req, res) => {
                 capacityType: capacityType, // 添加容量类型
                 currentCount: instanceGroup.CurrentCount,
                 targetCount: instanceGroup.TargetCount,
-                executionRole: instanceGroup.ExecutionRole
+                executionRole: instanceGroup.ExecutionRole,
+                // 网卡接口类型（efa | efa-only），legacy 组为 null。用于列表 EFA-only badge。
+                interfaceType: instanceGroup.NetworkInterface?.InterfaceType || null
               });
             }
           } catch (hpError) {

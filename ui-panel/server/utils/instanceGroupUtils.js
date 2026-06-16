@@ -9,7 +9,10 @@ const ALLOWED_INSTANCE_GROUP_FIELDS = [
   'InstanceCount', 'InstanceGroupName', 'InstanceType', 'LifeCycleConfig',
   'ExecutionRole', 'ThreadsPerCore', 'InstanceStorageConfigs',
   'OnStartDeepHealthChecks', 'TrainingPlanArn', 'OverrideVpcConfig',
-  'ScheduledUpdateConfig', 'ImageId', 'CapacityRequirements'
+  'ScheduledUpdateConfig', 'ImageId', 'CapacityRequirements',
+  // NetworkInterface (efa-only) 在创建时定死、不可变。必须保留，否则每次 update-cluster
+  // 重发存量组时会丢掉其网卡配置，导致 efa-only 组在不相关更新时被 AWS 拒绝/重置。
+  'NetworkInterface'
 ];
 
 /**
