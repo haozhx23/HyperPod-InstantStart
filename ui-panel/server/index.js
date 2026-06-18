@@ -1781,6 +1781,45 @@ app.get('/api/cluster/subnets', async (req, res) => {
   }
 });
 
+// 轻量接口：列出当前 VPC 内所有 hp-compute-* compute subnet（供 Add Instance Group 下拉复用）
+// 单次 describe-subnets，不做公/私网路由表分类，避免 /subnets 的 N+1 延迟
+app.get('/api/cluster/compute-subnets', async (req, res) => {
+  try {
+    const { promisify } = require('util');
+    const execAsync = promisify(require('child_process').exec);
+
+    const activeCluster = clusterManager.getActiveCluster();
+    if (!activeCluster) {
+      return res.status(400).json({ success: false, error: 'No active cluster selected' });
+    }
+
+    const MetadataUtils = require('./utils/metadataUtils');
+    const clusterInfo = MetadataUtils.getClusterInfo(activeCluster);
+    if (!clusterInfo) {
+      return res.status(400).json({ success: false, error: 'Cluster metadata not found' });
+    }
+
+    const region = clusterInfo.region;
+    const vpcId = clusterInfo.eksCluster?.vpcId;
+    if (!vpcId) {
+      return res.status(400).json({ success: false, error: 'VPC ID not found in metadata' });
+    }
+
+    const cmd = `aws ec2 describe-subnets --region ${region} \
+      --filters "Name=vpc-id,Values=${vpcId}" "Name=tag:Name,Values=hp-compute-*" \
+      --query "Subnets[].{subnetId:SubnetId,availabilityZone:AvailabilityZone,cidrBlock:CidrBlock,name:Tags[?Key=='Name']|[0].Value}" \
+      --output json`;
+    const { stdout } = await execAsync(cmd);
+    const computeSubnets = JSON.parse(stdout || '[]');
+    computeSubnets.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+    res.json({ success: true, data: { region, vpcId, computeSubnets } });
+  } catch (error) {
+    console.error('Error fetching compute subnets:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // EKS 节点组删除/创建/依赖状态 API 已迁移至 nodeGroupApiManager.js
 
 // HyperPod 状态检查 API 已迁移至 hyperpodApiManager.js
@@ -1788,8 +1827,6 @@ app.get('/api/cluster/subnets', async (req, res) => {
 // 🎨 AWS Instance Types API for Advanced Scaling (Cache-based, no fallbacks)
 app.get('/api/aws/instance-types', async (req, res) => {
   try {
-    const ClusterManager = require('./clusterManager');
-    const clusterManager = new ClusterManager();
     const activeClusterName = clusterManager.getActiveCluster();
 
     const result = AWSInstanceTypeManager.getCachedInstanceTypes(activeClusterName);
@@ -1809,8 +1846,6 @@ app.get('/api/aws/instance-types', async (req, res) => {
 // 🎨 AWS Instance Types Refresh API (Manual cache update)
 app.post('/api/aws/instance-types/refresh', async (req, res) => {
   try {
-    const ClusterManager = require('./clusterManager');
-    const clusterManager = new ClusterManager();
     const activeClusterName = clusterManager.getActiveCluster();
 
     if (!activeClusterName) {
@@ -1839,8 +1874,6 @@ app.post('/api/aws/instance-types/by-subnet', async (req, res) => {
   try {
     const { subnetId } = req.body;
 
-    const ClusterManager = require('./clusterManager');
-    const clusterManager = new ClusterManager();
     const activeClusterName = clusterManager.getActiveCluster();
 
     if (!activeClusterName) {

@@ -179,33 +179,22 @@ class NetworkManager {
    * @param {string} availabilityZone - AZ name
    * @param {string} region - AWS region
    * @param {string} clusterName - EKS cluster name (for karpenter discovery tag)
-   * @param {string|null} instanceGroupName - if set, create a dedicated subnet for this IG
+   * @param {boolean} newSubnet - if true, always create a fresh independent subnet (hp-compute-{yymmdd}-{az}-{hash})
    * @returns {Object} { subnetId, created }
    */
-  static async ensureComputeSubnet(vpcId, availabilityZone, region, clusterName, instanceGroupName = null) {
-    return ComputeSubnetManager.ensureComputeSubnet(vpcId, availabilityZone, region, clusterName, instanceGroupName);
+  static async ensureComputeSubnet(vpcId, availabilityZone, region, clusterName, newSubnet = false) {
+    return ComputeSubnetManager.ensureComputeSubnet(vpcId, availabilityZone, region, clusterName, newSubnet);
   }
 
   /**
-   * Find existing compute subnet in specified AZ
+   * Find existing shared compute subnet in specified AZ (hp-compute-{az})
    * @param {string} vpcId - VPC ID
    * @param {string} availabilityZone - AZ name
    * @param {string} region - AWS region
-   * @param {string|null} instanceGroupName - if set, look up the dedicated subnet name
    * @returns {Object|null} { subnetId, cidrBlock } or null
    */
-  static async findComputeSubnet(vpcId, availabilityZone, region, instanceGroupName = null) {
-    return ComputeSubnetManager.findComputeSubnet(vpcId, availabilityZone, region, instanceGroupName);
-  }
-
-  /**
-   * Delete a dedicated compute subnet (and its route table / S3 endpoint association).
-   * Best-effort; never deletes a shared subnet (those lack the dedicated tag).
-   * @param {string} subnetId
-   * @param {string} region
-   */
-  static async deleteDedicatedSubnet(subnetId, region) {
-    return ComputeSubnetManager.deleteDedicatedSubnet(subnetId, region);
+  static async findComputeSubnet(vpcId, availabilityZone, region) {
+    return ComputeSubnetManager.findComputeSubnet(vpcId, availabilityZone, region);
   }
 
   /**

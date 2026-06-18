@@ -33,24 +33,6 @@ export function handleWsMessage(data, ctx) {
       console.log('❤️ WebSocket pong received');
       break;
 
-    case 'dedicated_subnet_cleanup':
-      if (data.deleted) {
-        console.log(`🧹 Dedicated subnet cleaned up: ${data.subnetId} (ig=${data.instanceGroupName})`);
-        notification.success({
-          message: 'Dedicated subnet cleaned up',
-          description: `Instance group "${data.instanceGroupName}": subnet ${data.subnetId} and its route table were deleted.`,
-          duration: 6,
-        });
-      } else {
-        console.warn(`⚠️ Dedicated subnet NOT cleaned up: ${data.subnetId} (ig=${data.instanceGroupName}), reason=${data.reason}`);
-        notification.warning({
-          message: 'Dedicated subnet not cleaned up',
-          description: `Instance group "${data.instanceGroupName}": subnet ${data.subnetId} was left in place (reason: ${data.reason || 'unknown'}). Manual cleanup may be needed.`,
-          duration: 0,
-        });
-      }
-      break;
-
     case 'deployment':
       dispatch(setDeploymentStatus(data));
       if (data.status === 'success') {

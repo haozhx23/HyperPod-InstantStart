@@ -65,6 +65,10 @@ const NodeGroupManagerRedux = ({ activeCluster, refreshTrigger, cluster }) => {
   const [efaOnlyTypes, setEfaOnlyTypes] = useState([]);
   const addIgInstanceType = Form.useWatch('instanceType', instanceGroupForm);
   const efaOnlyEligible = !!addIgInstanceType && efaOnlyTypes.includes(addIgInstanceType);
+  // Add Instance Group: compute subnet 下拉数据 + AZ/newSubnet 联动
+  const [computeSubnets, setComputeSubnets] = useState([]);
+  const addIgAz = Form.useWatch('availabilityZone', instanceGroupForm);
+  const addIgNewSubnet = Form.useWatch('newSubnet', instanceGroupForm);
 
 
 
@@ -151,6 +155,19 @@ const NodeGroupManagerRedux = ({ activeCluster, refreshTrigger, cluster }) => {
       }
     } catch (error) {
       console.error('Error fetching subnets:', error);
+    }
+  }, []);
+
+  // 获取 hp-compute-* compute subnet（用于 Add Instance Group 的 Compute Subnet 下拉）
+  const fetchComputeSubnets = useCallback(async () => {
+    try {
+      const response = await fetch('/api/cluster/compute-subnets');
+      const result = await response.json();
+      if (result.success) {
+        setComputeSubnets(result.data.computeSubnets || []);
+      }
+    } catch (error) {
+      console.error('Error fetching compute subnets:', error);
     }
   }, []);
 
@@ -527,6 +544,29 @@ const NodeGroupManagerRedux = ({ activeCluster, refreshTrigger, cluster }) => {
       instanceGroupForm.setFieldsValue({ efaOnly: false });
     }
   }, [efaOnlyEligible, instanceGroupForm]);
+
+  // 打开 Add Instance Group 弹窗时拉取 compute subnet（含刚通过 new subnet 开关新建的）
+  useEffect(() => {
+    if (addInstanceGroupModalVisible) {
+      fetchComputeSubnets();
+    }
+  }, [addInstanceGroupModalVisible, fetchComputeSubnets]);
+
+  // 切换 AZ 时清空已选 Compute Subnet ID（不同 AZ 的 subnet 不通用）
+  useEffect(() => {
+    if (instanceGroupForm.getFieldValue('subnetId')) {
+      instanceGroupForm.setFieldsValue({ subnetId: undefined });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addIgAz]);
+
+  // 打开 new subnet 开关时清空 Compute Subnet ID（二者互斥，避免提交残留值）
+  useEffect(() => {
+    if (addIgNewSubnet && instanceGroupForm.getFieldValue('subnetId')) {
+      instanceGroupForm.setFieldsValue({ subnetId: undefined });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addIgNewSubnet]);
 
   // Response to external triggers
   useEffect(() => {
@@ -1299,14 +1339,14 @@ const NodeGroupManagerRedux = ({ activeCluster, refreshTrigger, cluster }) => {
 
           <details style={{ marginBottom: 8 }}>
             <summary style={{ cursor: 'pointer', color: '#888', marginBottom: 8 }}>
-              (Optional) Create dedicated subnet
+              (Optional) Create new subnet
             </summary>
             <Form.Item
-              name="dedicatedSubnet"
-              label="Dedicated subnet for this instance group"
+              name="newSubnet"
+              label="Create a new subnet for this instance group"
               valuePropName="checked"
               style={{ marginTop: 8, marginBottom: 0 }}
-              extra="When on, creates a dedicated subnet (hp-compute-{name}-{az}) for this instance group instead of sharing the per-AZ subnet — useful to avoid IP exhaustion. It is automatically deleted when this instance group is removed. Ignored if a Compute Subnet ID is specified below (explicit subnet takes precedence)."
+              extra="Creates a new subnet (hp-compute-{yymmdd}-{az}-{hash}) to avoid IP exhaustion. You maintain it yourself — it's not deleted with the instance group. Ignored if a Compute Subnet ID is set below."
             >
               <Switch />
             </Form.Item>
@@ -1319,9 +1359,21 @@ const NodeGroupManagerRedux = ({ activeCluster, refreshTrigger, cluster }) => {
             <Form.Item
               name="subnetId"
               style={{ marginTop: 8, marginBottom: 0 }}
-              extra="Use a specific existing subnet. Takes precedence over the dedicated subnet switch above."
+              extra={addIgNewSubnet
+                ? 'Disabled while "Create new subnet" is on.'
+                : 'Pick an existing hp-compute-* subnet in the selected AZ, or type any subnet ID. Leave empty to use the default per-AZ subnet (hp-compute-{az}).'}
             >
-              <Input placeholder="subnet-0123456789abcdef0" />
+              <AutoComplete
+                disabled={addIgNewSubnet}
+                allowClear
+                placeholder={addIgAz ? 'subnet-0123456789abcdef0' : 'Select an availability zone first'}
+                options={computeSubnets
+                  .filter(s => !addIgAz || s.availabilityZone === addIgAz)
+                  .map(s => ({ value: s.subnetId, label: `${s.name} — ${s.subnetId} (${s.cidrBlock})` }))}
+                filterOption={(input, option) =>
+                  (option?.value || '').toLowerCase().includes(input.toLowerCase()) ||
+                  (option?.label || '').toLowerCase().includes(input.toLowerCase())}
+              />
             </Form.Item>
           </details>
         </Form>
