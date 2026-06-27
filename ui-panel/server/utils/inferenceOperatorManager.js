@@ -1,6 +1,4 @@
-const { exec } = require('child_process');
-const { promisify } = require('util');
-const execAsync = promisify(exec);
+const { execAsync } = require('./exec');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');

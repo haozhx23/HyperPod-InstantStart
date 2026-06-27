@@ -8,7 +8,17 @@
     "server": "nodemon server/index.js",
     "client": "cd client && npm start",
     "build": "cd client && npm run build",
-    "install-all": "npm install && cd client && npm install"
+    "install-all": "npm install && cd client && npm install",
+    "test:server": "jest"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "roots": [
+      "<rootDir>/server"
+    ],
+    "testMatch": [
+      "**/__tests__/**/*.test.js"
+    ]
   },
   "dependencies": {
     "child_process": "^1.0.2",
@@ -21,7 +31,9 @@
     "yaml": "^2.3.4"
   },
   "devDependencies": {
+    "jest": "^30.4.2",
     "nodemon": "^3.0.1",
-    "shell-quote": "^1.8.3"
+    "shell-quote": "^1.8.3",
+    "supertest": "^7.2.2"
   }
 }

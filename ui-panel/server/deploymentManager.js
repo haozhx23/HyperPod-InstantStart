@@ -617,6 +617,7 @@ router.get('/deployments', async (req, res) => {
         modelTag,
         deploymentType: finalDeploymentType,  // Router | VLLM | Others 等
         deploymentName: deployment.metadata.name,
+        namespace: deploymentNamespace,  // 资源所在 namespace（供前端列展示 + namespace 过滤）
         serviceName: matchingService?.metadata.name || 'N/A',
         replicas: deployment.spec.replicas,
         readyReplicas: deployment.status.readyReplicas || 0,

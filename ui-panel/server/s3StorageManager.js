@@ -1,10 +1,7 @@
-const { exec } = require('child_process');
 const fs = require('fs-extra');
 const path = require('path');
 const yaml = require('yaml');
-const { promisify } = require('util');
-
-const execAsync = promisify(exec);
+const { exec, execAsync } = require('./utils/exec');
 const { getCurrentRegion } = require('./utils/awsHelpers');
 const { renderTemplate, patches: P } = require('./utils/renderTemplate');
 

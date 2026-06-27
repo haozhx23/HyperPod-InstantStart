@@ -1,11 +1,8 @@
-const { exec } = require('child_process');
 const fs = require('fs-extra');
 const path = require('path');
 const yaml = require('yaml');
-const { promisify } = require('util');
 const AWSHelpers = require('./utils/awsHelpers');
-
-const execAsync = promisify(exec);
+const { execAsync } = require('./utils/exec');
 
 class FSxStorageManager {
   constructor() {

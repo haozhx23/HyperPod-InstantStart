@@ -105,6 +105,7 @@ export const selectCalculatedClusterStats = state => {
 // 应用状态相关选择器
 export const selectAppPods = state => state.appStatus?.pods || [];
 export const selectAppServices = state => state.appStatus?.services || [];
+export const selectAppIngresses = state => state.appStatus?.ingresses || [];
 export const selectAppRayJobs = state => state.appStatus?.rayJobs || [];
 export const selectAppBindingServices = state => state.appStatus?.bindingServices || [];
 export const selectAppDeployments = state => state.appStatus?.deployments || [];          // 新增

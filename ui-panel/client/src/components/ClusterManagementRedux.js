@@ -26,7 +26,6 @@ import {
 } from 'antd';
 import {
   CloudServerOutlined,
-  SettingOutlined,
   ReloadOutlined,
   PlayCircleOutlined,
   CheckCircleOutlined,
@@ -36,6 +35,7 @@ import {
 } from '@ant-design/icons';
 import NodeGroupManager from './NodeGroupManagerRedux';
 import EksClusterCreationPanel from './EksClusterCreationPanel';
+import { getDependencyStatusDisplay, getDependencyButtonProps } from './clusterManagementHelpers';
 import {
   fetchClusters,
   switchCluster as switchClusterAction,
@@ -145,35 +145,7 @@ const ADDON_FIELD_MAP = [
 
 // 依赖配置状态显示组件（增强版）
 const DependencyStatus = ({ cluster, dependenciesStatus }) => {
-  // 获取状态显示
-  const getDependencyStatusDisplay = () => {
-    if (!dependenciesStatus) {
-      return <Text type="secondary">Loading...</Text>;
-    }
-
-    // 检查是否是导入的集群类型
-    const isImported = cluster?.type === 'imported';
-
-    if (isImported) {
-      // 导入的集群：显示实际配置状态（不再区分有无HyperPod）
-      if (dependenciesStatus?.configured) {
-        return <Tag color="green">Configured</Tag>;
-      } else {
-        return <Tag color="warning">Not Configured</Tag>;
-      }
-    } else {
-      // 创建的集群：显示配置状态
-      if (dependenciesStatus?.configured) {
-        return <Tag color="green">Configured</Tag>;
-      } else if (dependenciesStatus?.detected && dependenciesStatus?.effectiveStatus) {
-        return <Tag color="blue">Detected</Tag>;
-      } else {
-        return <Tag color="warning">Not Configured</Tag>;
-      }
-    }
-  };
-
-  return getDependencyStatusDisplay();
+  return getDependencyStatusDisplay(dependenciesStatus, cluster);
 };
 
 // 依赖配置按钮组件 - Redux版本
@@ -192,59 +164,7 @@ const DependencyConfigButton = ({ clusterTag, currentCluster }) => {
     }
   };
 
-  // 获取按钮文本和状态
-  const getButtonProps = () => {
-    // 导入的集群也可以配置依赖（移除了原有的禁用逻辑）
-    
-    if (!dependenciesStatus) {
-      return {
-        text: 'Configure Dependencies',
-        disabled: true,
-        type: 'default',
-        icon: <SettingOutlined />
-      };
-    }
-
-    switch (dependenciesStatus.status) {
-      case 'pending':
-        return {
-          text: 'Configure Dependencies',
-          disabled: false,
-          type: 'primary',
-          icon: <SettingOutlined />
-        };
-      case 'configuring':
-        return {
-          text: 'Configuring...',
-          disabled: true,
-          type: 'primary',
-          icon: <SettingOutlined />
-        };
-      case 'success':
-        return {
-          text: 'Dependencies Configured',
-          disabled: true,
-          type: 'default',
-          icon: <CheckCircleOutlined />
-        };
-      case 'failed':
-        return {
-          text: 'Retry Configuration',
-          disabled: false,
-          type: 'default',
-          icon: <ReloadOutlined />
-        };
-      default:
-        return {
-          text: 'Configure Dependencies',
-          disabled: true,
-          type: 'default',
-          icon: <SettingOutlined />
-        };
-    }
-  };
-
-  const buttonProps = getButtonProps();
+  const buttonProps = getDependencyButtonProps(dependenciesStatus);
 
   return (
     <Button

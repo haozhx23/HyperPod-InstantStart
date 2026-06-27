@@ -15,9 +15,7 @@ const express = require('express');
 const router = express.Router();
 const fs = require('fs-extra');
 const path = require('path');
-const { exec, execSync } = require('child_process');
-const { promisify } = require('util');
-const execAsync = promisify(exec);
+const { execSync, execAsync } = require('./utils/exec');
 
 // 依赖模块
 const ClusterManager = require('./clusterManager');

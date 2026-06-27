@@ -16,9 +16,7 @@
 
 const express = require('express');
 const router = express.Router();
-const { exec, spawn } = require('child_process');
-const { promisify } = require('util');
-const execAsync = promisify(exec);
+const { spawn, execAsync } = require('./utils/exec');
 const fs = require('fs');
 const path = require('path');
 

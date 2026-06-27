@@ -12,39 +12,52 @@ import {
   Typography,
   message,
   Popconfirm,
-  Select,
   Tooltip,
   Alert,
   Input,
-  Modal
+  Modal,
+  Divider
 } from 'antd';
 import {
   CheckCircleOutlined,
   ExclamationCircleOutlined,
   ClockCircleOutlined,
-  LoadingOutlined,
   ReloadOutlined,
   ApiOutlined,
   ContainerOutlined,
   DeleteOutlined,
-  InfoCircleOutlined,
   ThunderboltOutlined,      // 新增：用于VLLM部署类型
-  GlobalOutlined,           // 新增：用于外部访问
-  LockOutlined,             // 新增：用于内部访问
-  CodeOutlined,             // 新增：用于扩缩容按钮
   ExperimentOutlined,       // 新增：用于训练任务
   SyncOutlined,             // 新增：用于Running状态图标（匹配原始HyperPodJobManager）
-  CloseCircleOutlined,      // 新增：用于Failed状态图标（匹配原始HyperPodJobManager）
-  FileTextOutlined          // 新增：用于Pod日志按钮
+  CloseCircleOutlined       // 新增：用于Failed状态图标（匹配原始HyperPodJobManager）
 } from '@ant-design/icons';
 import PodLogModal from './PodLogModal';
 import PodDescribeModal from './PodDescribeModal';
+import {
+  getServiceType,
+  getDeploymentStatus,
+  getJobStatusFromCondition,
+  getK8sJobSummary,
+  MONITORING_TABLE_SCROLL_Y,
+  MONITORING_TABLE_SCROLL_X
+} from './statusMonitorHelpers';
+import { getPodStatus } from './podStatusHelpers';
+import {
+  buildPodColumns,
+  buildServiceColumns,
+  buildIngressColumns,
+  buildRayJobColumns,
+  buildTrainingJobColumns,
+  buildDeploymentColumns,
+  buildNamespaceColumn
+} from './statusMonitorColumns';
 
 // Redux imports
 import { refreshAllAppStatus } from '../store/slices/appStatusSlice';
 import {
   selectAppPods,
   selectAppServices,
+  selectAppIngresses,
   selectAppRayJobs,
   selectAppBindingServices,
   selectAppDeployments,        // 新增
@@ -62,30 +75,11 @@ import resourceEventBus from '../utils/resourceEventBus';
 
 const { TabPane } = Tabs;
 const { Text } = Typography;
-const { Option } = Select;
 
-// Extractors for resource-specific status strings, used by useResourceFilter.
-const getServiceType = (s) => s?.spec?.type;
-const getDeploymentStatus = (d) => (typeof d?.status === 'string' ? d.status : undefined);
+// Resource-status extractor used only by managed-inference rendering; kept local
+// so its @release marker is not relocated. Sibling sentinel-free extractors and
+// the table scroll constant live in ./statusMonitorHelpers.
 const getInferenceEndpointStatus = (e) => e?.deploymentStatus;
-const getJobStatusFromCondition = (item) => {
-  const s = item?.status;
-  if (typeof s === 'string') return s;
-  if (s && typeof s === 'object' && Array.isArray(s.conditions) && s.conditions.length) {
-    return s.conditions[s.conditions.length - 1]?.type;
-  }
-  return undefined;
-};
-const getK8sJobSummary = (j) => {
-  if (!j) return undefined;
-  if (j.succeeded >= j.completions) return 'Complete';
-  if (j.failed > 0) return 'Failed';
-  if (j.active > 0) return 'Running';
-  return 'Pending';
-};
-
-// 复用：Monitoring 页所有 Table 的内部滚动目标高度（除以 --zoom-factor 以适配 body zoom）。
-const MONITORING_TABLE_SCROLL_Y = 'calc((100vh - 480px) / var(--zoom-factor))';
 
 const StatusMonitorRedux = ({ activeTab }) => {
   const dispatch = useDispatch();
@@ -93,6 +87,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
   // Redux 状态
   const pods = useSelector(selectAppPods);
   const services = useSelector(selectAppServices);
+  const ingresses = useSelector(selectAppIngresses);
   const rayJobs = useSelector(selectAppRayJobs);
   const businessServices = useSelector(selectAppBindingServices);
   const deployments = useSelector(selectAppDeployments);          // 新增
@@ -554,30 +549,6 @@ const StatusMonitorRedux = ({ activeTab }) => {
     });
   };
 
-  // Pod状态相关函数
-  const getPodStatus = (pod) => {
-    // 优先检查是否正在删除（Terminating）
-    if (pod.metadata?.deletionTimestamp) {
-      return 'Terminating';
-    }
-
-    const phase = pod.status?.phase;
-    const containerStatuses = pod.status?.containerStatuses || [];
-
-    // 检查容器状态，透传容器的实际状态原因
-    for (const containerStatus of containerStatuses) {
-      if (containerStatus.state?.waiting?.reason) {
-        return containerStatus.state.waiting.reason;
-      }
-      if (containerStatus.state?.terminated?.reason) {
-        return containerStatus.state.terminated.reason;
-      }
-    }
-
-    // 透传 Pod phase
-    return phase || 'Unknown';
-  };
-
   // Monitoring 页每个 tab 共享一套筛选/分页模式。Pods/Services/RayJobs 这些
   // k8s 原生对象默认 ns 选 'default' 避免一屏铺满；processed 形态的（deployments /
   // jobs / inference / k8sjobs / trainjobs）没可靠 namespace 字段，默认 __all__。
@@ -613,47 +584,6 @@ const StatusMonitorRedux = ({ activeTab }) => {
     searchPlaceholder: 'Search k8s jobs by name',
   });
 
-  const getPodStatusColor = (status) => {
-    const statusLower = status?.toLowerCase() || '';
-    
-    // 成功状态
-    if (['running', 'succeeded', 'completed'].includes(statusLower)) {
-      return 'success';
-    }
-    
-    // 错误状态
-    if (['failed', 'error', 'imagepullbackoff', 'errimagepull', 
-         'crashloopbackoff', 'oomkilled'].includes(statusLower)) {
-      return 'error';
-    }
-    
-    // 警告状态
-    if (['terminating', 'pending', 'unknown'].includes(statusLower)) {
-      return 'warning';
-    }
-    
-    // 默认处理中状态（包括 ContainerCreating 等）
-    return 'processing';
-  };
-
-  const getPodStatusIcon = (status) => {
-    const statusLower = status?.toLowerCase() || '';
-    
-    // 成功状态
-    if (['running', 'succeeded', 'completed'].includes(statusLower)) {
-      return <CheckCircleOutlined />;
-    }
-    
-    // 错误状态
-    if (['failed', 'error', 'imagepullbackoff', 'errimagepull', 
-         'crashloopbackoff', 'oomkilled'].includes(statusLower)) {
-      return <ExclamationCircleOutlined />;
-    }
-    
-    // 默认加载中图标
-    return <LoadingOutlined />;
-  };
-
   // 计算Service关联的Pod数量
   const getServicePodCount = (service) => {
     const selector = service.spec?.selector || {};
@@ -670,761 +600,33 @@ const StatusMonitorRedux = ({ activeTab }) => {
   };
 
   // Pod表格列定义
-  const podColumns = [
-    {
-      title: 'Pod Name',
-      dataIndex: ['metadata', 'name'],
-      key: 'name',
-      render: (text) => (
-        <Space>
-          <ContainerOutlined />
-          <span style={{ fontFamily: 'monospace', fontSize: '12px' }}>{text}</span>
-        </Space>
-      ),
-      width: 300, // 设置固定宽度替代ellipsis
-    },
-    {
-      title: 'Status',
-      key: 'status',
-      render: (_, pod) => {
-        const status = getPodStatus(pod);
-        return (
-          <Tag
-            color={getPodStatusColor(status)}
-            icon={getPodStatusIcon(status)}
-          >
-            {status}
-          </Tag>
-        );
-      },
-    },
-    {
-      title: 'Business',
-      key: 'business',
-      render: (_, pod) => {
-        if (!isPoolPod(pod)) {
-          return <Text type="secondary">N/A</Text>;
-        }
-
-        const currentBusiness = pod.metadata.labels?.business || 'unassigned';
-        const podName = pod.metadata.name;
-        const isAssigning = assigningPods.has(podName);
-
-        return (
-          <Select
-            value={currentBusiness}
-            onChange={(value) => handlePodAssign(podName, value)}
-            style={{ width: 140 }}
-            size="small"
-            loading={isAssigning}
-            disabled={isAssigning}
-          >
-            <Option value="unassigned">
-              <Text type="secondary">Unassigned</Text>
-            </Option>
-            {businessServices.map(service => (
-              <Option key={service.businessTag} value={service.businessTag}>
-                <Text>{service.displayName}</Text>
-              </Option>
-            ))}
-          </Select>
-        );
-      },
-    },
-    {
-      title: 'Ready',
-      key: 'ready',
-      render: (_, pod) => {
-        const containerStatuses = pod.status?.containerStatuses || [];
-        const readyCount = containerStatuses.filter(c => c.ready).length;
-        const totalCount = containerStatuses.length;
-
-        return (
-          <Badge
-            count={`${readyCount}/${totalCount}`}
-            style={{
-              backgroundColor: readyCount === totalCount ? '#52c41a' : '#faad14'
-            }}
-          />
-        );
-      },
-    },
-    {
-      title: 'Restarts',
-      key: 'restarts',
-      width: 80,
-      render: (_, pod) => {
-        const containerStatuses = pod.status?.containerStatuses || [];
-        const totalRestarts = containerStatuses.reduce((sum, c) => sum + (c.restartCount || 0), 0);
-
-        return (
-          <Badge
-            count={totalRestarts}
-            showZero={true}
-            style={{
-              backgroundColor: totalRestarts === 0 ? '#52c41a' : '#ff4d4f'
-            }}
-          />
-        );
-      },
-    },
-    {
-      title: 'Age',
-      key: 'age',
-      width: 80,
-      render: (_, pod) => {
-        const creationTime = new Date(pod.metadata.creationTimestamp);
-        const now = new Date();
-        const ageMs = now - creationTime;
-        const ageMinutes = Math.floor(ageMs / 60000);
-
-        if (ageMinutes < 60) {
-          return `${ageMinutes}m`;
-        } else if (ageMinutes < 1440) {
-          return `${Math.floor(ageMinutes / 60)}h`;
-        } else {
-          return `${Math.floor(ageMinutes / 1440)}d`;
-        }
-      },
-    },
-    {
-      title: 'Actions',
-      key: 'actions',
-      width: 220,
-      render: (_, pod) => {
-        const podName = pod.metadata?.name;
-        const namespace = pod.metadata?.namespace;
-        const phase = pod.status?.phase;
-        return (
-          <Space size={0}>
-            <Tooltip title="View pod logs">
-              <Button
-                size="small"
-                type="link"
-                icon={<FileTextOutlined />}
-                disabled={!phase || phase === 'Pending'}
-                onClick={() => setLogModalPod({ name: podName, namespace })}
-              >
-                Logs
-              </Button>
-            </Tooltip>
-            <Tooltip title="Run kubectl describe (useful for Pending/Failed pods)">
-              <Button
-                size="small"
-                type="link"
-                icon={<InfoCircleOutlined />}
-                onClick={() => setDescribeModalPod({ name: podName, namespace })}
-              >
-                Describe
-              </Button>
-            </Tooltip>
-          </Space>
-        );
-      },
-    },
-  ];
+  const podColumns = buildPodColumns({
+    isPoolPod,
+    assigningPods,
+    handlePodAssign,
+    businessServices,
+    setLogModalPod,
+    setDescribeModalPod,
+  });
 
   // Service表格列定义
-  const serviceColumns = [
-    {
-      title: 'Service Name',
-      dataIndex: ['metadata', 'name'],
-      key: 'name',
-      render: (text) => (
-        <Space>
-          <ApiOutlined />
-          <span style={{ fontFamily: 'monospace', fontSize: '12px' }}>{text}</span>
-        </Space>
-      ),
-      width: 300, // 设置固定宽度替代ellipsis
-    },
-    {
-      title: 'Namespace',
-      dataIndex: ['metadata', 'namespace'],
-      key: 'namespace',
-      render: (namespace) => (
-        <Tag color="blue">{namespace || 'default'}</Tag>
-      ),
-    },
-    {
-      title: 'Type',
-      dataIndex: ['spec', 'type'],
-      key: 'type',
-      render: (type) => (
-        <Tag color={type === 'LoadBalancer' ? 'blue' : 'default'}>
-          {type}
-        </Tag>
-      ),
-    },
-    {
-      title: 'Pods',
-      key: 'pods',
-      render: (_, service) => {
-        const podCount = getServicePodCount(service);
-        return (
-          <Badge
-            count={podCount}
-            style={{
-              backgroundColor: podCount > 0 ? '#52c41a' : '#d9d9d9',
-              color: podCount > 0 ? 'white' : '#666'
-            }}
-          />
-        );
-      },
-    },
-    {
-      title: 'Cluster IP',
-      dataIndex: ['spec', 'clusterIP'],
-      key: 'clusterIP',
-      render: (ip) => <Text code>{ip}</Text>,
-    },
-    {
-      title: 'External IP',
-      key: 'externalIP',
-      render: (_, service) => {
-        const ingress = service.status?.loadBalancer?.ingress;
-        if (ingress && ingress.length > 0) {
-          const externalIP = ingress[0].hostname || ingress[0].ip;
-          return <Text code>{externalIP}</Text>;
-        }
+  const serviceColumns = buildServiceColumns({
+    getServicePodCount,
+    handleServiceDelete,
+    deletingServices,
+  });
 
-        if (service.spec.type === 'LoadBalancer') {
-          return <Text type="secondary">Pending...</Text>;
-        }
-
-        return <Text type="secondary">-</Text>;
-      },
-    },
-    {
-      title: 'Ports',
-      key: 'ports',
-      render: (_, service) => {
-        const ports = service.spec?.ports || [];
-        return (
-          <Space wrap>
-            {ports.map((port, index) => (
-              <Tag key={index} color="geekblue">
-                {port.port}:{port.targetPort}
-              </Tag>
-            ))}
-          </Space>
-        );
-      },
-    },
-    {
-      title: 'Actions',
-      key: 'actions',
-      width: 80,
-      render: (_, service) => {
-        // 系统Service不显示删除按钮
-        const isSystemService = service.metadata.name === 'kubernetes' ||
-          service.metadata.namespace === 'kube-system' ||
-          service.metadata.labels?.['kubernetes.io/managed-by'];
-
-        if (isSystemService) {
-          return <Text type="secondary">System Service</Text>;
-        }
-
-        return (
-          <Popconfirm
-            title="Delete Service"
-            description={`Are you sure you want to delete service ${service.metadata.name}?`}
-            onConfirm={() => handleServiceDelete(service.metadata.name)}
-            okText="Yes"
-            cancelText="No"
-            placement="left"
-          >
-            <Button
-              type="primary"
-              danger
-              size="small"
-              icon={<DeleteOutlined />}
-              loading={deletingServices.has(service.metadata.name)}
-            >
-              Delete
-            </Button>
-          </Popconfirm>
-        );
-      }
-    },
-  ];
+  // Ingress (ALB) 表格列定义
+  const ingressColumns = buildIngressColumns();
 
   // RayJob表格列定义
-  const rayJobColumns = [
-    {
-      title: 'Job Name',
-      dataIndex: ['metadata', 'name'],
-      key: 'name',
-      render: (name) => <Text strong>{name}</Text>
-    },
-    {
-      title: 'Job Status',
-      dataIndex: ['status', 'jobStatus'],
-      key: 'jobStatus',
-      render: (status) => {
-        const statusConfig = {
-          'RUNNING': { color: 'processing', icon: <LoadingOutlined /> },
-          'SUCCEEDED': { color: 'success', icon: <CheckCircleOutlined /> },
-          'FAILED': { color: 'error', icon: <ExclamationCircleOutlined /> },
-          'PENDING': { color: 'warning', icon: <ClockCircleOutlined /> }
-        };
-        const config = statusConfig[status] || { color: 'default', icon: null };
-        return <Tag color={config.color} icon={config.icon}>{status || 'Unknown'}</Tag>;
-      }
-    },
-    {
-      title: 'Ray Cluster',
-      dataIndex: ['status', 'rayClusterName'],
-      key: 'rayClusterName',
-      render: (name) => <Text code>{name}</Text>
-    },
-    {
-      title: 'Start Time',
-      dataIndex: ['status', 'startTime'],
-      key: 'startTime',
-      render: (time) => time ? new Date(time).toLocaleString() : 'N/A'
-    },
-    {
-      title: 'Age',
-      dataIndex: ['metadata', 'creationTimestamp'],
-      key: 'age',
-      render: (timestamp) => {
-        if (!timestamp) return 'N/A';
-        const age = Date.now() - new Date(timestamp).getTime();
-        const minutes = Math.floor(age / 60000);
-        const hours = Math.floor(minutes / 60);
-        if (hours > 0) return `${hours}h ${minutes % 60}m`;
-        return `${minutes}m`;
-      }
-    },
-    {
-      title: 'Actions',
-      key: 'actions',
-      render: (_, record) => (
-        <Popconfirm
-          title="Delete RayJob"
-          description={`Are you sure you want to delete "${record.metadata.name}"?`}
-          onConfirm={() => handleDeleteRayJob(record.metadata.name)}
-          okText="Yes"
-          cancelText="No"
-        >
-          <Button
-            type="primary"
-            danger
-            size="small"
-            icon={<DeleteOutlined />}
-            loading={deletingRayJob}
-          >
-            Delete
-          </Button>
-        </Popconfirm>
-      )
-    }
-  ];
+  const rayJobColumns = buildRayJobColumns({ handleDeleteRayJob, deletingRayJob });
 
   // Deployment表格列定义 - 优化后去掉重复的Model Tag列
-  const deploymentColumns = [
-    {
-      title: 'Deployment Name',
-      dataIndex: 'deploymentName',
-      key: 'deploymentName',
-      width: 250,
-      render: (text) => (
-        <strong style={{ fontFamily: 'monospace', fontSize: '12px' }}>
-          {text}
-        </strong>
-      ),
-    },
-    {
-      title: 'Type',
-      dataIndex: 'deploymentType',
-      key: 'deploymentType',
-      render: (type) => {
-        // 继承原部署管理的图标和颜色
-        const getTypeIcon = (type) => {
-          switch (type) {
-            case 'VLLM':
-              return <CodeOutlined />;
-            case 'SGLang':
-              return <ThunderboltOutlined />;
-            case 'Router':
-              return <ApiOutlined />;
-            case 'InferenceOperator':
-              return <ContainerOutlined />;
-            default:
-              return <InfoCircleOutlined />;
-          }
-        };
-
-        const getTypeColor = (type) => {
-          switch (type) {
-            case 'VLLM': return 'blue';
-            case 'SGLang': return 'green';
-            case 'Router': return 'purple';
-            case 'InferenceOperator': return 'cyan';
-            default: return 'default';
-          }
-        };
-
-        return (
-          <Tag color={getTypeColor(type)} icon={getTypeIcon(type)}>
-            {type}
-          </Tag>
-        );
-      }
-    },
-    {
-      title: 'Status',
-      dataIndex: 'status',
-      key: 'status',
-      render: (status, record) => {
-        const getStatusColor = (status) => {
-          switch (status) {
-            case 'Ready': return 'success';
-            case 'Pending': return 'processing';
-            default: return 'error';
-          }
-        };
-
-        return (
-          <Tag color={getStatusColor(status)}>
-            {status} ({record.readyReplicas}/{record.replicas})
-          </Tag>
-        );
-      }
-    },
-    {
-      title: 'Service',
-      key: 'service',
-      width: 150,
-      render: (_, record) => (
-        <div>
-          <div style={{ fontFamily: 'monospace', fontSize: '12px' }}>
-            {record.serviceName}
-          </div>
-          {record.hasService && (
-            <Tag color="blue" size="small">
-              {record.serviceType}
-            </Tag>
-          )}
-        </div>
-      ),
-    },
-    {
-      title: 'Container Port',
-      key: 'containerPorts',
-      width: 120,
-      render: (_, record) => (
-        <div>
-          {record.containerPorts && record.containerPorts.length > 0 ? (
-            record.containerPorts.map((port, index) => (
-              <Tag key={index} color="cyan" size="small" style={{ margin: '1px' }}>
-                {port.containerPort}
-                {port.protocol && port.protocol !== 'TCP' && `/${port.protocol}`}
-              </Tag>
-            ))
-          ) : (
-            <Tag size="small" color="default">N/A</Tag>
-          )}
-        </div>
-      ),
-    },
-    {
-      title: 'Access & URL',
-      dataIndex: 'externalIP',
-      key: 'externalIP',
-      width: 160,
-      render: (ip, record) => {
-        // 访问类型标签的图标和颜色函数
-        const getAccessIcon = (isExternal) => {
-          return isExternal ? <GlobalOutlined /> : <LockOutlined />;
-        };
-
-        const getAccessColor = (isExternal) => {
-          return isExternal ? 'orange' : 'purple';
-        };
-
-        // 内部访问或无服务的情况
-        if (!record.isExternal) {
-          return (
-            <Tag
-              color={getAccessColor(false)}
-              icon={getAccessIcon(false)}
-            >
-              Internal Only
-            </Tag>
-          );
-        }
-
-        // 外部访问但状态为 Pending
-        if (ip === 'Pending') {
-          return (
-            <Space direction="vertical" size="small">
-              <Tag
-                color={getAccessColor(true)}
-                icon={getAccessIcon(true)}
-              >
-                External
-              </Tag>
-              <Tag color="orange">Pending</Tag>
-            </Space>
-          );
-        }
-
-        // 外部访问但无服务
-        if (ip === 'N/A' || !record.hasService) {
-          return (
-            <Space direction="vertical" size="small">
-              <Tag
-                color={getAccessColor(true)}
-                icon={getAccessIcon(true)}
-              >
-                External
-              </Tag>
-              <Tag color="default">No Service</Tag>
-            </Space>
-          );
-        }
-
-        // 外部访问且有有效的 URL
-        const port = record.port || '8000';
-        const fullUrl = `http://${ip}:${port}`;
-
-        return (
-          <div style={{ width: '180px' }}>
-            <Space direction="vertical" size="small" style={{ width: '100%' }}>
-              <Tag
-                color={getAccessColor(true)}
-                icon={getAccessIcon(true)}
-                size="small"
-              >
-                External
-              </Tag>
-              <Tooltip title={fullUrl}>
-                <Text
-                  copyable={{ text: fullUrl }}
-                  style={{
-                    fontFamily: 'monospace',
-                    fontSize: '11px',
-                    wordBreak: 'break-all',
-                    width: '100%'
-                  }}
-                >
-                  {ip.length > 12 ? `${ip.substring(0, 12)}...` : ip}:{port}
-                </Text>
-              </Tooltip>
-            </Space>
-          </div>
-        );
-      },
-    },
-    {
-      title: 'ScaledObject',
-      dataIndex: 'scaledObject',
-      key: 'scaledObject',
-      width: 180,
-      render: (scaledObject) => {
-        if (!scaledObject) {
-          return <Text type="secondary">-</Text>;
-        }
-        return (
-          <Tooltip title={`Min: ${scaledObject.minReplicas}, Max: ${scaledObject.maxReplicas}`}>
-            <Text style={{ fontFamily: 'monospace', fontSize: '12px' }}>
-              {scaledObject.name}
-            </Text>
-          </Tooltip>
-        );
-      },
-    },
-    {
-      title: 'Created',
-      dataIndex: 'createdAt',
-      key: 'createdAt',
-      render: (timestamp) => {
-        const date = new Date(timestamp);
-        const now = new Date();
-        const diffMs = now - date;
-        const diffMins = Math.floor(diffMs / 60000);
-        const diffHours = Math.floor(diffMins / 60);
-        const diffDays = Math.floor(diffHours / 24);
-
-        let ageText;
-        if (diffDays > 0) {
-          ageText = `${diffDays}d ago`;
-        } else if (diffHours > 0) {
-          ageText = `${diffHours}h ago`;
-        } else {
-          ageText = `${diffMins}m ago`;
-        }
-
-        return (
-          <Tooltip title={date.toLocaleString()}>
-            <span style={{ fontSize: '12px', color: '#666' }}>
-              {ageText}
-            </span>
-          </Tooltip>
-        );
-      },
-    },
-    {
-      title: 'Actions',
-      key: 'actions',
-      width: 100,
-      render: (_, record) => (
-        <Space direction="vertical" size="small" style={{ display: 'flex' }}>
-          <Button
-            type="default"
-            size="small"
-            icon={<ThunderboltOutlined />}
-            loading={scalingDeployments.has(record.deploymentName)}
-            onClick={() => showScaleModal(record)}
-            style={{ width: '90px' }}
-          >
-            Scale
-          </Button>
-          <Popconfirm
-            title="Delete Deployment"
-            description={`Are you sure you want to delete "${record.deploymentName}"?`}
-            onConfirm={() => handleDeploymentDelete(record.deploymentName, record.deploymentType, record.isRouter)}
-            okText="Delete"
-            cancelText="Cancel"
-            okButtonProps={{ danger: true }}
-          >
-            <Button
-              type="primary"
-              danger
-              size="small"
-              icon={<DeleteOutlined />}
-              loading={deletingDeployments.has(record.deploymentName)}
-              style={{ width: '90px' }}
-            >
-              Delete
-            </Button>
-          </Popconfirm>
-        </Space>
-      )
-    }
-  ];
+  const deploymentColumns = buildDeploymentColumns({ scalingDeployments, showScaleModal, handleDeploymentDelete, deletingDeployments });
 
   // Training Jobs表格列定义
-  const trainingJobColumns = [
-    {
-      title: 'Job Name',
-      dataIndex: 'name',
-      key: 'name',
-      render: (name) => (
-        <Space>
-          <ExperimentOutlined style={{ color: '#1890ff' }} />
-          <Text strong>{name}</Text>
-        </Space>
-      ),
-    },
-    {
-      title: 'Status',
-      dataIndex: 'status',
-      key: 'status',
-      render: (statusObj) => {
-        // 完全匹配原始HyperPodJobManager的状态处理逻辑
-        let status = 'Unknown';
-
-        if (typeof statusObj === 'string') {
-          status = statusObj;
-        } else if (statusObj && typeof statusObj === 'object') {
-          // 从状态对象中提取状态信息
-          if (statusObj.conditions && Array.isArray(statusObj.conditions)) {
-            const lastCondition = statusObj.conditions[statusObj.conditions.length - 1];
-            if (lastCondition && lastCondition.type) {
-              status = lastCondition.type;
-            }
-          } else if (statusObj.phase) {
-            status = statusObj.phase;
-          } else if (statusObj.state) {
-            status = statusObj.state;
-          }
-        }
-
-        // 完全匹配原始HyperPodJobManager的状态配置
-        const statusConfig = {
-          'Running': { color: 'processing', icon: <SyncOutlined /> },
-          'Succeeded': { color: 'success', icon: <CheckCircleOutlined /> },
-          'Failed': { color: 'error', icon: <CloseCircleOutlined /> },
-          'Pending': { color: 'warning', icon: <ClockCircleOutlined /> },
-          'Unknown': { color: 'default', icon: <ClockCircleOutlined /> },
-          'Created': { color: 'default', icon: <ClockCircleOutlined /> },
-          'Completed': { color: 'success', icon: <CheckCircleOutlined /> }
-        };
-
-        const config = statusConfig[status] || statusConfig['Unknown'];
-
-        return (
-          <Tag color={config.color} icon={config.icon}>
-            {status}
-          </Tag>
-        );
-      },
-    },
-    {
-      title: 'Created',
-      dataIndex: 'creationTimestamp',
-      key: 'creationTimestamp',
-      render: (timestamp) => {
-        if (!timestamp) return '-';
-        const date = new Date(timestamp);
-        return (
-          <Tooltip title={date.toLocaleString()}>
-            <Text type="secondary">
-              {date.toLocaleDateString()} {date.toLocaleTimeString()}
-            </Text>
-          </Tooltip>
-        );
-      },
-    },
-    {
-      title: 'Duration',
-      key: 'duration',
-      render: (_, record) => {
-        if (!record.creationTimestamp) return '-';
-
-        const startTime = new Date(record.creationTimestamp);
-        const now = new Date();
-        const diffMs = now - startTime;
-
-        const hours = Math.floor(diffMs / (1000 * 60 * 60));
-        const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-
-        if (hours > 0) {
-          return <Text type="secondary">{hours}h {minutes}m</Text>;
-        } else if (minutes > 0) {
-          return <Text type="secondary">{minutes}m</Text>;
-        } else {
-          return <Text type="secondary">{'< 1m'}</Text>;
-        }
-      },
-    },
-    {
-      title: 'Actions',
-      key: 'actions',
-      render: (_, record) => (
-        <Popconfirm
-          title="Delete Training Job"
-          description={`Are you sure you want to delete "${record.name}"?`}
-          onConfirm={() => handleTrainingJobDelete(record.name)}
-          okText="Yes"
-          cancelText="No"
-        >
-          <Button
-            type="primary"
-            danger
-            size="small"
-            icon={<DeleteOutlined />}
-            loading={deletingTrainingJobs.has(record.name)}
-          >
-            Delete
-          </Button>
-        </Popconfirm>
-      ),
-    },
-  ];
+  const trainingJobColumns = buildTrainingJobColumns({ handleTrainingJobDelete, deletingTrainingJobs });
 
   // InferenceEndpointConfig 表格列定义
   const inferenceEndpointColumns = [
@@ -1432,6 +634,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
       title: 'Endpoint Name',
       dataIndex: 'name',
       key: 'name',
+      width: 200,
       render: (name) => (
         <Space>
           <ThunderboltOutlined style={{ color: '#1890ff' }} />
@@ -1439,20 +642,24 @@ const StatusMonitorRedux = ({ activeTab }) => {
         </Space>
       ),
     },
+    buildNamespaceColumn(false),
     {
       title: 'Deployment Tag',
       dataIndex: 'modelName',
       key: 'modelName',
+      width: 160,
     },
     {
       title: 'Instance Type',
       dataIndex: 'instanceType',
       key: 'instanceType',
+      width: 130,
       render: (type) => <Tag color="green">{type}</Tag>,
     },
     {
       title: 'Replicas',
       key: 'replicas',
+      width: 90,
       render: (_, record) => (
         <Text>{record.availableReplicas || 0}/{record.replicas || 0}</Text>
       ),
@@ -1461,6 +668,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
       title: 'Status',
       dataIndex: 'deploymentStatus',
       key: 'deploymentStatus',
+      width: 170,
       render: (status) => {
         const statusConfig = {
           'DeploymentComplete': { color: 'success', icon: <CheckCircleOutlined /> },
@@ -1482,6 +690,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
       title: 'S3 Bucket',
       dataIndex: 's3Bucket',
       key: 's3Bucket',
+      width: 170,
       render: (bucket) => (
         <Tooltip title={bucket}>
           <Text type="secondary" ellipsis style={{ maxWidth: 150 }}>
@@ -1494,6 +703,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
       title: 'Created',
       dataIndex: 'creationTimestamp',
       key: 'creationTimestamp',
+      width: 200,
       render: (timestamp) => {
         if (!timestamp) return '-';
         const date = new Date(timestamp);
@@ -1509,6 +719,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
     {
       title: 'Actions',
       key: 'actions',
+      width: 100,
       render: (_, record) => (
         <Popconfirm
           title="Delete Inference Endpoint"
@@ -1537,6 +748,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
       title: 'Job Name',
       dataIndex: 'name',
       key: 'name',
+      width: 220,
       render: (name) => (
         <Space>
           <ContainerOutlined style={{ color: '#1890ff' }} />
@@ -1544,9 +756,11 @@ const StatusMonitorRedux = ({ activeTab }) => {
         </Space>
       ),
     },
+    buildNamespaceColumn(false),
     {
       title: 'Status',
       key: 'status',
+      width: 120,
       render: (_, record) => {
         if (record.succeeded >= record.completions) {
           return <Tag color="success" icon={<CheckCircleOutlined />}>Complete</Tag>;
@@ -1563,6 +777,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
     {
       title: 'Completions',
       key: 'completions',
+      width: 110,
       render: (_, record) => (
         <Text>{record.succeeded}/{record.completions}</Text>
       ),
@@ -1571,6 +786,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
       title: 'Created',
       dataIndex: 'creationTimestamp',
       key: 'creationTimestamp',
+      width: 200,
       render: (timestamp) => {
         if (!timestamp) return '-';
         const date = new Date(timestamp);
@@ -1584,6 +800,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
     {
       title: 'Duration',
       key: 'duration',
+      width: 110,
       render: (_, record) => {
         if (!record.startTime) return '-';
         const start = new Date(record.startTime);
@@ -1598,6 +815,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
     {
       title: 'Actions',
       key: 'actions',
+      width: 100,
       render: (_, record) => (
         <Popconfirm
           title="Delete Job"
@@ -1772,7 +990,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
             rowKey={(pod) => pod.metadata.uid}
             size="small"
             sticky
-            scroll={{ y: MONITORING_TABLE_SCROLL_Y }}
+            scroll={{ x: MONITORING_TABLE_SCROLL_X.pods, y: MONITORING_TABLE_SCROLL_Y }}
             pagination={podFilter.paginationProps}
             loading={loading}
             locale={{
@@ -1816,7 +1034,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
             rowKey={(service) => service.metadata.uid}
             size="small"
             sticky
-            scroll={{ y: MONITORING_TABLE_SCROLL_Y }}
+            scroll={{ x: MONITORING_TABLE_SCROLL_X.services, y: MONITORING_TABLE_SCROLL_Y }}
             pagination={serviceFilter.paginationProps}
             loading={loading}
             locale={{
@@ -1847,7 +1065,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
             rowKey={(job) => job.metadata.uid}
             size="small"
             sticky
-            scroll={{ y: MONITORING_TABLE_SCROLL_Y }}
+            scroll={{ x: MONITORING_TABLE_SCROLL_X.rayjobs, y: MONITORING_TABLE_SCROLL_Y }}
             pagination={rayJobFilter.paginationProps}
             loading={loading}
             locale={{
@@ -1878,7 +1096,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
             rowKey="deploymentName"
             size="small"
             sticky
-            scroll={{ y: MONITORING_TABLE_SCROLL_Y }}
+            scroll={{ x: MONITORING_TABLE_SCROLL_X.deployments, y: MONITORING_TABLE_SCROLL_Y }}
             pagination={deploymentFilter.paginationProps}
             loading={loading}
             locale={{
@@ -1952,7 +1170,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
             loading={loading}
             size="small"
             sticky
-            scroll={{ y: MONITORING_TABLE_SCROLL_Y }}
+            scroll={{ x: MONITORING_TABLE_SCROLL_X.jobs, y: MONITORING_TABLE_SCROLL_Y }}
             pagination={trainingJobFilter.paginationProps}
             locale={{
               emptyText: trainingJobFilter.isFiltered ? 'No jobs match the current filter' : 'No HyperPod jobs found',
@@ -1985,7 +1203,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
             loading={loading}
             size="small"
             sticky
-            scroll={{ y: MONITORING_TABLE_SCROLL_Y }}
+            scroll={{ x: MONITORING_TABLE_SCROLL_X.inference, y: MONITORING_TABLE_SCROLL_Y }}
             pagination={inferenceEndpointFilter.paginationProps}
             locale={{
               emptyText: inferenceEndpointFilter.isFiltered ? 'No endpoints match the current filter' : 'No inference endpoints found',
@@ -2009,7 +1227,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
             loading={loading}
             size="small"
             sticky
-            scroll={{ y: MONITORING_TABLE_SCROLL_Y }}
+            scroll={{ x: MONITORING_TABLE_SCROLL_X.k8sjobs, y: MONITORING_TABLE_SCROLL_Y }}
             pagination={k8sJobFilter.paginationProps}
             locale={{
               emptyText: k8sJobFilter.isFiltered ? 'No jobs match the current filter' : 'No k8s jobs found',
@@ -2109,6 +1327,24 @@ const StatusMonitorRedux = ({ activeTab }) => {
             pagination={{ pageSize: 10 }}
             loading={loading}
           />
+          {ingresses.length > 0 && (
+            <>
+              <Divider orientation="left" style={{ marginTop: 24 }}>
+                <Space>
+                  <ThunderboltOutlined />
+                  Inference Endpoints (ALB)
+                </Space>
+              </Divider>
+              <Table
+                columns={ingressColumns}
+                dataSource={ingresses}
+                rowKey={(ing) => ing.uid || `${ing.namespace}/${ing.name}`}
+                size="small"
+                pagination={false}
+                loading={loading}
+              />
+            </>
+          )}
         </div>
       </TabPane>
 

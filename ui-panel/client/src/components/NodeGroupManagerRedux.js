@@ -3,6 +3,7 @@ import { useSelector, useDispatch } from 'react-redux';
 import { Card, Table, Button, message, Tag, Space, Modal, InputNumber, Form, Select, Input, Typography, AutoComplete, Checkbox, Row, Col, Alert, Spin, Tooltip, Switch, Divider } from 'antd';
 import { ReloadOutlined, EditOutlined, ToolOutlined, PlusOutlined, DeleteOutlined, InfoCircleOutlined, CloudServerOutlined, SettingOutlined, RightOutlined, DownOutlined } from '@ant-design/icons';
 import EksNodeGroupCreationPanel from './EksNodeGroupCreationPanel';
+import { buildEksColumns, buildHyperPodColumns } from './nodeGroupColumns';
 import {
   fetchNodeGroups,
   createHyperPod,
@@ -586,27 +587,6 @@ const NodeGroupManagerRedux = ({ activeCluster, refreshTrigger, cluster }) => {
     }
   }, [activeCluster, handleCompleteRefresh, dispatch]);
 
-  const renderStatus = (status) => {
-    const statusColors = {
-      'ACTIVE': 'green',
-      'InService': 'green',
-      'CREATING': 'blue',
-      'UPDATING': 'orange',
-      'DELETING': 'red',
-      'CREATE_FAILED': 'red',
-      'DELETE_FAILED': 'red'
-    };
-    return <Tag color={statusColors[status] || 'default'}>{status}</Tag>;
-  };
-
-  const renderScaling = (record) => {
-    const { minSize, maxSize, desiredSize } = record.scalingConfig || {};
-    return `${minSize}/${maxSize}/${desiredSize}`;
-  };
-
-  const renderCount = (record) => {
-    return `${record.currentCount}/${record.targetCount}`;
-  };
 
   const renderEKSActions = (record) => (
     <Space>
@@ -681,68 +661,12 @@ const NodeGroupManagerRedux = ({ activeCluster, refreshTrigger, cluster }) => {
     );
   };
 
-  const eksColumns = [
-    { title: 'Node Group Name', dataIndex: 'name', key: 'name', width: '22%' },
-    { title: 'Status', dataIndex: 'status', key: 'status', width: '10%', render: renderStatus },
-    { title: 'Instance Types', dataIndex: 'instanceTypes', key: 'instanceTypes', width: '14%', render: types => types?.join(', ') },
-    { title: 'AZ', dataIndex: 'availabilityZones', key: 'availabilityZones', width: '14%', render: azs => azs?.join(', ') || '-' },
-    {
-      title: 'Capacity Type',
-      dataIndex: 'capacityType',
-      key: 'capacityType',
-      width: '16%',
-      render: (capacityType) => {
-        if (!capacityType) return <Tag color="orange">Spot</Tag>;
-        const type = capacityType.toLowerCase();
-        return (
-          <Tag color={type === 'on_demand' || type === 'on-demand' ? 'green' : 'orange'}>
-            {type === 'on_demand' || type === 'on-demand' ? 'OD' : 'Spot'}
-          </Tag>
-        );
-      }
-    },
-    { title: 'Min/Max/Desired', key: 'scaling', width: '12%', render: renderScaling },
-    { title: 'Actions', key: 'actions', width: '12%', render: renderEKSActions }
-  ];
+  const eksColumns = buildEksColumns({ renderEKSActions });
 
-  const hyperPodColumns = [
-    { title: 'Instance Group Name', dataIndex: 'name', key: 'name', width: '22%' },
-    { title: 'Status', dataIndex: 'status', key: 'status', width: '10%', render: renderStatus },
-    { title: 'Instance Type', dataIndex: 'instanceType', key: 'instanceType', width: '14%' },
-    { title: 'AZ', dataIndex: 'availabilityZone', key: 'availabilityZone', width: '14%' },
-    {
-      title: 'Capacity Type',
-      dataIndex: 'capacityType',
-      key: 'capacityType',
-      width: '16%',
-      render: (capacityType, record) => {
-        const type = capacityType ? capacityType.toLowerCase() : 'on-demand';
-        const isManaged = hyperpodKarpenterResources.managedInstanceGroups &&
-                         hyperpodKarpenterResources.managedInstanceGroups.includes(record.name);
-
-        const getTypeConfig = (t) => {
-          if (t === 'spot') return { color: 'orange', label: 'Spot' };
-          if (t === 'training-plan') return { color: 'purple', label: 'FTP' };
-          return { color: 'green', label: 'OD' };
-        };
-        const config = getTypeConfig(type);
-
-        return (
-          <Space>
-            <Tag color={config.color}>{config.label}</Tag>
-            {isManaged && (
-              <Tag color="blue">Karpenter</Tag>
-            )}
-            {record.interfaceType === 'efa-only' && (
-              <Tag color="geekblue">EFA-only</Tag>
-            )}
-          </Space>
-        );
-      }
-    },
-    { title: 'Current/Target', key: 'count', width: '12%', render: renderCount },
-    { title: 'Actions', key: 'actions', width: '12%', render: renderHyperPodActions }
-  ];
+  const hyperPodColumns = buildHyperPodColumns({
+    renderHyperPodActions,
+    hyperpodKarpenterResources,
+  });
 
   return (
     <div style={{ height: '100%' }}>
