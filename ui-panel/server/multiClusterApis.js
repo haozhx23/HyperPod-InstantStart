@@ -1,5 +1,6 @@
 const fs = require('fs-extra');
 const path = require('path');
+const os = require('os');
 const { exec } = require('child_process');
 const ClusterManager = require('./clusterManager');
 const MultiClusterLogManager = require('./multiClusterLogManager');
@@ -308,44 +309,60 @@ class MultiClusterAPIs {
       const hasHyperPod = hyperPodClusters && hyperPodClusters.trim();
       await this.clusterManager.saveImportConfigBasic(eksClusterName, importConfig, accessResult, hasHyperPod);
 
-      // 6. 更新kubectl配置
-      await this.switchKubectlConfig(eksClusterName);
+      // 6. 为导入/检测流程创建独立的临时 kubeconfig，避免污染共享的 ~/.kube/config。
+      //    直接对共享配置执行 aws eks update-kubeconfig 会翻转全局 current-context，
+      //    导致并发使用 kubectl 的其他用户被切到导入的集群（且导入后不会切回）。
+      //    用带 pid 的独立文件可彻底消除该窗口，且并发导入互不干扰。
+      const tmpKubeconfig = path.join(os.tmpdir(), `hp-import-${eksClusterName}-${process.pid}.yaml`);
+      const detectEnv = { ...process.env, KUBECONFIG: tmpKubeconfig };
 
-      // 6.5. 下载 sagemaker-hyperpod-cli 仓库
+      let detectedState;
+      let nodeCount = 0;
       try {
-        const ClusterDependencyManager = require('./utils/clusterDependencyManager');
-        const clusterConfigDir = path.join(__dirname, '../managed_clusters_info', eksClusterName, 'config');
-        await ClusterDependencyManager.cloneHyperPodCLI(clusterConfigDir);
-        console.log(`Successfully cloned sagemaker-hyperpod-cli for imported cluster: ${eksClusterName}`);
-      } catch (error) {
-        console.warn(`Failed to clone sagemaker-hyperpod-cli: ${error.message}`);
-        // 不阻断导入流程
-      }
-
-      // 7. 检测集群实际状态（传递用户指定的HyperPod集群）
-      const detectedState = await this.detectClusterState(eksClusterName, awsRegion, hyperPodClusters);
-      
-      // 8. 更新配置文件包含检测状态
-      await this.clusterManager.updateImportConfigWithDetectedState(eksClusterName, detectedState);
-      
-      // 9. 获取并保存集群资源信息（与创建集群格式对齐）
-      try {
-        const MetadataUtils = require('./utils/metadataUtils');
-        await MetadataUtils.saveImportedClusterResources(
-          eksClusterName, eksClusterName, awsRegion, hyperPodClusters, null, computeSecurityGroup
+        await this.execCommand(
+          `aws eks update-kubeconfig --region ${awsRegion} --name ${eksClusterName} --kubeconfig ${tmpKubeconfig}`,
+          detectEnv
         );
-        console.log(`Successfully saved imported cluster resources for: ${eksClusterName}`);
-      } catch (error) {
-        console.warn(`Failed to save imported cluster resources: ${error.message}`);
-        // 不阻断导入流程，但记录警告
-      }
-      
-      // 不自动切换 active cluster，让用户在 Cluster Information 页面手动选择
-      // 与创建集群的流程保持一致
 
-      // 10. 获取节点数量（使用当前 active cluster 的 kubectl 配置）
-      const nodeCount = await this.getNodeCount();
-      
+        // 6.5. 下载 sagemaker-hyperpod-cli 仓库
+        try {
+          const ClusterDependencyManager = require('./utils/clusterDependencyManager');
+          const clusterConfigDir = path.join(__dirname, '../managed_clusters_info', eksClusterName, 'config');
+          await ClusterDependencyManager.cloneHyperPodCLI(clusterConfigDir);
+          console.log(`Successfully cloned sagemaker-hyperpod-cli for imported cluster: ${eksClusterName}`);
+        } catch (error) {
+          console.warn(`Failed to clone sagemaker-hyperpod-cli: ${error.message}`);
+          // 不阻断导入流程
+        }
+
+        // 7. 检测集群实际状态（使用临时 kubeconfig，不触碰共享配置）
+        detectedState = await this.detectClusterState(eksClusterName, awsRegion, hyperPodClusters, detectEnv);
+
+        // 8. 更新配置文件包含检测状态
+        await this.clusterManager.updateImportConfigWithDetectedState(eksClusterName, detectedState);
+
+        // 9. 获取并保存集群资源信息（与创建集群格式对齐，仅用 aws CLI，不依赖 kubectl 上下文）
+        try {
+          const MetadataUtils = require('./utils/metadataUtils');
+          await MetadataUtils.saveImportedClusterResources(
+            eksClusterName, eksClusterName, awsRegion, hyperPodClusters, null, computeSecurityGroup
+          );
+          console.log(`Successfully saved imported cluster resources for: ${eksClusterName}`);
+        } catch (error) {
+          console.warn(`Failed to save imported cluster resources: ${error.message}`);
+          // 不阻断导入流程，但记录警告
+        }
+
+        // 不自动切换 active cluster，让用户在 Cluster Information 页面手动选择
+        // 与创建集群的流程保持一致
+
+        // 10. 获取节点数量（使用临时 kubeconfig，不影响共享配置）
+        nodeCount = await this.getNodeCount(detectEnv);
+      } finally {
+        // 清理临时 kubeconfig（失败也不阻断响应）
+        fs.remove(tmpKubeconfig).catch(() => {});
+      }
+
       res.json({
         success: true,
         message: `Successfully imported cluster: ${eksClusterName}. Please select it in Cluster Information to use.`,
@@ -408,9 +425,10 @@ class MultiClusterAPIs {
   }
 
   // 获取节点数量（在权限配置完成后）
-  async getNodeCount() {
+  async getNodeCount(env) {
     return new Promise((resolve) => {
-      exec('kubectl get nodes --no-headers | wc -l', (error, stdout) => {
+      const options = env ? { env } : {};
+      exec('kubectl get nodes --no-headers | wc -l', options, (error, stdout) => {
         if (error) {
           console.warn('Failed to get node count:', error.message);
           resolve(0);
@@ -422,13 +440,13 @@ class MultiClusterAPIs {
   }
 
   // 检测集群实际状态
-  async detectClusterState(eksClusterName, awsRegion, userSpecifiedHyperPodClusters = null) {
+  async detectClusterState(eksClusterName, awsRegion, userSpecifiedHyperPodClusters = null, env = undefined) {
     console.log(`Detecting state for cluster: ${eksClusterName}`);
-    
+
     const state = {
-      dependencies: await this.detectDependencies(),
-      hyperPodClusters: await this.detectHyperPodClusters(eksClusterName, awsRegion, userSpecifiedHyperPodClusters),
-      nodeGroups: await this.detectNodeGroups(),
+      dependencies: await this.detectDependencies(env),
+      hyperPodClusters: await this.detectHyperPodClusters(eksClusterName, awsRegion, userSpecifiedHyperPodClusters, env),
+      nodeGroups: await this.detectNodeGroups(env),
       detectedAt: new Date().toISOString()
     };
     
@@ -437,7 +455,7 @@ class MultiClusterAPIs {
   }
 
   // 检测依赖组件状态
-  async detectDependencies() {
+  async detectDependencies(env) {
     const components = {
       helmDependencies: false,
       nlbController: false,
@@ -447,15 +465,15 @@ class MultiClusterAPIs {
 
     try {
       // 检测 AWS Load Balancer Controller
-      const nlbResult = await this.execCommand('kubectl get deployment -n kube-system aws-load-balancer-controller --no-headers 2>/dev/null');
+      const nlbResult = await this.execCommand('kubectl get deployment -n kube-system aws-load-balancer-controller --no-headers 2>/dev/null', env);
       components.nlbController = nlbResult.success && nlbResult.output.includes('aws-load-balancer-controller');
 
       // 检测 S3 CSI Driver
-      const s3Result = await this.execCommand('kubectl get daemonset -n kube-system s3-csi-node --no-headers 2>/dev/null');
+      const s3Result = await this.execCommand('kubectl get daemonset -n kube-system s3-csi-node --no-headers 2>/dev/null', env);
       components.s3CsiDriver = s3Result.success && s3Result.output.includes('s3-csi-node');
 
       // 检测 Cert Manager
-      const certResult = await this.execCommand('kubectl get pods -n cert-manager --no-headers 2>/dev/null');
+      const certResult = await this.execCommand('kubectl get pods -n cert-manager --no-headers 2>/dev/null', env);
       components.certManager = certResult.success && certResult.output.includes('cert-manager');
 
       // 检测 Helm 相关组件 (简化检测)
@@ -476,7 +494,7 @@ class MultiClusterAPIs {
   }
 
   // 检测 HyperPod 集群 - 使用用户指定的集群名称
-  async detectHyperPodClusters(eksClusterName, awsRegion, userSpecifiedCluster = null) {
+  async detectHyperPodClusters(eksClusterName, awsRegion, userSpecifiedCluster = null, env = undefined) {
     try {
       const relatedClusters = [];
       
@@ -487,7 +505,7 @@ class MultiClusterAPIs {
         
         try {
           // 验证HyperPod集群是否存在
-          const detailResult = await this.execCommand(`aws sagemaker describe-cluster --cluster-name ${clusterName} --region ${awsRegion} --output json 2>/dev/null`);
+          const detailResult = await this.execCommand(`aws sagemaker describe-cluster --cluster-name ${clusterName} --region ${awsRegion} --output json 2>/dev/null`, env);
           if (detailResult.success) {
             const clusterDetail = JSON.parse(detailResult.output);
             relatedClusters.push({
@@ -516,9 +534,9 @@ class MultiClusterAPIs {
   }
 
   // 检测节点组
-  async detectNodeGroups() {
+  async detectNodeGroups(env) {
     try {
-      const result = await this.execCommand('kubectl get nodes -o json 2>/dev/null');
+      const result = await this.execCommand('kubectl get nodes -o json 2>/dev/null', env);
       if (result.success) {
         const nodes = JSON.parse(result.output);
         const nodeGroups = {};
@@ -595,9 +613,10 @@ class MultiClusterAPIs {
   }
 
   // 执行命令的辅助方法
-  async execCommand(command) {
+  async execCommand(command, env) {
     return new Promise((resolve) => {
-      exec(command, (error, stdout, stderr) => {
+      const options = env ? { env } : {};
+      exec(command, options, (error, stdout, stderr) => {
         resolve({
           success: !error,
           output: stdout.trim(),

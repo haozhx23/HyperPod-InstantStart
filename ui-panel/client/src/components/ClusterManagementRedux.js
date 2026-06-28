@@ -164,7 +164,7 @@ const DependencyConfigButton = ({ clusterTag, currentCluster }) => {
     }
   };
 
-  const buttonProps = getDependencyButtonProps(dependenciesStatus);
+  const buttonProps = getDependencyButtonProps(dependenciesStatus, currentCluster);
 
   return (
     <Button
