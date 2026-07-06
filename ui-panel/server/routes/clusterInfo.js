@@ -177,8 +177,13 @@ router.get('/cluster/subnets', async (req, res) => {
   }
 });
 
-// 轻量接口：列出当前 VPC 内所有 hp-compute-* compute subnet（供 Add Instance Group 下拉复用）
-// 单次 describe-subnets，不做公/私网路由表分类，避免 /subnets 的 N+1 延迟
+// 轻量接口：列出可作为 compute subnet 复用的候选子网（供 Add Instance Group 下拉）。
+// 返回 VPC 内所有子网，但排除三类不适合跑计算节点的：
+//   1. EKS 控制面子网（cluster.resourcesVpcConfig.subnetIds）——无外网出口、职责不同
+//   2. public 子网（MapPublicIpOnLaunch=true）——不应把计算节点放公网段
+//   3. 无 NAT 默认路由的子网（无 0.0.0.0/0 -> nat）——节点起得来但拉不到镜像/模型
+// 用 3 个独立批量调用（describe-cluster / describe-subnets / describe-route-tables），
+// 不做 per-subnet 的路由表查询，避免 /subnets 的 N+1 延迟。
 router.get('/cluster/compute-subnets', async (req, res) => {
   try {
     const { promisify } = require('util');
@@ -196,16 +201,69 @@ router.get('/cluster/compute-subnets', async (req, res) => {
 
     const region = clusterInfo.region;
     const vpcId = clusterInfo.eksCluster?.vpcId;
+    const eksClusterName = clusterInfo.eksCluster?.name;
     if (!vpcId) {
       return res.status(400).json({ success: false, error: 'VPC ID not found in metadata' });
     }
 
-    const cmd = `aws ec2 describe-subnets --region ${region} \
-      --filters "Name=vpc-id,Values=${vpcId}" "Name=tag:Name,Values=hp-compute-*" \
-      --query "Subnets[].{subnetId:SubnetId,availabilityZone:AvailabilityZone,cidrBlock:CidrBlock,name:Tags[?Key=='Name']|[0].Value}" \
-      --output json`;
-    const { stdout } = await execAsync(cmd);
-    const computeSubnets = JSON.parse(stdout || '[]');
+    // 1. EKS 控制面注册的子网（要排除）。拿不到时降级为空集，仍应用 public/NAT 过滤。
+    const controlPlaneSubnets = new Set();
+    if (eksClusterName) {
+      try {
+        const { stdout } = await execAsync(
+          `aws eks describe-cluster --name ${eksClusterName} --region ${region} ` +
+          `--query "cluster.resourcesVpcConfig.subnetIds" --output json`
+        );
+        for (const id of JSON.parse(stdout || '[]')) controlPlaneSubnets.add(id);
+      } catch (e) {
+        console.warn(`[compute-subnets] describe-cluster failed, skip control-plane exclusion: ${e.message}`);
+      }
+    }
+
+    // 2. VPC 内全部子网
+    const { stdout: subnetStdout } = await execAsync(
+      `aws ec2 describe-subnets --region ${region} ` +
+      `--filters "Name=vpc-id,Values=${vpcId}" ` +
+      `--query "Subnets[].{subnetId:SubnetId,availabilityZone:AvailabilityZone,cidrBlock:CidrBlock,name:Tags[?Key=='Name']|[0].Value,mapPublicIpOnLaunch:MapPublicIpOnLaunch}" ` +
+      `--output json`
+    );
+    const allSubnets = JSON.parse(subnetStdout || '[]');
+
+    // 3. VPC 内路由表 —— 用于判断每个子网是否有 0.0.0.0/0 -> NAT 的默认出口
+    const { stdout: rtStdout } = await execAsync(
+      `aws ec2 describe-route-tables --region ${region} ` +
+      `--filters "Name=vpc-id,Values=${vpcId}" ` +
+      `--query "RouteTables[].{associations:Associations[].{subnetId:SubnetId,main:Main},routes:Routes[].{dest:DestinationCidrBlock,nat:NatGatewayId}}" ` +
+      `--output json`
+    );
+    const routeTables = JSON.parse(rtStdout || '[]');
+
+    // subnetId -> 生效路由表（显式关联优先，否则 VPC main 路由表）
+    let mainRt = null;
+    const explicitRt = {};
+    for (const rt of routeTables) {
+      for (const assoc of (rt.associations || [])) {
+        if (assoc.main) mainRt = rt;
+        if (assoc.subnetId) explicitRt[assoc.subnetId] = rt;
+      }
+    }
+    const hasNatEgress = (subnetId) => {
+      const rt = explicitRt[subnetId] || mainRt;
+      if (!rt) return false;
+      return (rt.routes || []).some(r => r.dest === '0.0.0.0/0' && r.nat);
+    };
+
+    // 过滤：排除控制面 / public / 无 NAT 出口
+    const computeSubnets = allSubnets
+      .filter(s => !controlPlaneSubnets.has(s.subnetId))
+      .filter(s => !s.mapPublicIpOnLaunch)
+      .filter(s => hasNatEgress(s.subnetId))
+      .map(s => ({
+        subnetId: s.subnetId,
+        availabilityZone: s.availabilityZone,
+        cidrBlock: s.cidrBlock,
+        name: s.name || ''
+      }));
     computeSubnets.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
     res.json({ success: true, data: { region, vpcId, computeSubnets } });

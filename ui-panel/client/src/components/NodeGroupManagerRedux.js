@@ -159,7 +159,7 @@ const NodeGroupManagerRedux = ({ activeCluster, refreshTrigger, cluster }) => {
     }
   }, []);
 
-  // 获取 hp-compute-* compute subnet（用于 Add Instance Group 的 Compute Subnet 下拉）
+  // 获取可复用的 compute subnet 候选（后端已排除控制面/public/无NAT出口子网，用于 Add Instance Group 的 Compute Subnet 下拉）
   const fetchComputeSubnets = useCallback(async () => {
     try {
       const response = await fetch('/api/cluster/compute-subnets');
@@ -1285,14 +1285,13 @@ const NodeGroupManagerRedux = ({ activeCluster, refreshTrigger, cluster }) => {
               style={{ marginTop: 8, marginBottom: 0 }}
               extra={addIgNewSubnet
                 ? 'Disabled while "Create new subnet" is on.'
-                : 'Pick an existing hp-compute-* subnet in the selected AZ, or type any subnet ID. Leave empty to use the default per-AZ subnet (hp-compute-{az}).'}
+                : 'Pick an existing subnet in the selected AZ (control-plane, public, and no-egress subnets are filtered out), or type any subnet ID. Leave empty to use the default per-AZ subnet (hp-compute-{az}).'}
             >
               <AutoComplete
                 disabled={addIgNewSubnet}
                 allowClear
                 placeholder={addIgAz ? 'subnet-0123456789abcdef0' : 'Select an availability zone first'}
-                options={computeSubnets
-                  .filter(s => !addIgAz || s.availabilityZone === addIgAz)
+                options={(addIgAz ? computeSubnets.filter(s => s.availabilityZone === addIgAz) : [])
                   .map(s => ({ value: s.subnetId, label: `${s.name} — ${s.subnetId} (${s.cidrBlock})` }))}
                 filterOption={(input, option) =>
                   (option?.value || '').toLowerCase().includes(input.toLowerCase()) ||
