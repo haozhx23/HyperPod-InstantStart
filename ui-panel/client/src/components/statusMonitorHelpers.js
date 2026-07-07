@@ -47,5 +47,4 @@ export const MONITORING_TABLE_SCROLL_X = {
   jobs: 900,
   rayjobs: 1000,
   k8sjobs: 990,
-  trainjob: 980,
 };

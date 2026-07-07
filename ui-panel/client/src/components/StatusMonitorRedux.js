@@ -551,7 +551,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
 
   // Monitoring 页每个 tab 共享一套筛选/分页模式。Pods/Services/RayJobs 这些
   // k8s 原生对象默认 ns 选 'default' 避免一屏铺满；processed 形态的（deployments /
-  // jobs / inference / k8sjobs / trainjobs）没可靠 namespace 字段，默认 __all__。
+  // jobs / inference / k8sjobs 等）没可靠 namespace 字段，默认 __all__。
   const podFilter = useResourceFilter(pods, {
     getStatus: getPodStatus,
     searchPlaceholder: 'Search pods by name',

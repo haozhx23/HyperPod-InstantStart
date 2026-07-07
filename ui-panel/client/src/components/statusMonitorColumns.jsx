@@ -36,7 +36,7 @@ const { Option } = Select;
  *   - raw k8s objects   → namespace lives at metadata.namespace  (pass raw=true)
  *   - server-processed  → namespace is a top-level `namespace`    (pass raw=false)
  *
- * Rendered as a small blue Tag matching the existing Service/TrainJob columns, and
+ * Rendered as a small blue Tag matching the other tag-style columns in these tables, and
  * given a fixed width so it plays well with the table-layout:fixed mode enabled by
  * each table's scroll.x.
  */
@@ -375,8 +375,8 @@ export const buildIngressColumns = () => [
       scheme === 'internet-facing' ? (
         <Tag icon={<GlobalOutlined />} color="green">internet-facing</Tag>
       ) : (
-        <Tooltip title="私有 ALB，仅 VPC 内 / 经 VPC peering 可访问">
-          <Tag icon={<LockOutlined />} color="orange">internal（仅 VPC 内）</Tag>
+        <Tooltip title="Internal ALB — accessible only from within the VPC">
+          <Tag icon={<LockOutlined />} color="orange">internal (VPC only)</Tag>
         </Tooltip>
       ),
   },

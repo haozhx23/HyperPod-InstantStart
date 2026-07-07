@@ -320,7 +320,7 @@ const ConfigPanel = () => {
               <Space>
                 <TagOutlined />
                 Deployment Name
-                <Tooltip title="用于Kubernetes资源命名的标识符">
+                <Tooltip title="Identifier used for naming Kubernetes resources">
                   <InfoCircleOutlined />
                 </Tooltip>
               </Space>
