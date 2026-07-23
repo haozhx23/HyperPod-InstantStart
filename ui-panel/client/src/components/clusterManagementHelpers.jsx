@@ -27,11 +27,7 @@ export const getDependencyStatusDisplay = (dependenciesStatus, cluster) => {
   const isImported = cluster?.type === 'imported';
 
   if (isImported) {
-    // 导入的 EKS+HyperPod：依赖由集群自维护，本链路不托管
-    if (cluster?.hyperPodCluster) {
-      return <Tag>Self-Managed</Tag>;
-    }
-    // 导入的裸 EKS：显示实际配置状态
+    // 导入的集群：显示实际配置状态（不再区分有无HyperPod）
     if (dependenciesStatus?.configured) {
       return <Tag color="green">Configured</Tag>;
     } else {
@@ -49,18 +45,8 @@ export const getDependencyStatusDisplay = (dependenciesStatus, cluster) => {
   }
 };
 
-export const getDependencyButtonProps = (dependenciesStatus, cluster) => {
-  // 导入的 EKS+HyperPod：依赖由 HyperPod 托管，无需也不允许配置
-  if (cluster?.type === 'imported' && cluster?.hyperPodCluster) {
-    return {
-      text: 'Self-Managed',
-      disabled: true,
-      type: 'default',
-      icon: <CheckCircleOutlined />
-    };
-  }
-
-  // 导入的裸 EKS 及创建的集群均可配置依赖
+export const getDependencyButtonProps = (dependenciesStatus) => {
+  // 导入的集群也可以配置依赖（移除了原有的禁用逻辑）
 
   if (!dependenciesStatus) {
     return {

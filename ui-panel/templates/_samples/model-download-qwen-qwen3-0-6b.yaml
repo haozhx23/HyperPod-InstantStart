@@ -1,0 +1,69 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: model-download-job-qwen-qwen3-0-6b
+spec:
+  ttlSecondsAfterFinished: 60
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: model-download-job-qwen-qwen3-0-6b
+    spec:
+      containers:
+        - name: python-container
+          image: python:3.12
+          resources:
+            requests:
+              cpu: "8"
+              memory: 16Gi
+            limits:
+              cpu: "8"
+              memory: 16Gi
+          command: ["/bin/bash"]
+          args:
+            - -c
+            - |
+              echo "Installing HF CLI ..."
+              pip install -U "huggingface_hub[cli,hf_transfer]"
+              echo "Downloading HF model..."
+              #  --token=$HF_TOKEN
+              hf download Qwen/Qwen3-0.6B --local-dir /nvme/Qwen/Qwen3-0.6B --cache-dir /root/.cache/Qwen/Qwen3-0.6B
+              echo "Downloading Complete ..."
+              rm -rf /nvme/Qwen/Qwen3-0.6B/.cache
+              cp -r /nvme/Qwen/Qwen3-0.6B /s3/$(echo Qwen/Qwen3-0.6B | tr '/' '-')
+              echo "Transfer to S3 Complete ..."
+          volumeMounts:
+            - name: persistent-storage-s3
+              mountPath: /s3
+              readOnly: false
+            - name: local-cache
+              mountPath: /root/.cache
+            - name: local-nvme
+              mountPath: /nvme
+            - name: shm
+              mountPath: /dev/shm
+          env:
+            - name: HF_HOME
+              value: "/root/.cache/huggingface"
+            - name: HF_HUB_ENABLE_HF_TRANSFER
+              value: "1"
+            - name: HF_HUB_DOWNLOAD_TIMEOUT
+              value: "60"
+      volumes:
+        - name: persistent-storage-s3
+          persistentVolumeClaim:
+            claimName: s3-claim
+        - name: local-cache
+          hostPath:
+            path: /opt/dlami/nvme/.cache
+            type: DirectoryOrCreate
+        - name: local-nvme
+          hostPath:
+            path: /opt/dlami/nvme
+            type: DirectoryOrCreate
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+      restartPolicy: Never

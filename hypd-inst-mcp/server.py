@@ -6,126 +6,16 @@ HyperPod InstantStart MCP Server
 from mcp.server import FastMCP
 import httpx
 import json
-import os
+import subprocess
 
 import asyncio
-from typing import Optional
-from urllib.parse import quote
 
 mcp = FastMCP(
     name="hyperpod-manager",
     instructions="HyperPod InstantStart 集群管理工具，提供集群创建、推理部署、训练作业等功能"
 )
 
-_AUTH_CONFIG_CANDIDATES = [
-    "/app/config/auth.json",  # runtime path inside the ui-panel-prod container
-    os.path.join(os.path.dirname(__file__), "..", "ui-panel", "config", "auth.json"),  # from source
-]
-
-
-def _read_auth_config() -> dict:
-    """Read config/auth.json ({"enabled": ..., "hash": ..., "port": ...}).
-
-    Returns {} when the file is missing or unreadable.
-    """
-    for path in _AUTH_CONFIG_CANDIDATES:
-        try:
-            with open(path) as f:
-                return json.load(f)
-        except (FileNotFoundError, OSError, json.JSONDecodeError):
-            continue
-    return {}
-
-
-def _load_auth_headers() -> dict:
-    """Build the auth header expected by the backend's authMiddleware.
-
-    The backend enforces `x-auth-token == <hash>` on all /api routes when auth is
-    enabled (config/auth.json: {"enabled": true, "hash": "..."}). The middleware
-    re-reads auth.json on every request (the hash can be rotated at runtime), so
-    we do the same here instead of caching it at startup. Returns {} when auth is
-    disabled or unreadable (backend then lets requests through).
-    """
-    cfg = _read_auth_config()
-    if cfg.get("enabled", True) and cfg.get("hash"):
-        return {"x-auth-token": cfg["hash"]}
-    return {}
-
-
-# Backend base URL. In production the ui-panel server (server/index.js) runs with
-# NODE_ENV=production and listens on 3099 (REST API + WebSocket + static UI on one
-# port); the dev server listens on 3001. Resolution order: INSTANTSTART_API_PORT
-# env override > "port" in config/auth.json (kept in sync with the backend) > 3099.
-BASE_URL = "http://localhost:{}".format(
-    os.environ.get("INSTANTSTART_API_PORT") or _read_auth_config().get("port") or "3099"
-)
-
-# Default timeout for read-only backend calls. The backend may need to run batched
-# kubectl/AWS calls on a cold cache, which can exceed httpx's 5s default.
-DEFAULT_TIMEOUT = 30
-
-
-def make_client(**kwargs) -> httpx.AsyncClient:
-    """httpx.AsyncClient preconfigured with the backend auth header.
-
-    All backend calls go through this so the x-auth-token is applied uniformly
-    (re-read per client so a rotated hash is picked up without restart).
-    Per-call `headers` (if any) are merged on top of the auth header.
-    """
-    headers = {**_load_auth_headers(), **kwargs.pop("headers", {})}
-    kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
-    return httpx.AsyncClient(headers=headers, **kwargs)
-
-
-class BackendError(Exception):
-    """Backend returned an error status or a non-JSON body."""
-
-    def __init__(self, message: str, status_code: int = None):
-        super().__init__(message)
-        self.status_code = status_code
-
-
-def _parse_json_or_raise(response: httpx.Response):
-    """Parse a backend response, raising BackendError with the backend's own
-    error message (routes respond with {"error": ...} / {"message": ...}) instead
-    of a bare traceback. Also survives non-JSON bodies (e.g. HTML from a proxy)."""
-    try:
-        body = response.json()
-    except Exception:
-        body = None
-    if response.status_code >= 400:
-        if isinstance(body, dict):
-            msg = body.get("error") or body.get("message") or f"HTTP {response.status_code}"
-        else:
-            msg = f"HTTP {response.status_code}"
-        if response.status_code == 401:
-            msg = f"{msg} (backend auth rejected the request; check config/auth.json hash)"
-        raise BackendError(msg, response.status_code)
-    if body is None:
-        raise BackendError(f"Backend returned non-JSON response (HTTP {response.status_code})")
-    return body
-
-
-async def _api(method: str, path: str, *, json_body=None, params=None, timeout=DEFAULT_TIMEOUT):
-    """Single entry point for backend REST calls: applies auth, timeout, and
-    uniform error extraction. Returns the parsed JSON body."""
-    async with make_client(timeout=timeout) as client:
-        response = await client.request(method, f"{BASE_URL}{path}", json=json_body, params=params)
-        return _parse_json_or_raise(response)
-
-
-def _error_json(e: Exception) -> str:
-    return json.dumps({"success": False, "error": str(e)}, indent=2, ensure_ascii=False)
-
-
-async def _get_active_cluster_tag() -> Optional[str]:
-    """Resolve the currently active cluster tag via /api/multi-cluster/list
-    (the endpoint that actually exposes `activeCluster`)."""
-    try:
-        data = await _api("GET", "/api/multi-cluster/list")
-        return data.get("activeCluster")
-    except Exception:
-        return None
+BASE_URL = "http://localhost:3001"
 
 # ============ 通用工具 ============
 
@@ -136,7 +26,7 @@ async def wait_seconds(seconds: int) -> str:
     Args:
         seconds: 等待秒数（最大 300）
     """
-    seconds = max(0, min(seconds, 300))
+    seconds = min(seconds, 300)
     await asyncio.sleep(seconds)
     return json.dumps({"success": True, "message": f"Waited {seconds} seconds"})
 
@@ -145,13 +35,13 @@ async def wait_seconds(seconds: int) -> str:
 @mcp.tool()
 async def cluster_get_status() -> str:
     """获取当前集群 EKS 节点运行状态，包括节点 Ready 状态、GPU 使用量等实时信息"""
-    try:
-        return json.dumps(await _api("GET", "/api/cluster-status"), indent=2, ensure_ascii=False)
-    except Exception as e:
-        return _error_json(e)
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{BASE_URL}/api/cluster-status")
+        response.raise_for_status()
+        return json.dumps(response.json(), indent=2, ensure_ascii=False)
 
 @mcp.tool()
-async def cluster_create_eks(clusterTag: Optional[str] = None, region: Optional[str] = None, vpcCidr: Optional[str] = None) -> str:
+async def cluster_create_eks(clusterTag: str = None, region: str = None, vpcCidr: str = None) -> str:
     """创建新的 EKS 集群（需要 8-12 分钟）
     
     Args:
@@ -161,7 +51,7 @@ async def cluster_create_eks(clusterTag: Optional[str] = None, region: Optional[
     """
     try:
         if not region:
-            async with make_client() as client:
+            async with httpx.AsyncClient() as client:
                 region_resp = await client.get(f"{BASE_URL}/api/aws/current-region")
                 if region_resp.status_code == 200:
                     region = region_resp.json().get("region")
@@ -177,7 +67,7 @@ async def cluster_create_eks(clusterTag: Optional[str] = None, region: Optional[
         if vpcCidr:
             payload["customVpcCidr"] = vpcCidr
         
-        async with make_client(timeout=300) as client:
+        async with httpx.AsyncClient(timeout=300) as client:
             response = await client.post(f"{BASE_URL}/api/cluster/create-eks", json=payload)
             response.raise_for_status()
             result = response.json()
@@ -238,7 +128,7 @@ async def cluster_create_eks_with_cidr(
             "cidrConfig": cidrConfig
         }
 
-        async with make_client(timeout=300) as client:
+        async with httpx.AsyncClient(timeout=300) as client:
             response = await client.post(f"{BASE_URL}/api/cluster/create-eks", json=payload)
             response.raise_for_status()
             result = response.json()
@@ -262,18 +152,18 @@ async def cluster_create_eks_with_cidr(
 @mcp.tool()
 async def cluster_list_all() -> str:
     """列出所有已管理的集群"""
-    try:
-        return json.dumps(await _api("GET", "/api/multi-cluster/list"), indent=2, ensure_ascii=False)
-    except Exception as e:
-        return _error_json(e)
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{BASE_URL}/api/multi-cluster/list")
+        response.raise_for_status()
+        return json.dumps(response.json(), indent=2, ensure_ascii=False)
 
 @mcp.tool()
 async def cluster_get_instance_groups() -> str:
     """获取当前集群的所有实例组（EKS 节点组 + HyperPod 实例组），包括 CurrentCount=0 的实例组"""
-    try:
-        return json.dumps(await _api("GET", "/api/cluster/nodegroups"), indent=2, ensure_ascii=False)
-    except Exception as e:
-        return _error_json(e)
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{BASE_URL}/api/cluster/nodegroups")
+        response.raise_for_status()
+        return json.dumps(response.json(), indent=2, ensure_ascii=False)
 
 @mcp.tool()
 async def cluster_switch(clusterTag: str) -> str:
@@ -282,11 +172,10 @@ async def cluster_switch(clusterTag: str) -> str:
     Args:
         clusterTag: 目标集群标签
     """
-    try:
-        result = await _api("POST", "/api/multi-cluster/switch", json_body={"clusterTag": clusterTag}, timeout=120)
-        return json.dumps(result, indent=2, ensure_ascii=False)
-    except Exception as e:
-        return _error_json(e)
+    async with httpx.AsyncClient() as client:
+        response = await client.post(f"{BASE_URL}/api/multi-cluster/switch", json={"clusterTag": clusterTag})
+        response.raise_for_status()
+        return json.dumps(response.json(), indent=2, ensure_ascii=False)
 
 @mcp.tool()
 async def cluster_nodegroup_scale(name: str, minSize: int, maxSize: int, desiredSize: int) -> str:
@@ -298,15 +187,13 @@ async def cluster_nodegroup_scale(name: str, minSize: int, maxSize: int, desired
         maxSize: 最大节点数
         desiredSize: 期望节点数
     """
-    try:
-        result = await _api(
-            "PUT", f"/api/cluster/nodegroups/{quote(name, safe='')}/scale",
-            json_body={"minSize": minSize, "maxSize": maxSize, "desiredSize": desiredSize},
-            timeout=120,
+    async with httpx.AsyncClient(timeout=120) as client:
+        response = await client.put(
+            f"{BASE_URL}/api/cluster/nodegroups/{name}/scale",
+            json={"minSize": minSize, "maxSize": maxSize, "desiredSize": desiredSize}
         )
-        return json.dumps(result, indent=2, ensure_ascii=False)
-    except Exception as e:
-        return _error_json(e)
+        response.raise_for_status()
+        return json.dumps(response.json(), indent=2, ensure_ascii=False)
 
 @mcp.tool()
 async def cluster_nodegroup_delete(nodeGroupName: str) -> str:
@@ -315,23 +202,22 @@ async def cluster_nodegroup_delete(nodeGroupName: str) -> str:
     Args:
         nodeGroupName: 节点组名称
     """
-    try:
-        result = await _api("DELETE", f"/api/cluster/nodegroup/{quote(nodeGroupName, safe='')}", timeout=300)
-        return json.dumps(result, indent=2, ensure_ascii=False)
-    except Exception as e:
-        return _error_json(e)
+    async with httpx.AsyncClient(timeout=300) as client:
+        response = await client.delete(f"{BASE_URL}/api/cluster/nodegroup/{nodeGroupName}")
+        response.raise_for_status()
+        return json.dumps(response.json(), indent=2, ensure_ascii=False)
 
 @mcp.tool()
 async def cluster_get_eks_creation_status() -> str:
     """获取正在创建的 EKS 集群状态（CloudFormation stack 状态）"""
-    try:
-        data = await _api("GET", "/api/cluster/creating-clusters")
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{BASE_URL}/api/cluster/creating-clusters")
+        response.raise_for_status()
+        data = response.json()
         clusters = data.get("clusters", {})
         if not clusters:
             return json.dumps({"success": True, "message": "No EKS clusters currently being created", "clusters": {}}, indent=2, ensure_ascii=False)
         return json.dumps({"success": True, "clusters": clusters}, indent=2, ensure_ascii=False)
-    except Exception as e:
-        return _error_json(e)
 
 @mcp.tool()
 async def cluster_configure_dependencies() -> str:
@@ -339,7 +225,7 @@ async def cluster_configure_dependencies() -> str:
     EKS 集群创建完成并切换到该集群后，需要先配置依赖才能创建 HyperPod 集群。
     """
     try:
-        async with make_client(timeout=600) as client:
+        async with httpx.AsyncClient(timeout=600) as client:
             response = await client.post(f"{BASE_URL}/api/cluster/configure-dependencies")
             response.raise_for_status()
             result = response.json()
@@ -358,7 +244,7 @@ async def cluster_configure_dependencies() -> str:
         return json.dumps({"success": False, "error": str(e)}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
-async def cluster_get_dependency_status(clusterTag: Optional[str] = None) -> str:
+async def cluster_get_dependency_status(clusterTag: str = None) -> str:
     """获取集群依赖配置状态
     
     Args:
@@ -366,15 +252,20 @@ async def cluster_get_dependency_status(clusterTag: Optional[str] = None) -> str
     """
     try:
         if not clusterTag:
-            # /api/multi-cluster/list 才是暴露 activeCluster 的端点
-            clusterTag = await _get_active_cluster_tag()
+            async with httpx.AsyncClient() as client:
+                status_resp = await client.get(f"{BASE_URL}/api/cluster-status")
+                if status_resp.status_code == 200:
+                    data = status_resp.json()
+                    clusterTag = data.get("clusterTag") or data.get("activeCluster")
         if not clusterTag:
             return json.dumps({"success": False, "error": "No active cluster found. Please specify clusterTag."}, indent=2, ensure_ascii=False)
-
-        result = await _api("GET", f"/api/cluster/{quote(clusterTag, safe='')}/dependencies/status")
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{BASE_URL}/api/cluster/{clusterTag}/dependencies/status")
+            response.raise_for_status()
+            return json.dumps(response.json(), indent=2, ensure_ascii=False)
     except Exception as e:
-        return _error_json(e)
+        return json.dumps({"success": False, "error": str(e)}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
 async def hyperpod_create(
@@ -410,7 +301,7 @@ async def hyperpod_create(
         if computeSubnetId:
             userConfig["computeSubnetId"] = computeSubnetId
         
-        async with make_client(timeout=300) as client:
+        async with httpx.AsyncClient(timeout=300) as client:
             response = await client.post(f"{BASE_URL}/api/cluster/create-hyperpod", json={"userConfig": userConfig})
             response.raise_for_status()
             result = response.json()
@@ -429,7 +320,7 @@ async def hyperpod_create(
         return json.dumps({"success": False, "error": str(e)}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
-async def hyperpod_get_creation_status(clusterTag: Optional[str] = None) -> str:
+async def hyperpod_get_creation_status(clusterTag: str = None) -> str:
     """获取 HyperPod 集群创建状态
     
     Args:
@@ -437,23 +328,29 @@ async def hyperpod_get_creation_status(clusterTag: Optional[str] = None) -> str:
     """
     try:
         if not clusterTag:
-            # /api/multi-cluster/list 才是暴露 activeCluster 的端点
-            clusterTag = await _get_active_cluster_tag()
+            async with httpx.AsyncClient() as client:
+                status_resp = await client.get(f"{BASE_URL}/api/cluster-status")
+                if status_resp.status_code == 200:
+                    data = status_resp.json()
+                    clusterTag = data.get("clusterTag") or data.get("activeCluster")
         if not clusterTag:
             return json.dumps({"success": False, "error": "No active cluster found"}, indent=2, ensure_ascii=False)
-
-        result = await _api("GET", f"/api/cluster/hyperpod-creation-status/{quote(clusterTag, safe='')}")
-        status = result.get("status")
-        if not status:
-            return json.dumps({"success": True, "message": "No HyperPod cluster currently being created", "clusterTag": clusterTag}, indent=2, ensure_ascii=False)
-        return json.dumps({"success": True, "clusterTag": clusterTag, "status": status}, indent=2, ensure_ascii=False)
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{BASE_URL}/api/cluster/hyperpod-creation-status/{clusterTag}")
+            response.raise_for_status()
+            result = response.json()
+            status = result.get("status")
+            if not status:
+                return json.dumps({"success": True, "message": "No HyperPod cluster currently being created", "clusterTag": clusterTag}, indent=2, ensure_ascii=False)
+            return json.dumps({"success": True, "clusterTag": clusterTag, "status": status}, indent=2, ensure_ascii=False)
     except Exception as e:
-        return _error_json(e)
+        return json.dumps({"success": False, "error": str(e)}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
 async def cluster_get_available_instances() -> str:
     """获取当前集群可用的实例类型列表（用于创建 HyperPod 或节点组时选择实例类型）"""
-    async with make_client() as client:
+    async with httpx.AsyncClient() as client:
         response = await client.get(f"{BASE_URL}/api/cluster/cluster-available-instance")
         response.raise_for_status()
         return json.dumps(response.json(), indent=2, ensure_ascii=False)
@@ -462,20 +359,24 @@ async def cluster_get_available_instances() -> str:
 async def cluster_get_availability_zones() -> str:
     """获取当前集群可用的可用区列表"""
     try:
-        # 当前活跃集群的 region 即后端配置的当前 region（/api/cluster-status 不含 region 字段）
-        region = (await _api("GET", "/api/aws/current-region")).get("region")
-        if not region:
-            return json.dumps({"success": False, "error": "Cannot determine region"}, indent=2, ensure_ascii=False)
-        result = await _api("GET", "/api/cluster/availability-zones", params={"region": region})
-        return json.dumps(result, indent=2, ensure_ascii=False)
+        async with httpx.AsyncClient() as client:
+            # 获取当前活跃集群的 region(active-region 优先返回活跃集群 region,无集群时回退主机)
+            region_resp = await client.get(f"{BASE_URL}/api/aws/active-region")
+            region_resp.raise_for_status()
+            region = region_resp.json().get("region")
+            if not region:
+                return json.dumps({"success": False, "error": "Cannot determine region"}, indent=2, ensure_ascii=False)
+            response = await client.get(f"{BASE_URL}/api/cluster/availability-zones", params={"region": region})
+            response.raise_for_status()
+            return json.dumps(response.json(), indent=2, ensure_ascii=False)
     except Exception as e:
-        return _error_json(e)
+        return json.dumps({"success": False, "error": str(e)}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
 async def karpenter_install() -> str:
     """安装 HyperPod Karpenter（无需参数，使用当前活跃集群）"""
     try:
-        async with make_client(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(f"{BASE_URL}/api/cluster/karpenter/install", json={})
             response.raise_for_status()
             result = response.json()
@@ -494,7 +395,7 @@ async def karpenter_install() -> str:
 async def karpenter_get_status() -> str:
     """获取 Karpenter 安装和运行状态"""
     try:
-        async with make_client(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(f"{BASE_URL}/api/cluster/karpenter/status")
             response.raise_for_status()
             return json.dumps(response.json(), indent=2, ensure_ascii=False)
@@ -507,16 +408,16 @@ async def hyperpod_get_advanced_features() -> str:
     
     返回的 tieredStorage 包含 irsa 字段，表示 IRSA（IAM Role + ServiceAccount）的安装状态。
     """
-    try:
-        return json.dumps(await _api("GET", "/api/cluster/hyperpod/advanced-features"), indent=2, ensure_ascii=False)
-    except Exception as e:
-        return _error_json(e)
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(f"{BASE_URL}/api/cluster/hyperpod/advanced-features")
+        response.raise_for_status()
+        return json.dumps(response.json(), indent=2, ensure_ascii=False)
 
 @mcp.tool()
 async def hyperpod_update_advanced_features(
-    tieredStorage: Optional[dict] = None,
-    inferenceOperator: Optional[dict] = None,
-    trainingOperator: Optional[dict] = None
+    tieredStorage: dict = None,
+    inferenceOperator: dict = None,
+    trainingOperator: dict = None
 ) -> str:
     """更新 HyperPod 集群的高级功能配置（开启/关闭 Tiered Storage、Inference Operator、Training Operator）
     
@@ -537,7 +438,7 @@ async def hyperpod_update_advanced_features(
         if not payload:
             return json.dumps({"success": False, "error": "At least one feature must be specified"}, indent=2, ensure_ascii=False)
         
-        async with make_client(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=120) as client:
             response = await client.post(f"{BASE_URL}/api/cluster/hyperpod/advanced-features", json=payload)
             response.raise_for_status()
             return json.dumps(response.json(), indent=2, ensure_ascii=False)
@@ -550,7 +451,7 @@ async def hyperpod_update_advanced_features(
 async def s3_storage_get_defaults() -> str:
     """获取 S3 存储挂载的默认配置（claim 名称、S3 桶名称、区域）"""
     try:
-        async with make_client() as client:
+        async with httpx.AsyncClient() as client:
             response = await client.get(f"{BASE_URL}/api/s3-storage-defaults")
             response.raise_for_status()
             return json.dumps(response.json(), indent=2, ensure_ascii=False)
@@ -558,7 +459,7 @@ async def s3_storage_get_defaults() -> str:
         return json.dumps({"success": False, "error": str(e)}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
-async def s3_storage_create(name: Optional[str] = None, bucketName: Optional[str] = None, region: Optional[str] = None) -> str:
+async def s3_storage_create(name: str = None, bucketName: str = None, region: str = None) -> str:
     """创建 S3 存储挂载（PV + PVC）
 
     Args:
@@ -568,7 +469,7 @@ async def s3_storage_create(name: Optional[str] = None, bucketName: Optional[str
     """
     try:
         # 获取默认值填充未提供的参数
-        async with make_client() as client:
+        async with httpx.AsyncClient() as client:
             defaults_resp = await client.get(f"{BASE_URL}/api/s3-storage-defaults")
             defaults_resp.raise_for_status()
             defaults = defaults_resp.json().get("defaults", {})
@@ -582,7 +483,7 @@ async def s3_storage_create(name: Optional[str] = None, bucketName: Optional[str
         if not payload["bucketName"]:
             return json.dumps({"success": False, "error": "No S3 bucket name provided and no default detected. Please specify bucketName."}, indent=2, ensure_ascii=False)
 
-        async with make_client(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(f"{BASE_URL}/api/s3-storages", json=payload)
             response.raise_for_status()
             result = response.json()
@@ -604,27 +505,27 @@ async def s3_storage_create(name: Optional[str] = None, bucketName: Optional[str
         return json.dumps({"success": False, "error": str(e)}, indent=2, ensure_ascii=False)
 
 @mcp.tool()
-async def s3_storage_list_contents(storage: Optional[str] = None) -> str:
+async def s3_storage_list_contents(storage: str = None) -> str:
     """列出 S3 存储桶中的文件和文件夹（模型文件等）
     
     Args:
         storage: PVC 存储名称（可选，默认使用 s3-claim）
     """
-    try:
+    async with httpx.AsyncClient() as client:
         params = {"storage": storage} if storage else {}
-        return json.dumps(await _api("GET", "/api/s3-storage", params=params), indent=2, ensure_ascii=False)
-    except Exception as e:
-        return _error_json(e)
+        response = await client.get(f"{BASE_URL}/api/s3-storage", params=params)
+        response.raise_for_status()
+        return json.dumps(response.json(), indent=2, ensure_ascii=False)
 
 # ============ 模型下载工具 ============
 
 @mcp.tool()
 async def model_download_enhanced(
     modelId: str,
-    s3Storage: Optional[str] = None,
+    s3Storage: str = None,
     cpu: str = "4",
     memory: str = "16",
-    hfToken: Optional[str] = None
+    hfToken: str = None
 ) -> str:
     """从 HuggingFace 下载模型到集群存储
     
@@ -638,7 +539,7 @@ async def model_download_enhanced(
     try:
         # 如果没有指定 s3Storage，尝试获取默认存储桶
         if not s3Storage:
-            async with make_client() as client:
+            async with httpx.AsyncClient() as client:
                 storage_resp = await client.get(f"{BASE_URL}/api/s3-storages")
                 if storage_resp.status_code == 200:
                     storages = storage_resp.json().get("storages", [])
@@ -662,24 +563,24 @@ async def model_download_enhanced(
         if hfToken:
             payload["hfToken"] = hfToken
         
-        async with make_client(timeout=300) as client:
+        async with httpx.AsyncClient(timeout=300) as client:
             response = await client.post(f"{BASE_URL}/api/download-model-enhanced", json=payload)
             response.raise_for_status()
             result = response.json()
             
             if result.get("success"):
-                # 后端返回的 jobName 已经是最终的 K8s Job 名（model-dl-<tag>-<timestamp>），直接使用
                 job_name = result.get("jobName", "")
+                k8s_job_name = f"model-download-job-{job_name}" if job_name else ""
                 return json.dumps({
                     "success": True,
                     "message": f"✅ Model download started for {modelId}",
-                    "jobName": job_name,
+                    "jobName": k8s_job_name,
                     "s3Storage": s3Storage,
                     "resources": {
                         "cpu": f"{cpu} cores",
                         "memory": f"{memory}GB"
                     },
-                    "tip": f"Monitor: job_get_status {job_name}" if job_name else "Check: job_list_all"
+                    "tip": f"Monitor: job_get_status {k8s_job_name}" if k8s_job_name else "Check: job_list_all"
                 }, indent=2, ensure_ascii=False)
             else:
                 return json.dumps({
@@ -698,53 +599,33 @@ async def model_download_enhanced(
             "error": f"Error: {str(e)}"
         }, indent=2, ensure_ascii=False)
 
-async def _run_kubectl(args: list, timeout: int = 30) -> tuple:
-    """异步执行 kubectl（返回 (returncode, stdout, stderr)）。
-
-    说明：Job 查询保留 kubectl 直连是有意设计——后端只有 /api/k8s-jobs 列表路由
-    （且出错时静默返回空列表），没有单个 Job 的查询端点。MCP server 与后端同容器
-    运行，共享同一 kubeconfig（活跃集群上下文由后端切换）。这里用 asyncio 子进程
-    避免阻塞事件循环。
-    """
-    proc = await asyncio.create_subprocess_exec(
-        "kubectl", *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        raise
-    return proc.returncode, stdout.decode(errors="replace"), stderr.decode(errors="replace")
-
-
 @mcp.tool()
-async def job_get_status(jobName: str, namespace: str = "") -> str:
+async def job_get_status(jobName: str) -> str:
     """查询 Kubernetes Job 的状态（用于监控模型下载等任务）
-
+    
     Args:
-        jobName: Job 名称，如 model-dl-qwen-qwen2-5-7b-in-12345678（model_download_enhanced 返回的 jobName）
-        namespace: 命名空间（可选，默认当前 kubectl 上下文的命名空间）
-
+        jobName: Job 名称，如 model-download-qwen-qwen2-5-7b-instruct
+    
     Returns:
         Job 状态信息，包括运行状态、成功/失败数量、完成时间等
     """
     try:
-        args = ["get", "job", jobName, "-o", "json"]
-        if namespace:
-            args += ["-n", namespace]
-        returncode, stdout, stderr = await _run_kubectl(args)
-
-        if returncode != 0:
+        # 执行 kubectl 命令获取 Job 状态
+        result = subprocess.run(
+            ["kubectl", "get", "job", jobName, "-o", "json"],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode != 0:
             return json.dumps({
                 "success": False,
-                "error": f"Job not found or error: {stderr}"
+                "error": f"Job not found or error: {result.stderr}"
             }, indent=2, ensure_ascii=False)
-
+        
         # 解析 Job 状态
-        job_data = json.loads(stdout)
+        job_data = json.loads(result.stdout)
         status = job_data.get("status", {})
         metadata = job_data.get("metadata", {})
         
@@ -776,8 +657,8 @@ async def job_get_status(jobName: str, namespace: str = "") -> str:
             },
             "conditions": status.get("conditions", [])
         }, indent=2, ensure_ascii=False)
-
-    except asyncio.TimeoutError:
+        
+    except subprocess.TimeoutExpired:
         return json.dumps({
             "success": False,
             "error": "Command timeout"
@@ -789,32 +670,29 @@ async def job_get_status(jobName: str, namespace: str = "") -> str:
         }, indent=2, ensure_ascii=False)
 
 @mcp.tool()
-async def job_list_all(namespace: str = "", allNamespaces: bool = False) -> str:
-    """列出 Kubernetes Jobs（包括模型下载任务）
-
-    Args:
-        namespace: 命名空间（可选，默认当前 kubectl 上下文的命名空间，模型下载任务在 default）
-        allNamespaces: 是否列出所有命名空间的 Jobs（默认 false）
-
+async def job_list_all() -> str:
+    """列出所有 Kubernetes Jobs（包括模型下载任务）
+    
     Returns:
-        Job 的列表，包括名称、状态、创建时间等
+        所有 Job 的列表，包括名称、状态、创建时间等
     """
     try:
-        args = ["get", "jobs", "-o", "json"]
-        if allNamespaces:
-            args.append("--all-namespaces")
-        elif namespace:
-            args += ["-n", namespace]
-        returncode, stdout, stderr = await _run_kubectl(args)
-
-        if returncode != 0:
+        # 执行 kubectl 命令获取所有 Jobs
+        result = subprocess.run(
+            ["kubectl", "get", "jobs", "-o", "json"],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode != 0:
             return json.dumps({
                 "success": False,
-                "error": f"Failed to list jobs: {stderr}"
+                "error": f"Failed to list jobs: {result.stderr}"
             }, indent=2, ensure_ascii=False)
-
+        
         # 解析 Jobs 列表
-        jobs_data = json.loads(stdout)
+        jobs_data = json.loads(result.stdout)
         jobs = []
         
         for item in jobs_data.get("items", []):
@@ -851,8 +729,8 @@ async def job_list_all(namespace: str = "", allNamespaces: bool = False) -> str:
             "jobs": jobs,
             "total": len(jobs)
         }, indent=2, ensure_ascii=False)
-
-    except asyncio.TimeoutError:
+        
+    except subprocess.TimeoutExpired:
         return json.dumps({
             "success": False,
             "error": "Command timeout"
@@ -915,7 +793,7 @@ async def inference_deploy_container(
         if huggingFaceToken:
             payload["huggingFaceToken"] = huggingFaceToken
 
-        async with make_client(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=120) as client:
             response = await client.post(f"{BASE_URL}/api/deploy/container", json=payload)
             response.raise_for_status()
             result = response.json()
@@ -939,10 +817,11 @@ async def inference_deploy_container(
 async def inference_list_services() -> str:
     """列出所有推理服务（包括内部 ClusterIP 和外部 LoadBalancer）"""
     try:
-        async with make_client() as client:
+        async with httpx.AsyncClient() as client:
             response = await client.get(f"{BASE_URL}/api/v2/app-status")
-            data = _parse_json_or_raise(response)
-
+            response.raise_for_status()
+            data = response.json()
+            
             services = data.get("rawServices", data.get("services", []))
             
             # 分类服务
@@ -1015,10 +894,11 @@ async def inference_list_services() -> str:
 async def inference_list_public_services() -> str:
     """列出可公开访问的推理服务（仅 LoadBalancer 类型）"""
     try:
-        async with make_client() as client:
+        async with httpx.AsyncClient() as client:
             response = await client.get(f"{BASE_URL}/api/v2/app-status")
-            data = _parse_json_or_raise(response)
-
+            response.raise_for_status()
+            data = response.json()
+            
             services = data.get("rawServices", data.get("services", []))
             public_services = []
             
@@ -1074,11 +954,10 @@ async def inference_call_model(
     namespace: str = "default",
     max_tokens: int = 512,
     temperature: float = 0.7,
-    local_port: int = 2020,
-    model: str = ""
+    local_port: int = 2020
 ) -> str:
     """调用推理模型生成响应（支持 LoadBalancer 和 ClusterIP 服务）
-
+    
     Args:
         service_name: 服务名称（从 inference_list_services 获取）
         prompt: 输入提示词
@@ -1086,63 +965,68 @@ async def inference_call_model(
         max_tokens: 最大生成 token 数（默认 512）
         temperature: 温度参数（默认 0.7）
         local_port: Port-forward 本地端口（默认 2020，仅 ClusterIP 服务需要）
-        model: 模型名称（可选。默认自动从服务的 /v1/models 获取真实 model id，
-               获取失败则回退空字符串——vLLM 需要真实 id，SGLang 会忽略该字段）
     """
     try:
-        async with make_client(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=120) as client:
             # 获取服务信息
             status_resp = await client.get(f"{BASE_URL}/api/v2/app-status")
-            data = _parse_json_or_raise(status_resp)
+            status_resp.raise_for_status()
+            data = status_resp.json()
             services = data.get("rawServices", data.get("services", []))
-
+            
             # 找到目标服务
             target_service = None
             for svc in services:
-                if (svc.get("metadata", {}).get("name") == service_name and
+                if (svc.get("metadata", {}).get("name") == service_name and 
                     svc.get("metadata", {}).get("namespace") == namespace):
                     target_service = svc
                     break
-
+            
             if not target_service:
                 return json.dumps({
                     "success": False,
                     "error": f"Service {service_name} not found in namespace {namespace}"
                 }, indent=2, ensure_ascii=False)
-
+            
             service_type = target_service.get("spec", {}).get("type", "")
             service_port = target_service.get("spec", {}).get("ports", [{}])[0].get("port", 8000)
-
-            if service_type not in ("LoadBalancer", "ClusterIP"):
-                return json.dumps({
-                    "success": False,
-                    "error": f"Unsupported service type: {service_type}"
-                }, indent=2, ensure_ascii=False)
-
-            lb_base_url = ""
+            
+            # 构造请求 payload
+            payload = {
+                "model": "",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+                "temperature": temperature
+            }
+            
+            # 根据服务类型选择调用方式
             if service_type == "LoadBalancer":
+                # LoadBalancer: 直接调用外部地址
                 ingress = target_service.get("status", {}).get("loadBalancer", {}).get("ingress", [])
                 if not ingress:
                     return json.dumps({
                         "success": False,
                         "error": f"LoadBalancer service {service_name} has no external endpoint (pending)"
                     }, indent=2, ensure_ascii=False)
+                
                 host = ingress[0].get("hostname") or ingress[0].get("ip")
-                lb_base_url = f"http://{host}:{service_port}"
-
-            async def call_service(api_path: str, method: str, req_payload=None) -> dict:
-                """经由后端代理调用推理服务（与前端 TestPanel 相同的两种通道）：
-                LoadBalancer 走 /api/proxy-request 直连外部地址；
-                ClusterIP 走 /api/proxy-request-portforward 临时 port-forward。"""
-                if service_type == "LoadBalancer":
-                    body = {"url": f"{lb_base_url}{api_path}", "method": method}
-                    if req_payload is not None:
-                        body["payload"] = req_payload
-                    resp = await client.post(f"{BASE_URL}/api/proxy-request", json=body)
-                else:
-                    body = {
-                        "url": f"http://localhost:{local_port}{api_path}",
-                        "method": method,
+                base_url = f"http://{host}:{service_port}"
+                
+                proxy_resp = await client.post(
+                    f"{BASE_URL}/api/proxy-request",
+                    json={"url": f"{base_url}/v1/chat/completions", "payload": payload, "method": "POST"}
+                )
+                
+            elif service_type == "ClusterIP":
+                # ClusterIP: 使用 port-forward
+                service_url = f"http://localhost:{local_port}/v1/chat/completions"
+                
+                proxy_resp = await client.post(
+                    f"{BASE_URL}/api/proxy-request-portforward",
+                    json={
+                        "url": service_url,
+                        "payload": payload,
+                        "method": "POST",
                         "portForward": {
                             "enabled": True,
                             "serviceName": service_name,
@@ -1151,33 +1035,15 @@ async def inference_call_model(
                             "localPort": local_port
                         }
                     }
-                    if req_payload is not None:
-                        body["payload"] = req_payload
-                    resp = await client.post(f"{BASE_URL}/api/proxy-request-portforward", json=body)
-                return _parse_json_or_raise(resp)
-
-            # 未指定 model 时，按前端 TestPanel 的既有模式先从 /v1/models 获取
-            # 真实 model id；失败则回退空字符串
-            if not model:
-                try:
-                    models_result = await call_service("/v1/models", "GET")
-                    if models_result.get("success") and models_result.get("data"):
-                        model_list = models_result["data"].get("data") or []
-                        if isinstance(model_list, list) and model_list:
-                            model = model_list[0].get("id", "") or ""
-                except Exception:
-                    model = ""
-
-            # 构造请求 payload
-            payload = {
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": max_tokens,
-                "temperature": temperature
-            }
-
-            result = await call_service("/v1/chat/completions", "POST", payload)
-
+                )
+            else:
+                return json.dumps({
+                    "success": False,
+                    "error": f"Unsupported service type: {service_type}"
+                }, indent=2, ensure_ascii=False)
+            
+            result = proxy_resp.json()
+            
             if result.get("success"):
                 response_data = result.get("data", {})
                 choices = response_data.get("choices", [])
@@ -1205,28 +1071,17 @@ async def inference_call_model(
 
 # ============ HyperPod 节点操作工具 ============
 
-_NODE_ACTIONS = ("reboot", "replace", "delete")
-
-
+@mcp.tool()
 async def _hyperpod_node_action(action: str, nodeId: str) -> dict:
-    """内部辅助：调用 HyperPod 节点操作 API。
-
-    注意：这是普通函数，不是 MCP 工具（不加 @mcp.tool()）——action 会拼进 URL，
-    只允许 reboot / replace / delete 三个后端真实存在的路由。
-    """
-    if action not in _NODE_ACTIONS:
-        return {"success": False, "error": f"Invalid node action: {action}"}
-    async with make_client(timeout=60) as client:
+    """内部辅助：调用 HyperPod 节点操作 API"""
+    async with httpx.AsyncClient(timeout=60) as client:
         response = await client.post(
             f"{BASE_URL}/api/cluster/hyperpod/node/{action}",
             json={"nodeId": nodeId}
         )
-        try:
-            result = response.json()
-        except Exception:
-            result = {}
+        result = response.json()
         if response.status_code >= 400:
-            return {"success": False, "error": result.get("message") or result.get("error") or f"Failed to {action} node (HTTP {response.status_code})", "errorCode": result.get("errorCode")}
+            return {"success": False, "error": result.get("message", f"Failed to {action} node"), "errorCode": result.get("errorCode")}
         if result.get("success"):
             return {"success": True, "message": result.get("message"), "nodeId": nodeId, "apiResponse": result.get("apiResponse")}
         return {"success": False, "error": result.get("message", f"Failed to {action} node")}
@@ -1326,7 +1181,7 @@ async def hyperpod_add_instance_group(
         if newSubnet:
             userConfig["newSubnet"] = True
 
-        async with make_client(timeout=300) as client:
+        async with httpx.AsyncClient(timeout=300) as client:
             response = await client.post(f"{BASE_URL}/api/cluster/hyperpod/add-instance-group", json={"userConfig": userConfig})
             response.raise_for_status()
             result = response.json()
@@ -1357,8 +1212,8 @@ async def hyperpod_scale_instance_group(name: str, targetCount: int) -> str:
         targetCount: 目标实例数量
     """
     try:
-        async with make_client(timeout=120) as client:
-            response = await client.put(f"{BASE_URL}/api/cluster/hyperpod/instances/{quote(name, safe='')}/scale", json={"targetCount": targetCount})
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.put(f"{BASE_URL}/api/cluster/hyperpod/instances/{name}/scale", json={"targetCount": targetCount})
             response.raise_for_status()
             result = response.json()
             if result.get("success"):
@@ -1381,7 +1236,7 @@ async def hyperpod_delete_instance_group(instanceGroupName: str) -> str:
         ⚠️ 删除实例组会永久移除该组所有节点及数据，此操作不可逆
     """
     try:
-        async with make_client(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=120) as client:
             response = await client.post(f"{BASE_URL}/api/cluster/hyperpod/delete-instance-group", json={"instanceGroupName": instanceGroupName})
             response.raise_for_status()
             result = response.json()
@@ -1402,7 +1257,7 @@ async def hyperpod_update_software(clusterArn: str) -> str:
         clusterArn: HyperPod 集群 ARN
     """
     try:
-        async with make_client(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=120) as client:
             response = await client.post(f"{BASE_URL}/api/cluster/hyperpod/update-software", json={"clusterArn": clusterArn})
             response.raise_for_status()
             result = response.json()

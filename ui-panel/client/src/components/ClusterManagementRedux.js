@@ -164,7 +164,7 @@ const DependencyConfigButton = ({ clusterTag, currentCluster }) => {
     }
   };
 
-  const buttonProps = getDependencyButtonProps(dependenciesStatus, currentCluster);
+  const buttonProps = getDependencyButtonProps(dependenciesStatus);
 
   return (
     <Button
@@ -554,6 +554,9 @@ const ClusterManagementRedux = () => {
                             <Tag color={cluster.type === 'imported' ? 'blue' : 'green'} size="small">
                               {cluster.type === 'imported' ? 'Imported' : 'Created'}
                             </Tag>
+                            <Text type="secondary" style={{ fontSize: '12px' }}>
+                              {cluster.region || 'N/A'}
+                            </Text>
                             <Text type="secondary" style={{ fontSize: '12px' }}>
                               {new Date(cluster.lastModified).toLocaleDateString()}
                             </Text>

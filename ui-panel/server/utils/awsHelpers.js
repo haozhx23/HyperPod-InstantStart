@@ -166,7 +166,9 @@ async function getInstanceTypeInfo(instanceType, region) {
   if (_instanceInfoCache[ec2Type]) return _instanceInfoCache[ec2Type];
 
   try {
-    const r = region || getCurrentRegion();
+    // 惰性 require 防止与 regionResolver 的加载顺序问题(后者只在函数内部 require 本模块)
+    const { getEffectiveRegion } = require('./regionResolver');
+    const r = region || getEffectiveRegion();
     const { stdout } = await exec(
       `aws ec2 describe-instance-types --instance-types ${ec2Type} --query 'InstanceTypes[0].{vCPUs: VCpuInfo.DefaultVCpus, MemoryMiB: MemoryInfo.SizeInMiB, GPUs: GpuInfo.Gpus[0].Count, GPUMemMiB: GpuInfo.TotalGpuMemoryInMiB, EfaSupported: NetworkInfo.EfaSupported, EfaInterfaces: NetworkInfo.EfaInfo.MaximumEfaInterfaces}' --output json --region ${r}`
     );

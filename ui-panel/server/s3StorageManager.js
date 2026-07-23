@@ -2,7 +2,7 @@ const fs = require('fs-extra');
 const path = require('path');
 const yaml = require('yaml');
 const { exec, execAsync } = require('./utils/exec');
-const { getCurrentRegion } = require('./utils/awsHelpers');
+const { getEffectiveRegion } = require('./utils/regionResolver');
 const { renderTemplate, patches: P } = require('./utils/renderTemplate');
 
 class S3StorageManager {
@@ -21,7 +21,8 @@ class S3StorageManager {
   getStorageDefaults() {
     let detectedRegion = '';
     try {
-      detectedRegion = getCurrentRegion();
+      // 运维路径:优先活跃集群 region,主机兜底
+      detectedRegion = getEffectiveRegion();
     } catch (e) {
       console.warn('Could not detect AWS region for S3 defaults:', e.message);
     }
@@ -101,7 +102,7 @@ class S3StorageManager {
       console.log(`📦 Using storage: ${selectedStorage.name} -> ${selectedStorage.bucketName}`);
 
       // 使用AWS CLI获取S3内容
-      const effectiveRegion = selectedStorage.region || (() => { try { return getCurrentRegion(); } catch(e) { return 'us-east-1'; } })();
+      const effectiveRegion = selectedStorage.region || getEffectiveRegion();
       const s3Data = await this._listS3Contents(selectedStorage.bucketName, effectiveRegion);
 
       console.log(`📊 Found ${s3Data.length} items in S3`);

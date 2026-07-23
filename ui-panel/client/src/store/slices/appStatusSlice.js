@@ -140,7 +140,6 @@ export const fetchAppStatusV2 = createAsyncThunk(
       return {
         pods: data.rawPods || data.pods || [],
         services: data.rawServices || data.services || [],
-        ingresses: data.ingresses || [],
         timestamp: new Date().toISOString(),
         stats: data.stats || null,
         fetchTime: data.fetchTime || null,
@@ -202,7 +201,6 @@ const appStatusSlice = createSlice({
     // 各类应用数据
     pods: [],
     services: [],
-    ingresses: [],             // ALB/Ingress 端点（hyperpod-ns-*）
     rayJobs: [],
     bindingServices: [],
     deployments: [],           // 新增
@@ -487,7 +485,6 @@ const appStatusSlice = createSlice({
         state.servicesLoading = false;
         state.pods = action.payload.pods;
         state.services = action.payload.services;
-        state.ingresses = action.payload.ingresses || [];
         state.lastPodsUpdate = action.payload.timestamp;
         state.lastServicesUpdate = action.payload.timestamp;
 

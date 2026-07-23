@@ -15,8 +15,7 @@ import {
   Tooltip,
   Alert,
   Input,
-  Modal,
-  Divider
+  Modal
 } from 'antd';
 import {
   CheckCircleOutlined,
@@ -45,7 +44,6 @@ import { getPodStatus } from './podStatusHelpers';
 import {
   buildPodColumns,
   buildServiceColumns,
-  buildIngressColumns,
   buildRayJobColumns,
   buildTrainingJobColumns,
   buildDeploymentColumns,
@@ -57,7 +55,6 @@ import { refreshAllAppStatus } from '../store/slices/appStatusSlice';
 import {
   selectAppPods,
   selectAppServices,
-  selectAppIngresses,
   selectAppRayJobs,
   selectAppBindingServices,
   selectAppDeployments,        // 新增
@@ -87,7 +84,6 @@ const StatusMonitorRedux = ({ activeTab }) => {
   // Redux 状态
   const pods = useSelector(selectAppPods);
   const services = useSelector(selectAppServices);
-  const ingresses = useSelector(selectAppIngresses);
   const rayJobs = useSelector(selectAppRayJobs);
   const businessServices = useSelector(selectAppBindingServices);
   const deployments = useSelector(selectAppDeployments);          // 新增
@@ -551,7 +547,7 @@ const StatusMonitorRedux = ({ activeTab }) => {
 
   // Monitoring 页每个 tab 共享一套筛选/分页模式。Pods/Services/RayJobs 这些
   // k8s 原生对象默认 ns 选 'default' 避免一屏铺满；processed 形态的（deployments /
-  // jobs / inference / k8sjobs 等）没可靠 namespace 字段，默认 __all__。
+  // jobs / inference / k8sjobs / trainjobs）没可靠 namespace 字段，默认 __all__。
   const podFilter = useResourceFilter(pods, {
     getStatus: getPodStatus,
     searchPlaceholder: 'Search pods by name',
@@ -615,9 +611,6 @@ const StatusMonitorRedux = ({ activeTab }) => {
     handleServiceDelete,
     deletingServices,
   });
-
-  // Ingress (ALB) 表格列定义
-  const ingressColumns = buildIngressColumns();
 
   // RayJob表格列定义
   const rayJobColumns = buildRayJobColumns({ handleDeleteRayJob, deletingRayJob });
@@ -1327,24 +1320,6 @@ const StatusMonitorRedux = ({ activeTab }) => {
             pagination={{ pageSize: 10 }}
             loading={loading}
           />
-          {ingresses.length > 0 && (
-            <>
-              <Divider orientation="left" style={{ marginTop: 24 }}>
-                <Space>
-                  <ThunderboltOutlined />
-                  Inference Endpoints (ALB)
-                </Space>
-              </Divider>
-              <Table
-                columns={ingressColumns}
-                dataSource={ingresses}
-                rowKey={(ing) => ing.uid || `${ing.namespace}/${ing.name}`}
-                size="small"
-                pagination={false}
-                loading={loading}
-              />
-            </>
-          )}
         </div>
       </TabPane>
 

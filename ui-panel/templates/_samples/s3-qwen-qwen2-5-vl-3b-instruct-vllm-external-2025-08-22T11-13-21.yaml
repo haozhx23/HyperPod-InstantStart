@@ -1,0 +1,83 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-s3-qwen-qwen2-5-vl-3b-instruct-inference
+  labels:
+    app: vllm-s3-qwen-qwen2-5-vl-3b-instruct-inference
+    model-type: "vllm"
+    model-id: "s3-qwen-qwen25-vl-3b-instruct"
+    model-tag: "s3-qwen-qwen2-5-vl-3b-instruct"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm-s3-qwen-qwen2-5-vl-3b-instruct-inference
+  template:
+    metadata:
+      labels:
+        app: vllm-s3-qwen-qwen2-5-vl-3b-instruct-inference
+    spec:
+      containers:
+        - name: vllm-openai
+          image: qwenllm/qwenvl:2.5-cu121
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              cpu: "4"
+              memory: 8Gi
+              nvidia.com/gpu: 1
+          command: ["vllm","serve","/s3/Qwen-Qwen2.5-VL-3B-Instruct/","--max_model_len","51200","--port","8000","--host","0.0.0.0","--dtype","bfloat16","--limit-mm-per-prompt","image=5,video=5"]
+          ports:
+            - containerPort: 8000
+              name: http
+          volumeMounts:
+            - name: persistent-storage-s3
+              mountPath: /s3
+              readOnly: true
+            - name: local-cache
+              mountPath: /root/.cache
+            - name: shm
+              mountPath: /dev/shm
+          env:
+            - name: TRANSFORMERS_CACHE
+              value: "/root/.cache/huggingface"
+          securityContext:
+            capabilities:
+              add:
+                - IPC_LOCK
+      volumes:
+        - name: persistent-storage-s3
+          persistentVolumeClaim:
+            claimName: s3-claim
+        - name: local-cache
+          hostPath:
+            path: /opt/dlami/nvme/.cache
+            type: DirectoryOrCreate
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-s3-qwen-qwen2-5-vl-3b-instruct-nlb
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "external"
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+spec:
+  ports:
+    - port: 8000
+      protocol: TCP
+      targetPort: http
+  selector:
+    app: vllm-s3-qwen-qwen2-5-vl-3b-instruct-inference
+  type: LoadBalancer

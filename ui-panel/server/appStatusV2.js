@@ -15,7 +15,6 @@ class AppStatusV2 {
     this.cache = {
       pods: { data: null, timestamp: 0, ttl: 15000 }, // 15秒缓存
       services: { data: null, timestamp: 0, ttl: 30000 }, // 30秒缓存
-      ingresses: { data: null, timestamp: 0, ttl: 30000 }, // 30秒缓存（ALB/Ingress 端点）
       combined: { data: null, timestamp: 0, ttl: 15000 } // 组合数据缓存
     };
     this.defaultTimeout = 20000; // 20秒默认超时
@@ -132,10 +131,7 @@ class AppStatusV2 {
 
   /**
    * 获取 Services 状态（带缓存）
-   * 采集范围：
-   *   - default namespace：全部服务
-   *   - hyperpod-inference-system namespace：仅 *-default-routing-service
-   *   - hyperpod-ns-* team namespace：仅 *-routing-service（Inference Operator 直接部署的路由服务）
+   * 同时获取 default 和 hyperpod-inference-system namespace 的服务
    */
   async getServices(forceRefresh = false) {
     if (!forceRefresh && this.isCacheValid('services')) {
@@ -147,42 +143,29 @@ class AppStatusV2 {
       console.log('Fetching fresh services data...');
       const startTime = Date.now();
       
-      // 并行获取服务：default 全量 + inference-system 路由 + 全集群（用于筛 team namespace 路由）
-      const [defaultOutput, hyperpodOutput, allNsOutput] = await Promise.allSettled([
+      // 并行获取两个 namespace 的服务
+      const [defaultOutput, hyperpodOutput] = await Promise.allSettled([
         this.executeKubectlWithDedup('get services -n default -o json', 15000),
-        this.executeKubectlWithDedup('get services -n hyperpod-inference-system -o json', 15000),
-        this.executeKubectlWithDedup('get services -A -o json', 15000)
+        this.executeKubectlWithDedup('get services -n hyperpod-inference-system -o json', 15000)
       ]);
 
       let allServices = [];
-
+      
       // 处理 default namespace 的服务
       if (defaultOutput.status === 'fulfilled') {
         const defaultData = JSON.parse(defaultOutput.value);
         allServices = allServices.concat(defaultData.items || []);
       }
-
+      
       // 处理 hyperpod-inference-system namespace 的服务（只保留 -default-routing-service 后缀的）
       if (hyperpodOutput.status === 'fulfilled') {
         const hyperpodData = JSON.parse(hyperpodOutput.value);
-        const routingServices = (hyperpodData.items || []).filter(svc =>
+        const routingServices = (hyperpodData.items || []).filter(svc => 
           svc.metadata?.name?.endsWith('-default-routing-service')
         );
         allServices = allServices.concat(routingServices);
       }
-
-      // 处理 team namespace（hyperpod-ns-*）下 Inference Operator 直接部署的路由服务
-      // 命名空间以 hyperpod-ns- 开头、服务名以 -routing-service 结尾；
-      // 该过滤与上面 default / hyperpod-inference-system 互斥，不会产生重复
-      if (allNsOutput.status === 'fulfilled') {
-        const allNsData = JSON.parse(allNsOutput.value);
-        const teamRoutingServices = (allNsData.items || []).filter(svc =>
-          svc.metadata?.namespace?.startsWith('hyperpod-ns-') &&
-          svc.metadata?.name?.endsWith('-routing-service')
-        );
-        allServices = allServices.concat(teamRoutingServices);
-      }
-
+      
       // 预处理 Service 数据
       const processedServices = this.processServices(allServices);
       
@@ -196,7 +179,7 @@ class AppStatusV2 {
       };
 
       this.updateCache('services', result);
-      console.log(`Services data fetched in ${result.fetchTime}ms: ${result.count} services (default + hyperpod-inference-system routing + hyperpod-ns-* routing)`);
+      console.log(`Services data fetched in ${result.fetchTime}ms: ${result.count} services (default + hyperpod-inference-system routing)`);
       
       return result;
     } catch (error) {
@@ -210,77 +193,7 @@ class AppStatusV2 {
   }
 
   /**
-   * 获取 Ingress（ALB）端点状态（带缓存）
-   * 仅采集 hyperpod-ns-* team namespace 下的 Ingress（Inference Operator 为每个 endpoint 创建的 ALB），
-   * 提取可直接 curl 的完整 URL（scheme + host + rule path）。
-   */
-  async getIngresses(forceRefresh = false) {
-    if (!forceRefresh && this.isCacheValid('ingresses')) {
-      console.log('Returning cached ingresses data');
-      return this.getCachedData('ingresses');
-    }
-
-    try {
-      console.log('Fetching fresh ingresses data...');
-      const startTime = Date.now();
-
-      const output = await this.executeKubectlWithDedup('get ingress -A -o json', 15000);
-      const data = JSON.parse(output);
-
-      const ingresses = (data.items || [])
-        .filter(ing => ing.metadata?.namespace?.startsWith('hyperpod-ns-'))
-        .map(ing => {
-          const ann = ing.metadata?.annotations || {};
-          const scheme = ann['alb.ingress.kubernetes.io/scheme'] || 'internal';
-          const host = ing.status?.loadBalancer?.ingress?.[0]?.hostname
-            || ing.status?.loadBalancer?.ingress?.[0]?.ip
-            || '';
-          const isHttps = (ann['alb.ingress.kubernetes.io/listen-ports'] || '').includes('HTTPS');
-          const protocol = isHttps ? 'https' : 'http';
-          const rules = (ing.spec?.rules || []).flatMap(r =>
-            (r.http?.paths || []).map(p => ({
-              path: p.path || '/',
-              service: p.backend?.service?.name || '',
-              port: p.backend?.service?.port?.number || p.backend?.service?.port?.name || ''
-            }))
-          );
-          const path = rules[0]?.path || '/';
-          return {
-            name: ing.metadata?.name,
-            namespace: ing.metadata?.namespace,
-            uid: ing.metadata?.uid,
-            scheme,
-            host,
-            protocol,
-            rules,
-            url: host ? `${protocol}://${host}${path}` : ''
-          };
-        });
-
-      const result = {
-        ingresses,
-        fetchTime: Date.now() - startTime,
-        timestamp: Date.now(),
-        count: ingresses.length,
-        version: 'v2'
-      };
-
-      this.updateCache('ingresses', result);
-      console.log(`Ingresses data fetched in ${result.fetchTime}ms: ${result.count} hyperpod-ns-* ingresses`);
-
-      return result;
-    } catch (error) {
-      console.error('Ingresses fetch error:', error);
-      throw {
-        error: error.message || 'Failed to fetch ingresses',
-        timestamp: Date.now(),
-        version: 'v2'
-      };
-    }
-  }
-
-  /**
-   * 获取组合的应用状态（Pods + Services + Ingresses）
+   * 获取组合的应用状态（Pods + Services）
    */
   async getAppStatus(forceRefresh = false) {
     if (!forceRefresh && this.isCacheValid('combined')) {
@@ -292,24 +205,21 @@ class AppStatusV2 {
       console.log('Fetching fresh combined app status...');
       const startTime = Date.now();
       
-      // 并行获取 Pods、Services 和 Ingresses
-      const [podsResult, servicesResult, ingressesResult] = await Promise.allSettled([
+      // 并行获取 Pods 和 Services
+      const [podsResult, servicesResult] = await Promise.allSettled([
         this.getPods(forceRefresh),
-        this.getServices(forceRefresh),
-        this.getIngresses(forceRefresh)
+        this.getServices(forceRefresh)
       ]);
 
       const pods = podsResult.status === 'fulfilled' ? podsResult.value : { pods: [], error: podsResult.reason };
       const services = servicesResult.status === 'fulfilled' ? servicesResult.value : { services: [], error: servicesResult.reason };
-      const ingresses = ingressesResult.status === 'fulfilled' ? ingressesResult.value : { ingresses: [], error: ingressesResult.reason };
 
       // 计算应用状态统计
       const stats = this.calculateAppStats(pods.pods || [], services.services || []);
-
+      
       const result = {
         pods: pods.pods || [],
         services: services.services || [],
-        ingresses: ingresses.ingresses || [],
         rawPods: pods.rawPods || [],
         rawServices: services.rawServices || [],
         stats,
@@ -318,8 +228,7 @@ class AppStatusV2 {
         version: 'v2',
         errors: {
           pods: pods.error || null,
-          services: services.error || null,
-          ingresses: ingresses.error || null
+          services: services.error || null
         }
       };
 
@@ -580,7 +489,7 @@ const handleAppStatusV2 = async (req, res) => {
 const handleClearAppCache = (req, res) => {
   const { type } = req.body;
   
-  if (type && ['pods', 'services', 'ingresses', 'combined'].includes(type)) {
+  if (type && ['pods', 'services', 'combined'].includes(type)) {
     appStatusV2.clearCache(type);
   } else {
     appStatusV2.clearAllCache();

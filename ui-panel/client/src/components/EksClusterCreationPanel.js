@@ -384,10 +384,14 @@ const EksClusterCreationPanel = () => {
                     label="AWS Region"
                     rules={[{ required: true, message: 'Please enter AWS region' }]}
                   >
-                    <Input 
-                      disabled 
+                    <Input
                       suffix={metadataLoading ? <Spin size="small" /> : null}
-                      placeholder={metadataLoading ? "Loading metadata..." : ""}
+                      placeholder={metadataLoading ? "Loading metadata..." : "e.g. us-west-2"}
+                      onBlur={(e) => {
+                        const r = e.target.value && e.target.value.trim();
+                        // region 改变后需按新 region 重新生成 CIDR(避开该 region 已用网段)
+                        if (r) generateCidrConfig(r);
+                      }}
                     />
                   </Form.Item>
                 </Col>

@@ -1,6 +1,6 @@
 const { execSync } = require('child_process');
-const { getCurrentRegion } = require('./awsHelpers');
 const MetadataUtils = require('./metadataUtils');
+const { getEffectiveRegion } = require('./regionResolver');
 
 /**
  * AWS Instance Type Manager
@@ -66,7 +66,7 @@ class AWSInstanceTypeManager {
       return { success: false, error: 'No active cluster configured' };
     }
 
-    const currentRegion = getCurrentRegion();
+    const currentRegion = getEffectiveRegion(clusterName);
     const familyFilter = families && families.length > 0 ? families : this.DEFAULT_GPU_FAMILIES;
 
     console.log(`Refreshing instance types for cluster: ${clusterName}, region: ${currentRegion}`);
@@ -151,7 +151,7 @@ class AWSInstanceTypeManager {
 
     console.log(`Subnet ${subnetId} is in availability zone: ${availabilityZone}`);
 
-    const currentRegion = getCurrentRegion();
+    const currentRegion = getEffectiveRegion(clusterName);
 
     try {
       const instanceTypes = await this._fetchInstanceTypesByAZ(availabilityZone, currentRegion, subnetId);
@@ -211,7 +211,7 @@ class AWSInstanceTypeManager {
    * @returns {Object} { success, data?, error? }
    */
   static async getInstanceTypesByAZ(availabilityZone, region = null) {
-    const currentRegion = region || getCurrentRegion();
+    const currentRegion = region || getEffectiveRegion();
 
     try {
       const instanceTypes = await this._fetchInstanceTypesByAZ(availabilityZone, currentRegion);

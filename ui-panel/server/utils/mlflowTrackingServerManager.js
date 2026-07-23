@@ -1,7 +1,8 @@
 const { execSync } = require('child_process');
 const fs = require('fs-extra');
 const path = require('path');
-const { getCurrentRegion, getCurrentAccountId } = require('./awsHelpers');
+const { getCurrentAccountId } = require('./awsHelpers');
+const { getEffectiveRegion } = require('./regionResolver');
 
 class MLflowTrackingServerManager {
   constructor() {
@@ -48,8 +49,8 @@ class MLflowTrackingServerManager {
     try {
       console.log(`Creating MLflow tracking server: ${serverName}`);
       
-      // 获取所有必需参数 - 使用统一的awsHelpers
-      const region = await getCurrentRegion();
+      // 获取所有必需参数 - 运维路径:优先活跃集群 region,主机兜底
+      const region = getEffectiveRegion();
       const s3Bucket = getCurrentS3Bucket();
       const iamRoleArn = await getDevAdminRoleArn();
       
@@ -128,7 +129,7 @@ class MLflowTrackingServerManager {
   async getTrackingServerStatus(serverName, region = null) {
     try {
       if (!region) {
-        region = await getCurrentRegion();
+        region = getEffectiveRegion();
       }
       
       const cmd = `aws sagemaker describe-mlflow-tracking-server --tracking-server-name ${serverName} --region ${region}`;
@@ -148,7 +149,7 @@ class MLflowTrackingServerManager {
   async listTrackingServers(region = null) {
     try {
       if (!region) {
-        region = await getCurrentRegion();
+        region = getEffectiveRegion();
       }
       
       const cmd = `aws sagemaker list-mlflow-tracking-servers --region ${region}`;
@@ -165,7 +166,7 @@ class MLflowTrackingServerManager {
   async deleteTrackingServer(serverName, region = null) {
     try {
       if (!region) {
-        region = await getCurrentRegion();
+        region = getEffectiveRegion();
       }
       
       const cmd = `aws sagemaker delete-mlflow-tracking-server --tracking-server-name ${serverName} --region ${region}`;
@@ -207,7 +208,7 @@ class MLflowTrackingServerManager {
       console.log('Configuring MLflow authentication...');
       
       const activeCluster = this.getActiveCluster();
-      const region = getCurrentRegion();
+      const region = getEffectiveRegion(activeCluster);
       const accountId = getCurrentAccountId();
       const eksClusterName = await this.getEnvVar('EKS_CLUSTER_NAME', activeCluster);
       const clusterTag = await this.getEnvVar('CLUSTER_TAG', activeCluster);

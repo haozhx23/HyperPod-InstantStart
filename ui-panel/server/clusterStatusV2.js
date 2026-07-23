@@ -153,7 +153,6 @@ class ClusterStatusV2 {
     });
   }
 
-
   /**
    * 检查缓存是否有效
    */
@@ -224,7 +223,9 @@ class ClusterStatusV2 {
       }
 
       const hpClusterName = clusterInfo.hyperPodCluster.ClusterName;
-      const region = await AWSHelpers.getCurrentRegion();
+      // 运维路径:优先使用该(活跃)集群自身的 region,主机 region 仅作兜底
+      const { getEffectiveRegion } = require('./utils/regionResolver');
+      const region = clusterInfo.region || getEffectiveRegion(activeClusterName);
       
       // 获取最新的 HyperPod 集群状态
       const hpData = await AWSHelpers.describeHyperPodCluster(hpClusterName, region);
@@ -373,7 +374,6 @@ const handleClearCache = (req, res) => {
   });
 };
 
-
 // 获取缓存状态的路由处理函数
 const handleCacheStatus = (req, res) => {
   const isValid = clusterStatusV2.isCacheValid();
@@ -390,5 +390,5 @@ module.exports = {
   clusterStatusV2,
   handleClusterStatusV2,
   handleClearCache,
-  handleCacheStatus,
+  handleCacheStatus
 };

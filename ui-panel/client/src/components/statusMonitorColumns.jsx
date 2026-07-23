@@ -36,7 +36,7 @@ const { Option } = Select;
  *   - raw k8s objects   → namespace lives at metadata.namespace  (pass raw=true)
  *   - server-processed  → namespace is a top-level `namespace`    (pass raw=false)
  *
- * Rendered as a small blue Tag matching the other tag-style columns in these tables, and
+ * Rendered as a small blue Tag matching the other resource columns, and
  * given a fixed width so it plays well with the table-layout:fixed mode enabled by
  * each table's scroll.x.
  */
@@ -336,60 +336,6 @@ export const buildServiceColumns = ({
         </Popconfirm>
       );
     }
-  },
-];
-
-/**
- * Columns for the "Inference Endpoints (ALB)" table.
- *
- * Rows are the lightweight ingress objects assembled server-side in
- * appStatusV2.getIngresses() — top-level { name, namespace, scheme, host, url, ... },
- * NOT raw k8s objects. The Access URL is copyable so users can paste straight into curl.
- */
-export const buildIngressColumns = () => [
-  {
-    title: 'Name',
-    dataIndex: 'name',
-    key: 'name',
-    width: 280,
-    render: (text) => (
-      <Space>
-        <ThunderboltOutlined />
-        <span style={{ fontFamily: 'monospace', fontSize: '12px' }}>{text}</span>
-      </Space>
-    ),
-  },
-  {
-    title: 'Namespace',
-    dataIndex: 'namespace',
-    key: 'namespace',
-    width: 160,
-    render: (ns) => <Tag color="blue">{ns}</Tag>,
-  },
-  {
-    title: 'Scheme',
-    dataIndex: 'scheme',
-    key: 'scheme',
-    width: 180,
-    render: (scheme) =>
-      scheme === 'internet-facing' ? (
-        <Tag icon={<GlobalOutlined />} color="green">internet-facing</Tag>
-      ) : (
-        <Tooltip title="Internal ALB — accessible only from within the VPC">
-          <Tag icon={<LockOutlined />} color="orange">internal (VPC only)</Tag>
-        </Tooltip>
-      ),
-  },
-  {
-    title: 'Access URL (curl)',
-    dataIndex: 'url',
-    key: 'url',
-    render: (url) =>
-      url ? (
-        <Text code copyable={{ text: url }} style={{ fontSize: '12px' }}>{url}</Text>
-      ) : (
-        <Text type="secondary">Pending...</Text>
-      ),
   },
 ];
 

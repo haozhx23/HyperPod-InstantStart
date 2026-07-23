@@ -24,6 +24,7 @@ const router = express.Router();
 const AWSHelpers = require('../utils/awsHelpers');
 const NetworkManager = require('../utils/networkManager');
 const AWSInstanceTypeManager = require('../utils/awsInstanceTypeManager');
+const { getEffectiveRegion } = require('../utils/regionResolver');
 
 // Injected: the shared ClusterManager singleton owned by index.js.
 let clusterManager = null;
@@ -42,6 +43,25 @@ router.get('/aws/current-region', async (req, res) => {
     });
   } catch (error) {
     console.error('Failed to get current AWS region:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// 获取"活跃集群的 region"(运维路径主来源;无活跃集群时回退主机 region)
+// 与 /aws/current-region 的区别:current-region 永远是本机 region(创建默认值),
+// active-region 优先返回当前活跃集群的 region,便于跨 region 运维。
+router.get('/aws/active-region', async (req, res) => {
+  try {
+    const region = getEffectiveRegion();
+    res.json({
+      success: true,
+      region
+    });
+  } catch (error) {
+    console.error('Failed to get active cluster region:', error);
     res.status(500).json({
       success: false,
       error: error.message

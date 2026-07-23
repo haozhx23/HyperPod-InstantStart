@@ -13,7 +13,7 @@ const router = express.Router();
 router.get('/cluster/cluster-available-instance', async (req, res) => {
   try {
     const { execSync } = require('child_process');
-    const AWSHelpers = require('../utils/awsHelpers');
+    const { getEffectiveRegion } = require('../utils/regionResolver');
 
     console.log('Fetching cluster available instance types...');
 
@@ -28,8 +28,8 @@ router.get('/cluster/cluster-available-instance', async (req, res) => {
       }
     };
 
-    // 获取当前区域
-    const region = AWSHelpers.getCurrentRegion();
+    // 获取区域(运维路径:优先活跃集群 region,主机兜底)
+    const region = getEffectiveRegion();
 
     // 1. 获取 HyperPod 实例类型
     try {
