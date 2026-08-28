@@ -4,8 +4,8 @@
   },
   "hyperpodHelmChart": {
     "enabled": true,
-    "cliVersion": "v3.8.0",
+    "cliVersion": "v3.9.0",
     "efaDevicePluginImageTag": ""
   },
-  "kuberayOperatorChartVersion": "1.6.1"
+  "kuberayOperatorChartVersion": "1.6.2"
 }

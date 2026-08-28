@@ -164,7 +164,7 @@ const DependencyConfigButton = ({ clusterTag, currentCluster }) => {
     }
   };
 
-  const buttonProps = getDependencyButtonProps(dependenciesStatus);
+  const buttonProps = getDependencyButtonProps(dependenciesStatus, currentCluster);
 
   return (
     <Button
@@ -173,6 +173,7 @@ const DependencyConfigButton = ({ clusterTag, currentCluster }) => {
       disabled={buttonProps.disabled}
       onClick={configureDependenciesHandler}
       icon={buttonProps.icon}
+      title={buttonProps.title}
     >
       {isConfiguring ? 'Launching...' : buttonProps.text}
     </Button>

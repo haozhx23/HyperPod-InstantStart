@@ -106,15 +106,29 @@ echo "=== Helm repositories setup completed ==="`;
   static async cloneHyperPodCLI(clusterConfigDir) {
     console.log('Cloning SageMaker HyperPod CLI repository...');
 
-    const cliVersion = dependencyConfig.load().hyperpodHelmChart.cliVersion;
-    const branchFlag = cliVersion ? `--branch ${cliVersion} --depth 1` : '';
+    const cliVersion = dependencyConfig.requireVersion(
+      dependencyConfig.load().hyperpodHelmChart.cliVersion,
+      'hyperpodHelmChart.cliVersion'
+    );
 
     const cloneCmd = `cd ${clusterConfigDir} &&
-if [ ! -d "./sagemaker-hyperpod-cli" ]; then
-  echo "Cloning SageMaker HyperPod CLI repository (version: ${cliVersion || 'latest main'})..."
-  git clone ${branchFlag} https://github.com/aws/sagemaker-hyperpod-cli.git
+TARGET_VERSION="${cliVersion}" &&
+REPO="./sagemaker-hyperpod-cli" &&
+if [ -d "$REPO/.git" ]; then
+  CURRENT_VERSION=$(git -C "$REPO" describe --tags --exact-match 2>/dev/null || true)
+  if [ "$CURRENT_VERSION" != "$TARGET_VERSION" ]; then
+    echo "Replacing SageMaker HyperPod CLI repository ($CURRENT_VERSION -> $TARGET_VERSION)..."
+    rm -rf "$REPO"
+  fi
+elif [ -e "$REPO" ]; then
+  echo "Replacing invalid SageMaker HyperPod CLI directory..."
+  rm -rf "$REPO"
+fi &&
+if [ ! -d "$REPO/.git" ]; then
+  echo "Cloning SageMaker HyperPod CLI repository (version: $TARGET_VERSION)..."
+  git clone --branch "$TARGET_VERSION" --depth 1 https://github.com/aws/sagemaker-hyperpod-cli.git "$REPO"
 else
-  echo "SageMaker HyperPod CLI repository already exists, skipping clone..."
+  echo "SageMaker HyperPod CLI repository is already at $TARGET_VERSION."
 fi`;
 
     await this.executeNonBlocking(cloneCmd);

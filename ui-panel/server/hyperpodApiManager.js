@@ -24,7 +24,10 @@ const HyperPodDependencyManager = require('./utils/hyperPodDependencyManager');
 const MetadataUtils = require('./utils/metadataUtils');
 const SubnetManager = require('./utils/subnetManager');
 const NetworkManager = require('./utils/networkManager');
-const { cleanInstanceGroupForUpdate } = require('./utils/instanceGroupUtils');
+const {
+  cleanInstanceGroupForUpdate,
+  isEfaOnlySupportedInstanceType
+} = require('./utils/instanceGroupUtils');
 
 // 常量
 const MANAGED_CLUSTERS_DIR = path.join(__dirname, '../managed_clusters_info');
@@ -544,6 +547,8 @@ router.put('/hyperpod/instances/:name/scale', async (req, res) => {
  * POST /api/cluster/hyperpod/add-instance-group
  */
 router.post('/hyperpod/add-instance-group', async (req, res) => {
+  let tempConfigPath;
+
   try {
     const { userConfig } = req.body;
     const activeClusterName = clusterManager.getActiveCluster();
@@ -561,6 +566,12 @@ router.post('/hyperpod/add-instance-group', async (req, res) => {
 
     if (!clusterInfo.hyperPodCluster) {
       return res.status(400).json({ error: 'No HyperPod cluster found' });
+    }
+
+    if (userConfig.efaOnly && !isEfaOnlySupportedInstanceType(userConfig.instanceType)) {
+      return res.status(400).json({
+        error: `EFA-only network interface is not supported for ${userConfig.instanceType}. Disable EFA-only and try again.`
+      });
     }
 
     const region = clusterInfo.region;
@@ -638,32 +649,27 @@ router.post('/hyperpod/add-instance-group', async (req, res) => {
       newInstanceGroup.TrainingPlanArn = userConfig.trainingPlanArn;
     }
 
-    // EFA-only 网络接口（创建时定死、不可变；仅多网卡 EFA 机型支持，非法机型由 AWS 校验拒绝）
+    // EFA-only 配置用于新建节点；支持范围已在请求入口按共享白名单校验。
     if (userConfig.efaOnly) {
       newInstanceGroup.NetworkInterface = { InterfaceType: 'efa-only' };
     }
 
-    // 构建完整的实例组配置
+    // UpdateCluster.InstanceGroups 是局部 upsert，只提交本次新增的 IG。
+    // 重发无关 IG 会扩大变更面，并可能因遗漏旧组字段而造成意外更新。
     const instanceGroupConfig = {
       ClusterName: hyperPodCluster.ClusterName,
-      InstanceGroups: [
-        ...clusterData.InstanceGroups.map(cleanInstanceGroupForUpdate),
-        newInstanceGroup
-      ]
+      InstanceGroups: [newInstanceGroup]
     };
 
     console.log('Generated instance group config:', JSON.stringify(instanceGroupConfig, null, 2));
 
     // 创建临时配置文件
-    const tempConfigPath = path.join('/tmp', `instance-group-config-${Date.now()}.json`);
+    tempConfigPath = path.join('/tmp', `instance-group-config-${Date.now()}.json`);
     fs.writeFileSync(tempConfigPath, JSON.stringify(instanceGroupConfig, null, 2));
 
     // 调用 AWS CLI 添加实例组
     const addCmd = `aws sagemaker update-cluster --cli-input-json file://${tempConfigPath} --region ${region}`;
     const addResult = await execAsync(addCmd);
-
-    // 清理临时文件
-    fs.unlinkSync(tempConfigPath);
 
     console.log('Instance group addition result:', addResult.stdout);
 
@@ -676,6 +682,14 @@ router.post('/hyperpod/add-instance-group', async (req, res) => {
   } catch (error) {
     console.error('Error adding instance group:', error);
     res.status(500).json({ error: error.message });
+  } finally {
+    if (tempConfigPath && fs.existsSync(tempConfigPath)) {
+      try {
+        fs.unlinkSync(tempConfigPath);
+      } catch (cleanupError) {
+        console.warn(`Failed to clean up temporary instance group config ${tempConfigPath}:`, cleanupError.message);
+      }
+    }
   }
 });
 

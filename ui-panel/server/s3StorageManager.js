@@ -537,7 +537,16 @@ class S3StorageManager {
   // 生成增强的模型/数据集下载Job
   async generateEnhancedDownloadJob(config) {
     try {
-      const { modelId, resources, s3Storage, hfToken, instanceType, repoType, storageType = 's3' } = config;
+      const {
+        modelId,
+        resources,
+        s3Storage,
+        hfToken,
+        instanceType,
+        repoType = 'model',
+        storageType = 's3',
+        maxWorkers = 8
+      } = config;
 
       // 生成短的模型标签，限制长度
       let modelTag = modelId.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
@@ -591,7 +600,9 @@ class S3StorageManager {
         values: {
           JOB_NAME: finalJobName,
           MODEL_ID: modelId,
-          REPO_TYPE_ARG: repoType === 'dataset' ? '--repo-type dataset ' : '',
+          MODEL_DIR_NAME: S3StorageManager.generateModelTag(modelId),
+          REPO_TYPE: repoType,
+          MAX_WORKERS: maxWorkers,
           PVC_NAME: s3Storage,
         },
         patches: extraPatches,
@@ -619,6 +630,18 @@ class S3StorageManager {
       .replace(/^-|-$/g, '') || 'model';
   }
 
+  static removeHfTokenFromJob(yamlContent) {
+    const document = yaml.parseDocument(yamlContent);
+    const envPath = ['spec', 'template', 'spec', 'containers', 0, 'env'];
+    const env = document.getIn(envPath, true);
+
+    if (yaml.isSeq(env)) {
+      env.items = env.items.filter(item => item.get('name') !== 'HF_TOKEN');
+    }
+
+    return document.toString({ lineWidth: 0 });
+  }
+
   /**
    * 应用增强的模型下载 Job
    * 生成 YAML、保存文件、执行 kubectl apply
@@ -631,7 +654,16 @@ class S3StorageManager {
    * @returns {Promise<Object>} { success, jobName, deploymentFile, error }
    */
   async applyEnhancedDownloadJob(config) {
-    const { modelId, hfToken, resources, s3Storage, instanceType, repoType, storageType: clientStorageType } = config;
+    const {
+      modelId,
+      hfToken,
+      resources,
+      s3Storage,
+      instanceType,
+      repoType,
+      maxWorkers = 8,
+      storageType: clientStorageType
+    } = config;
 
     try {
       const resourceLabel = repoType === 'dataset' ? 'dataset' : 'model';
@@ -639,6 +671,7 @@ class S3StorageManager {
       console.log(`📊 Resources: CPU=${resources?.cpu}, Memory=${resources?.memory}GB`);
       console.log(`💾 Storage: ${s3Storage}`);
       console.log(`📦 Repo Type: ${repoType || 'model'}`);
+      console.log(`⚡ Parallel files: ${maxWorkers}`);
       if (instanceType) console.log(`🖥️ Instance Type: ${instanceType}`);
 
       // 判断存储类型（优先使用前端传入的类型）
@@ -653,7 +686,8 @@ class S3StorageManager {
         s3Storage,
         instanceType,
         repoType,
-        storageType
+        storageType,
+        maxWorkers
       });
 
       if (!jobResult.success) {
@@ -670,13 +704,16 @@ class S3StorageManager {
       const modelTag = modelId.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
       const timestamp = new Date().toISOString().replace(/[-:.T]/g, '').slice(0, 14);
       const deploymentFile = path.join(deploymentsDir, `hf-download-${modelTag}-${timestamp}.yaml`);
-      await fs.writeFile(deploymentFile, jobResult.yamlContent);
+      const persistedYaml = hfToken
+        ? S3StorageManager.removeHfTokenFromJob(jobResult.yamlContent)
+        : jobResult.yamlContent;
+      await fs.writeFile(deploymentFile, persistedYaml);
 
       console.log(`📁 Saved deployment template: ${deploymentFile}`);
 
       // 应用Job到Kubernetes
       const tempFile = `/tmp/enhanced-download-job-${Date.now()}.yaml`;
-      fs.writeFileSync(tempFile, jobResult.yamlContent);
+      fs.writeFileSync(tempFile, jobResult.yamlContent, { mode: 0o600 });
 
       try {
         const { stdout, stderr } = await execAsync(`kubectl apply -f ${tempFile}`);

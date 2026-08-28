@@ -71,18 +71,28 @@ router.delete('/s3-storages/:name', async (req, res) => {
 router.post('/download-model-enhanced', async (req, res) => {
   const { modelId } = req.body;
 
-  if (!modelId) {
+  if (typeof modelId !== 'string' || !modelId.trim()) {
     return res.json({ success: false, error: 'ID is required' });
   }
 
-  const result = await s3StorageManager.applyEnhancedDownloadJob(req.body);
+  const maxWorkers = Number(req.body.maxWorkers ?? 8);
+  if (!Number.isInteger(maxWorkers) || maxWorkers < 1 || maxWorkers > 32) {
+    return res.json({ success: false, error: 'maxWorkers must be an integer between 1 and 32' });
+  }
+
+  const downloadConfig = {
+    ...req.body,
+    modelId: modelId.trim(),
+    maxWorkers
+  };
+  const result = await s3StorageManager.applyEnhancedDownloadJob(downloadConfig);
 
   // 广播结果
   broadcast({
     type: 'model_download',
     status: result.success ? 'success' : 'error',
     message: result.success
-      ? `Download started: ${modelId}`
+      ? `Download started: ${downloadConfig.modelId}`
       : `Failed to start download: ${result.error}`,
     jobName: result.jobName
   });

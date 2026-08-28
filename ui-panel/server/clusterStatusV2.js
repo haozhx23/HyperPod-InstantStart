@@ -153,6 +153,7 @@ class ClusterStatusV2 {
     });
   }
 
+
   /**
    * 检查缓存是否有效
    */
@@ -374,6 +375,7 @@ const handleClearCache = (req, res) => {
   });
 };
 
+
 // 获取缓存状态的路由处理函数
 const handleCacheStatus = (req, res) => {
   const isValid = clusterStatusV2.isCacheValid();
@@ -390,5 +392,5 @@ module.exports = {
   clusterStatusV2,
   handleClusterStatusV2,
   handleClearCache,
-  handleCacheStatus
+  handleCacheStatus,
 };

@@ -35,5 +35,17 @@
     "skill://.kiro/skills/**/SKILL.md"
   ],
   "keyboardShortcut": "ctrl+shift+h",
-  "welcomeMessage": "HyperPod InstantStart agent ready. What would you like to do?"
+  "welcomeMessage": "HyperPod InstantStart agent ready. What would you like to do?",
+  "permissions": {
+    "rules": [
+      {
+        "capability": "mcp",
+        "match": [
+          "*/*",
+          "builtin/*"
+        ],
+        "effect": "allow"
+      }
+    ]
+  }
 }

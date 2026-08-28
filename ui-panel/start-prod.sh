@@ -140,6 +140,7 @@ PUBLIC_IP=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254
 echo "Starting container..."
 docker run -d \
   --name $CONTAINER_NAME \
+  --restart unless-stopped \
   --network host \
   --user 1000:1000 \
   -v $(pwd)/config:/app/config \

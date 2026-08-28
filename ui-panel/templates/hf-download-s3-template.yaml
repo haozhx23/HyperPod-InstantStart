@@ -3,9 +3,9 @@ kind: Job
 metadata:
   name: "hf-download-job-${JOB_NAME}"
 spec:
-  ttlSecondsAfterFinished: 60
+  ttlSecondsAfterFinished: 3600
   backoffLimit: 3
-  activeDeadlineSeconds: 1800
+  activeDeadlineSeconds: 86400
   template:
     metadata:
       labels:
@@ -20,15 +20,23 @@ spec:
           args:
             - -c
             - |
+              set -euo pipefail
               echo "Installing HF CLI ..."
-              pip install -U "huggingface_hub[cli,hf_transfer]"
+              python -m pip install --no-cache-dir huggingface_hub==1.26.0 hf_xet==1.5.2
               echo "Downloading from HuggingFace..."
-              #  --token=$HF_TOKEN
-              hf download ${REPO_TYPE_ARG}${MODEL_ID} --local-dir /nvme/${MODEL_ID} --cache-dir /root/.cache/${MODEL_ID}
+              STAGING_DIR="/nvme/hf-downloads/${MODEL_DIR_NAME}"
+              DEST_DIR="/s3/${MODEL_DIR_NAME}"
+              mkdir -p "$STAGING_DIR"
+              download_args=("$MODEL_ID" --local-dir "$STAGING_DIR" --cache-dir /root/.cache/huggingface --max-workers "$MAX_WORKERS")
+              if [[ "$REPO_TYPE" == "dataset" ]]; then
+                download_args=(--repo-type dataset "${download_args[@]}")
+              fi
+              hf download "${download_args[@]}"
               echo "Downloading Complete ..."
-              rm -rf /nvme/${MODEL_ID}/.cache
-              mkdir -p /s3/$(echo ${MODEL_ID} | tr '/' '-')
-              cp -r /nvme/${MODEL_ID}/* /s3/$(echo ${MODEL_ID} | tr '/' '-')/
+              rm -rf "$STAGING_DIR/.cache"
+              mkdir -p "$DEST_DIR"
+              cp -r "$STAGING_DIR"/. "$DEST_DIR"/
+              rm -rf "$STAGING_DIR"
               echo "Transfer to S3 Complete ..."
           volumeMounts:
             - name: persistent-storage-s3
@@ -43,10 +51,18 @@ spec:
           env:
             - name: HF_HOME
               value: "/root/.cache/huggingface"
-            - name: HF_HUB_ENABLE_HF_TRANSFER
+            - name: HF_XET_HIGH_PERFORMANCE
               value: "1"
             - name: HF_HUB_DOWNLOAD_TIMEOUT
-              value: "60"
+              value: "120"
+            - name: MODEL_ID
+              value: "${MODEL_ID}"
+            - name: MODEL_DIR_NAME
+              value: "${MODEL_DIR_NAME}"
+            - name: REPO_TYPE
+              value: "${REPO_TYPE}"
+            - name: MAX_WORKERS
+              value: "${MAX_WORKERS}"
       volumes:
         - name: persistent-storage-s3
           persistentVolumeClaim:

@@ -5,13 +5,17 @@
  * 使用白名单方式，只保留 update-cluster API 允许的字段。
  */
 
+const { instanceTypes: efaOnlyInstanceTypes = [] } = require('../../config/efa-only-instance-types.json');
+
+const EFA_ONLY_INSTANCE_TYPES = new Set(efaOnlyInstanceTypes);
+
 const ALLOWED_INSTANCE_GROUP_FIELDS = [
   'InstanceCount', 'InstanceGroupName', 'InstanceType', 'LifeCycleConfig',
   'ExecutionRole', 'ThreadsPerCore', 'InstanceStorageConfigs',
   'OnStartDeepHealthChecks', 'TrainingPlanArn', 'OverrideVpcConfig',
   'ScheduledUpdateConfig', 'ImageId', 'CapacityRequirements',
-  // NetworkInterface (efa-only) 在创建时定死、不可变。必须保留，否则每次 update-cluster
-  // 重发存量组时会丢掉其网卡配置，导致 efa-only 组在不相关更新时被 AWS 拒绝/重置。
+  // 更新已有 IG 时必须保留其 NetworkInterface desired configuration。
+  // 修改该字段不会原地转换运行节点的 ENI，实际生效仍需重建节点和 customer ENI。
   'NetworkInterface'
 ];
 
@@ -35,4 +39,12 @@ function cleanInstanceGroupForUpdate(instanceGroup) {
   return cleaned;
 }
 
-module.exports = { cleanInstanceGroupForUpdate, ALLOWED_INSTANCE_GROUP_FIELDS };
+function isEfaOnlySupportedInstanceType(instanceType) {
+  return typeof instanceType === 'string' && EFA_ONLY_INSTANCE_TYPES.has(instanceType);
+}
+
+module.exports = {
+  cleanInstanceGroupForUpdate,
+  isEfaOnlySupportedInstanceType,
+  ALLOWED_INSTANCE_GROUP_FIELDS
+};

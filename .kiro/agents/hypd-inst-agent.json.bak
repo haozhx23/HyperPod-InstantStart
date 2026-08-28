@@ -1,0 +1,29 @@
+{
+  "name": "hypd-inst-agent",
+  "description": "HyperPod InstantStart management agent for cluster operations, model deployment, and inference",
+  "mcpServers": {
+    "hypd-inst": {
+      "command": "docker",
+      "args": ["exec", "-i", "ui-panel-prod", "python3", "/app/mcp-server/server.py"],
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    },
+    "mui-mcp": {
+      "command": "npx",
+      "args": ["-y", "@mui/mcp@latest"]
+    },
+    "aws-mcp": {
+      "command": "uvx",
+      "args": ["mcp-proxy-for-aws@latest", "https://aws-mcp.us-east-1.api.aws/mcp"]
+    }
+  },
+  "tools": ["*"],
+  "allowedTools": ["@builtin", "@*/*"],
+  "resources": [
+    "file://.kiro/steering/*.md",
+    "skill://.kiro/skills/**/SKILL.md"
+  ],
+  "keyboardShortcut": "ctrl+shift+h",
+  "welcomeMessage": "HyperPod InstantStart agent ready. What would you like to do?"
+}

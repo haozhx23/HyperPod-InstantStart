@@ -18,7 +18,14 @@ import { SettingOutlined, CheckCircleOutlined, ReloadOutlined } from '@ant-desig
 
 const { Text } = Typography;
 
+const isImportedWithHyperPod = (cluster) =>
+  cluster?.type === 'imported' && !!(cluster?.hyperPodCluster || cluster?.hasHyperPod);
+
 export const getDependencyStatusDisplay = (dependenciesStatus, cluster) => {
+  if (isImportedWithHyperPod(cluster)) {
+    return <Tag>N/A</Tag>;
+  }
+
   if (!dependenciesStatus) {
     return <Text type="secondary">Loading...</Text>;
   }
@@ -27,7 +34,7 @@ export const getDependencyStatusDisplay = (dependenciesStatus, cluster) => {
   const isImported = cluster?.type === 'imported';
 
   if (isImported) {
-    // 导入的集群：显示实际配置状态（不再区分有无HyperPod）
+    // 导入的 raw EKS：显示实际配置状态；已有 HyperPod 的导入集群在上方显示 N/A。
     if (dependenciesStatus?.configured) {
       return <Tag color="green">Configured</Tag>;
     } else {
@@ -45,8 +52,16 @@ export const getDependencyStatusDisplay = (dependenciesStatus, cluster) => {
   }
 };
 
-export const getDependencyButtonProps = (dependenciesStatus) => {
-  // 导入的集群也可以配置依赖（移除了原有的禁用逻辑）
+export const getDependencyButtonProps = (dependenciesStatus, cluster) => {
+  if (isImportedWithHyperPod(cluster)) {
+    return {
+      text: 'Configure Dependencies',
+      disabled: true,
+      type: 'default',
+      icon: <SettingOutlined />,
+      title: 'Not required for imported EKS + HyperPod clusters'
+    };
+  }
 
   if (!dependenciesStatus) {
     return {
@@ -54,6 +69,15 @@ export const getDependencyButtonProps = (dependenciesStatus) => {
       disabled: true,
       type: 'default',
       icon: <SettingOutlined />
+    };
+  }
+
+  if (dependenciesStatus.configured) {
+    return {
+      text: 'Dependencies Configured',
+      disabled: true,
+      type: 'default',
+      icon: <CheckCircleOutlined />
     };
   }
 

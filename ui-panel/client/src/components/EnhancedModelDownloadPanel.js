@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { Form, Input, Button, Space, Collapse, message, Select, InputNumber, Row, Col, Segmented } from 'antd';
+import { Form, Input, Button, Space, Collapse, message, Select, InputNumber, Row, Col, Segmented, Alert } from 'antd';
 import { DownloadOutlined, KeyOutlined, RobotOutlined, SettingOutlined, ReloadOutlined, DatabaseOutlined } from '@ant-design/icons';
 import operationRefreshManager from '../hooks/useOperationRefresh';
 import resourceEventBus from '../utils/resourceEventBus';
@@ -15,6 +15,8 @@ const EnhancedModelDownloadPanel = ({ onStorageChange }) => {
   const [instanceTypes, setInstanceTypes] = useState({ hyperpod: [], karpenterHyperPod: [], eksNodeGroup: [], karpenter: [] });
   const [instanceTypesLoading, setInstanceTypesLoading] = useState(false);
   const [repoType, setRepoType] = useState('model'); // 'model' or 'dataset'
+  const selectedStorage = Form.useWatch('s3Storage', form);
+  const usesS3Storage = selectedStorage && !fsxStorages.some(storage => storage.pvcName === selectedStorage);
 
   // 获取可用的S3存储配置
   const fetchStorages = async () => {
@@ -130,7 +132,8 @@ const EnhancedModelDownloadPanel = ({ onStorageChange }) => {
           },
           s3Storage: values.s3Storage || 's3-claim',
           storageType: fsxStorages.some(s => s.pvcName === values.s3Storage) ? 'fsx' : 's3',
-          instanceType: values.instanceType || null
+          instanceType: values.instanceType || null,
+          maxWorkers: values.maxWorkers
         }),
       });
 
@@ -175,6 +178,7 @@ const EnhancedModelDownloadPanel = ({ onStorageChange }) => {
       initialValues={{
         cpu: -1,
         memory: -1,
+        maxWorkers: 8,
         s3Storage: 's3-claim'
       }}
     >
@@ -244,6 +248,16 @@ const EnhancedModelDownloadPanel = ({ onStorageChange }) => {
         </div>
       </Form.Item>
 
+      {usesS3Storage && (
+        <Alert
+          type="info"
+          showIcon
+          message="S3 downloads use local NVMe staging"
+          description="The selected node needs enough local NVMe capacity for the complete repository before it is copied to S3."
+          style={{ marginBottom: 12 }}
+        />
+      )}
+
       {/* 高级配置折叠 */}
       <Collapse size="small" style={{ marginBottom: 16 }}>
         <Panel
@@ -270,14 +284,24 @@ const EnhancedModelDownloadPanel = ({ onStorageChange }) => {
 
           {/* 资源配置 */}
           <Row gutter={16}>
-            <Col span={12}>
+            <Col xs={24} sm={8}>
               <Form.Item name="cpu" label="CPU Cores">
                 <InputNumber min={-1} max={32} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col xs={24} sm={8}>
               <Form.Item name="memory" label="Memory (GB)">
                 <InputNumber min={-1} max={128} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={8}>
+              <Form.Item
+                name="maxWorkers"
+                label="Parallel Files"
+                tooltip="Maximum number of files downloaded concurrently"
+                rules={[{ required: true, message: 'Please set parallel files' }]}
+              >
+                <InputNumber min={1} max={32} precision={0} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
           </Row>

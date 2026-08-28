@@ -29,7 +29,7 @@ const {
 const { 
   handleClusterStatusV2, 
   handleClearCache, 
-  handleCacheStatus 
+  handleCacheStatus,
 } = require('./clusterStatusV2');
 
 // 引入应用状态V2模块
@@ -249,6 +249,7 @@ app.get('/api/cluster-status', handleClusterStatusV2);
 // 集群状态缓存管理API
 app.post('/api/cluster-status/clear-cache', handleClearCache);
 app.get('/api/cluster-status/cache-status', handleCacheStatus);
+
 
 // 统一日志流管理 - 避免冲突
 const unifiedLogStreams = new Map(); // 统一管理所有日志流

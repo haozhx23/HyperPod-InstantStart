@@ -19,7 +19,10 @@ export const selectEffectiveDependenciesStatus = state => {
   const currentCluster = list.find(c => c.clusterTag === activeCluster);
   
   // 如果是导入的集群且有HyperPod，则视为已配置
-  if (currentCluster?.type === 'imported' && currentCluster?.hyperPodCluster) {
+  if (
+    currentCluster?.type === 'imported' &&
+    (currentCluster?.hyperPodCluster || currentCluster?.hasHyperPod)
+  ) {
     return true;
   }
 

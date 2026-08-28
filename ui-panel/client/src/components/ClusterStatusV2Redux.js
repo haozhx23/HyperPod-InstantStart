@@ -27,8 +27,9 @@ import {
   ClusterOutlined,
   WarningOutlined,
   PartitionOutlined,
-  RollbackOutlined
+  RollbackOutlined,
 } from '@ant-design/icons';
+
 
 // Redux imports
 import { refreshClusterData } from '../store/slices/clusterStatusSlice';
@@ -64,6 +65,7 @@ const ClusterStatusV2Redux = () => {
   // 节点操作状态
   const [nodeActionModalVisible, setNodeActionModalVisible] = useState(false);
   const [nodeActionLoading, setNodeActionLoading] = useState(false);
+
 
   // 过滤器状态
   const [filterNodeType, setFilterNodeType] = useState('__all__');
@@ -541,24 +543,28 @@ const ClusterStatusV2Redux = () => {
       title: 'Action',
       key: 'action',
       align: 'center',
-      width: '8%',
+      width: '10%',
       render: (_, record) => {
         const labels = record.labels || {};
         const isHyperPod = labels['sagemaker.amazonaws.com/compute-type'] === 'hyperpod';
-        
-        // 只对 HyperPod 节点显示
-        if (!isHyperPod) return <span style={{ color: '#d9d9d9' }}>-</span>;
-        
-        return (
-          <Tooltip title="Node Operations">
-            <Button 
-              type="text"
-              size="small" 
-              icon={<RollbackOutlined />}
-              onClick={() => handleNodeActionClick(record)}
-            />
-          </Tooltip>
-        );
+
+        const actions = [];
+
+        if (isHyperPod) {
+          actions.push(
+            <Tooltip key="ops" title="Node Operations">
+              <Button
+                type="text"
+                size="small"
+                icon={<RollbackOutlined />}
+                onClick={() => handleNodeActionClick(record)}
+              />
+            </Tooltip>
+          );
+        }
+
+        if (actions.length === 0) return <span style={{ color: '#d9d9d9' }}>-</span>;
+        return <Space size={0}>{actions}</Space>;
       },
     },
   ];
@@ -897,6 +903,7 @@ const ClusterStatusV2Redux = () => {
             showIcon
           />
         </Modal>
+
 
         <style jsx>{`
           .cluster-row-error {

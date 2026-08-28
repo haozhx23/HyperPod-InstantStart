@@ -23,6 +23,59 @@ function initialize(deps) {
   s3StorageManager = deps.s3StorageManager;
 }
 
+async function listPrivateSubnets(execAsync, vpcId, region) {
+  const subnetsCmd = `aws ec2 describe-subnets --region ${region} \
+    --filters "Name=vpc-id,Values=${vpcId}" \
+    --query "Subnets[].{subnetId:SubnetId,availabilityZone:AvailabilityZone,cidrBlock:CidrBlock,availableIpAddressCount:AvailableIpAddressCount,state:State,name:Tags[?Key=='Name']|[0].Value}" \
+    --output json`;
+  const routeTablesCmd = `aws ec2 describe-route-tables --region ${region} \
+    --filters "Name=vpc-id,Values=${vpcId}" \
+    --query "RouteTables[].{associations:Associations[].{subnetId:SubnetId,main:Main},routes:Routes[].{gatewayId:GatewayId,state:State}}" \
+    --output json`;
+
+  const [{ stdout: subnetsStdout }, { stdout: routeTablesStdout }] = await Promise.all([
+    execAsync(subnetsCmd),
+    execAsync(routeTablesCmd)
+  ]);
+
+  const subnets = JSON.parse(subnetsStdout || '[]');
+  const routeTables = JSON.parse(routeTablesStdout || '[]');
+  const routeTableBySubnet = new Map();
+  let mainRouteTable = null;
+
+  for (const routeTable of routeTables) {
+    for (const association of routeTable.associations || []) {
+      if (association.subnetId) {
+        routeTableBySubnet.set(association.subnetId, routeTable);
+      }
+      if (association.main) {
+        mainRouteTable = routeTable;
+      }
+    }
+  }
+
+  const privateSubnets = subnets
+    .filter(subnet => subnet.state === 'available')
+    .filter(subnet => {
+      const routeTable = routeTableBySubnet.get(subnet.subnetId) || mainRouteTable;
+      return !(routeTable?.routes || []).some(route =>
+        route.gatewayId?.startsWith('igw-') && route.state !== 'blackhole'
+      );
+    })
+    .map(subnet => ({
+      ...subnet,
+      name: subnet.name || subnet.subnetId
+    }));
+
+  privateSubnets.sort((a, b) =>
+    (a.availabilityZone || '').localeCompare(b.availabilityZone || '') ||
+    (a.name || '').localeCompare(b.name || '') ||
+    a.subnetId.localeCompare(b.subnetId)
+  );
+
+  return privateSubnets;
+}
+
 // 获取集群信息API
 router.get('/cluster/info', async (req, res) => {
   try {
@@ -178,8 +231,8 @@ router.get('/cluster/subnets', async (req, res) => {
   }
 });
 
-// 轻量接口：列出当前 VPC 内所有 hp-compute-* compute subnet（供 Add Instance Group 下拉复用）
-// 单次 describe-subnets，不做公/私网路由表分类，避免 /subnets 的 N+1 延迟
+// 轻量接口：批量列出当前 VPC 的 private subnet（供 Add Instance Group 按 AZ 自动选择）
+// 保留 computeSubnets 字段兼容旧调用方；privateSubnets 包含不限名称前缀的全部私有子网。
 router.get('/cluster/compute-subnets', async (req, res) => {
   try {
     const { promisify } = require('util');
@@ -201,19 +254,14 @@ router.get('/cluster/compute-subnets', async (req, res) => {
       return res.status(400).json({ success: false, error: 'VPC ID not found in metadata' });
     }
 
-    const cmd = `aws ec2 describe-subnets --region ${region} \
-      --filters "Name=vpc-id,Values=${vpcId}" "Name=tag:Name,Values=hp-compute-*" \
-      --query "Subnets[].{subnetId:SubnetId,availabilityZone:AvailabilityZone,cidrBlock:CidrBlock,name:Tags[?Key=='Name']|[0].Value}" \
-      --output json`;
-    const { stdout } = await execAsync(cmd);
-    const computeSubnets = JSON.parse(stdout || '[]');
-    computeSubnets.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    const privateSubnets = await listPrivateSubnets(execAsync, vpcId, region);
+    const computeSubnets = privateSubnets.filter(subnet => subnet.name.startsWith('hp-compute-'));
 
-    res.json({ success: true, data: { region, vpcId, computeSubnets } });
+    res.json({ success: true, data: { region, vpcId, privateSubnets, computeSubnets } });
   } catch (error) {
-    console.error('Error fetching compute subnets:', error);
+    console.error('Error fetching private subnets:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-module.exports = { router, initialize };
+module.exports = { router, initialize, listPrivateSubnets };
