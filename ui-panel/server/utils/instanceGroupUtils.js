@@ -10,10 +10,10 @@ const { instanceTypes: efaOnlyInstanceTypes = [] } = require('../../config/efa-o
 const EFA_ONLY_INSTANCE_TYPES = new Set(efaOnlyInstanceTypes);
 
 const ALLOWED_INSTANCE_GROUP_FIELDS = [
-  'InstanceCount', 'InstanceGroupName', 'InstanceType', 'LifeCycleConfig',
+  'InstanceCount', 'MinInstanceCount', 'InstanceGroupName', 'InstanceType', 'LifeCycleConfig',
   'ExecutionRole', 'ThreadsPerCore', 'InstanceStorageConfigs',
   'OnStartDeepHealthChecks', 'TrainingPlanArn', 'OverrideVpcConfig',
-  'ScheduledUpdateConfig', 'ImageId', 'CapacityRequirements',
+  'ScheduledUpdateConfig', 'ImageId', 'ImageReleaseVersion', 'CapacityRequirements',
   // 更新已有 IG 时必须保留其 NetworkInterface desired configuration。
   // 修改该字段不会原地转换运行节点的 ENI，实际生效仍需重建节点和 customer ENI。
   'NetworkInterface'
@@ -30,7 +30,25 @@ function cleanInstanceGroupForUpdate(instanceGroup) {
   ALLOWED_INSTANCE_GROUP_FIELDS.forEach(field => {
     if (field === 'InstanceCount') {
       // describe-cluster 返回 TargetCount，update-cluster 需要 InstanceCount
-      cleaned.InstanceCount = instanceGroup.TargetCount;
+      cleaned.InstanceCount = instanceGroup.TargetCount ?? instanceGroup.InstanceCount;
+    } else if (field === 'MinInstanceCount') {
+      // describe-cluster 返回 MinCount，update-cluster 需要 MinInstanceCount
+      const minInstanceCount = instanceGroup.MinCount ?? instanceGroup.MinInstanceCount;
+      if (minInstanceCount !== undefined) {
+        cleaned.MinInstanceCount = minInstanceCount;
+      }
+    } else if (field === 'ImageId') {
+      // 扩缩容必须保留 desired AMI；describe-cluster 不返回同名 ImageId 字段
+      const imageId = instanceGroup.DesiredImageId ?? instanceGroup.ImageId ?? instanceGroup.CurrentImageId;
+      if (imageId !== undefined) {
+        cleaned.ImageId = imageId;
+      }
+    } else if (field === 'ImageReleaseVersion') {
+      const imageReleaseVersion =
+        instanceGroup.DesiredImageReleaseVersion ?? instanceGroup.ImageReleaseVersion;
+      if (imageReleaseVersion !== undefined) {
+        cleaned.ImageReleaseVersion = imageReleaseVersion;
+      }
     } else if (instanceGroup.hasOwnProperty(field)) {
       cleaned[field] = instanceGroup[field];
     }
