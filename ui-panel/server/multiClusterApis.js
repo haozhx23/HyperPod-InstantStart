@@ -1,9 +1,10 @@
 const fs = require('fs-extra');
 const path = require('path');
-const { exec } = require('child_process');
+const { exec } = require('./utils/exec');
 const ClusterManager = require('./clusterManager');
 const MultiClusterLogManager = require('./multiClusterLogManager');
 const { getCurrentIdentity, extractRoleArn } = require('./utils/awsHelpers');
+const { collectInvalid, rejectInvalid } = require('./utils/validateInput');
 
 // 多集群管理API
 class MultiClusterAPIs {
@@ -35,7 +36,14 @@ class MultiClusterAPIs {
   async handleSwitchCluster(req, res) {
     try {
       const { clusterTag } = req.body;
-      
+
+      // clusterTag 是目录名（`getClusterDir()` 是裸 path.join），也会进
+      // `aws eks update-kubeconfig --name`。两条路径都必须在这里挡住。
+      if (clusterTag !== undefined) {
+        const problems = collectInvalid([['clusterTag', clusterTag, 'token', { maxLength: 100 }]]);
+        if (problems.length > 0) return rejectInvalid(res, problems, 'POST /multi-cluster/switch');
+      }
+
       if (!clusterTag) {
         return res.status(400).json({
           success: false,
@@ -169,6 +177,13 @@ class MultiClusterAPIs {
   async handleGetLogs(req, res) {
     try {
       const { step } = req.params;
+
+      // step 会拼进 `path.join(currentDir, `${step}.log`)`（multiClusterLogManager.js:52），
+      // 和 S4 的日志接口是同一种形态：Express 在取 req.params 时会把 %2f 解码成 `/`，
+      // 于是 `..%2f..%2f` 能读到 logs 目录之外的任意 .log 文件。原报告没记这一处。
+      const problems = collectInvalid([['step', step, 'token', { maxLength: 64 }]]);
+      if (problems.length > 0) return rejectInvalid(res, problems, 'GET /cluster/logs/:step');
+
       const offset = parseInt(req.query.offset) || 0;
       const activeCluster = this.clusterManager.getActiveCluster();
       
@@ -264,6 +279,27 @@ class MultiClusterAPIs {
   async handleImportCluster(req, res) {
     try {
       const { eksClusterName, awsRegion, hyperPodClusters, computeSecurityGroup } = req.body;
+
+      // 这里是**整个系统里名字的源头**：eksClusterName 之后会
+      //   1. 进 `aws eks describe-cluster --name ${eksClusterName}`（shell）；
+      //   2. 作为 clusterTag 进 `createClusterDirs()` → `mkdirSync(path.join(...))`（建目录）；
+      //   3. 写进 metadata，成为后续几乎所有 kubectl/aws 命令的插值来源（二阶注入）。
+      // 一处没挡住，后面 121 处插值都跟着不安全，所以这个端点优先级最高。
+      // EKS 集群名上限 100 字符。
+      const importProblems = collectInvalid([
+        ['eksClusterName', eksClusterName, 'token', { maxLength: 100 }],
+        ['awsRegion', awsRegion, 'token', { maxLength: 32 }],
+      ]);
+      // hyperPodClusters 是逗号分隔的名字列表；给了就每一段都要干净
+      if (hyperPodClusters && String(hyperPodClusters).trim()) {
+        String(hyperPodClusters).split(',').forEach((name, i) => {
+          importProblems.push(...collectInvalid([[`hyperPodClusters[${i}]`, name.trim(), 'token', { maxLength: 63 }]]));
+        });
+      }
+      if (computeSecurityGroup && String(computeSecurityGroup).trim()) {
+        importProblems.push(...collectInvalid([['computeSecurityGroup', String(computeSecurityGroup).trim(), 'token', { maxLength: 64 }]]));
+      }
+      if (importProblems.length > 0) return rejectInvalid(res, importProblems, 'POST /cluster/import');
 
       if (!eksClusterName || !awsRegion) {
         return res.status(400).json({
@@ -368,7 +404,14 @@ class MultiClusterAPIs {
   async handleTestConnection(req, res) {
     try {
       const { eksClusterName, awsRegion } = req.body;
-      
+
+      // 与 import 同一条 `aws eks describe-cluster` 路径
+      const problems = collectInvalid([
+        ['eksClusterName', eksClusterName, 'token', { maxLength: 100 }],
+        ['awsRegion', awsRegion, 'token', { maxLength: 32 }],
+      ]);
+      if (problems.length > 0) return rejectInvalid(res, problems, 'POST /cluster/test-connection');
+
       if (!eksClusterName || !awsRegion) {
         return res.status(400).json({
           success: false,
@@ -551,7 +594,11 @@ class MultiClusterAPIs {
   async handleRedetectClusterState(req, res) {
     try {
       const { clusterTag } = req.params;
-      
+
+      // 进 `getClusterDir()`（裸 path.join）与下游 kubectl
+      const problems = collectInvalid([['clusterTag', clusterTag, 'token', { maxLength: 100 }]]);
+      if (problems.length > 0) return rejectInvalid(res, problems, 'POST /cluster/:clusterTag/redetect-state');
+
       if (!clusterTag) {
         return res.status(400).json({
           success: false,

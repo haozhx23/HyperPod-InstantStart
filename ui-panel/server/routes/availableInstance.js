@@ -12,7 +12,7 @@ const router = express.Router();
 
 router.get('/cluster/cluster-available-instance', async (req, res) => {
   try {
-    const { execSync } = require('child_process');
+    const { execSync } = require('../utils/exec');
     const { getEffectiveRegion } = require('../utils/regionResolver');
 
     console.log('Fetching cluster available instance types...');

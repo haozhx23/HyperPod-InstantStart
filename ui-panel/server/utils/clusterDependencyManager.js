@@ -1,4 +1,4 @@
-const { execSync, spawn } = require('child_process');
+const { execSync, spawn } = require('./exec');
 const fs = require('fs');
 const path = require('path');
 const yaml = require('yaml');

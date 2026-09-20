@@ -11,11 +11,11 @@
  */
 
 const express = require('express');
+const { collectInvalid, rejectInvalid, assertSafeToken } = require('./utils/validateInput');
 const router = express.Router();
 const fs = require('fs-extra');
 const path = require('path');
-const { promisify } = require('util');
-const execAsync = promisify(require('child_process').exec);
+const { execAsync } = require('./utils/exec');
 const { renderTemplate } = require('./utils/renderTemplate');
 const {
   formatPythonParams,
@@ -68,6 +68,12 @@ function optimizeErrorMessage(errorMessage) {
  */
 async function deployTrainingYaml(recipeType, jobName, yamlContent) {
   try {
+    // 兜底校验：这两个值拼成临时文件名，再进 `kubectl apply -f`。
+    // 路由边界已经校验过，这里再挡一次是为了覆盖将来新增的调用方——
+    // 抛错而不是退化成默认名，避免把非法输入写到意外的路径上。
+    assertSafeToken(recipeType, 'recipeType', { maxLength: 63 });
+    assertSafeToken(jobName, 'jobName', { maxLength: 63 });
+
     // 确保temp目录存在
     const tempDir = path.join(__dirname, '../temp');
     if (!fs.existsSync(tempDir)) {
@@ -171,6 +177,13 @@ router.post('/launch-torch-training', async (req, res) => {
         success: false,
         error: 'Training job name is required'
       });
+    }
+
+    // trainingJobName 会进临时 YAML 的文件名，随后 `kubectl apply -f ${tempFilePath}`
+    // 过 shell。名字里带 `/` 能跳出 temp 目录，带 shell 元字符能拼出额外命令。
+    {
+      const problems = collectInvalid([['trainingJobName', trainingJobName, 'token', { maxLength: 63 }]]);
+      if (problems.length > 0) return rejectInvalid(res, problems, req.path);
     }
 
     if (!entryPythonScriptPath) {
@@ -331,6 +344,13 @@ router.post('/launch-sagemaker-job', async (req, res) => {
         success: false,
         error: 'Training job name is required'
       });
+    }
+
+    // trainingJobName 会进临时 YAML 的文件名，随后 `kubectl apply -f ${tempFilePath}`
+    // 过 shell。名字里带 `/` 能跳出 temp 目录，带 shell 元字符能拼出额外命令。
+    {
+      const problems = collectInvalid([['trainingJobName', trainingJobName, 'token', { maxLength: 63 }]]);
+      if (problems.length > 0) return rejectInvalid(res, problems, req.path);
     }
 
     if (!smJobDir) {
@@ -506,6 +526,13 @@ router.post('/launch-training', async (req, res) => {
       });
     }
 
+    // trainingJobName 会进临时 YAML 的文件名，随后 `kubectl apply -f ${tempFilePath}`
+    // 过 shell。名字里带 `/` 能跳出 temp 目录，带 shell 元字符能拼出额外命令。
+    {
+      const problems = collectInvalid([['trainingJobName', trainingJobName, 'token', { maxLength: 63 }]]);
+      if (problems.length > 0) return rejectInvalid(res, problems, req.path);
+    }
+
     if (!lmfRecipeRunPath) {
       return res.status(400).json({
         success: false,
@@ -653,6 +680,13 @@ router.post('/launch-msswift-training', async (req, res) => {
         success: false,
         error: 'Training job name is required'
       });
+    }
+
+    // trainingJobName 会进临时 YAML 的文件名，随后 `kubectl apply -f ${tempFilePath}`
+    // 过 shell。名字里带 `/` 能跳出 temp 目录，带 shell 元字符能拼出额外命令。
+    {
+      const problems = collectInvalid([['trainingJobName', trainingJobName, 'token', { maxLength: 63 }]]);
+      if (problems.length > 0) return rejectInvalid(res, problems, req.path);
     }
 
     if (!msswiftRecipeRunPath) {
@@ -805,6 +839,13 @@ router.post('/launch-script-training', async (req, res) => {
       });
     }
 
+    // trainingJobName 会进临时 YAML 的文件名，随后 `kubectl apply -f ${tempFilePath}`
+    // 过 shell。名字里带 `/` 能跳出 temp 目录，带 shell 元字符能拼出额外命令。
+    {
+      const problems = collectInvalid([['trainingJobName', trainingJobName, 'token', { maxLength: 63 }]]);
+      if (problems.length > 0) return rejectInvalid(res, problems, req.path);
+    }
+
     if (!projectPath) {
       return res.status(400).json({
         success: false,
@@ -945,6 +986,14 @@ router.post('/launch-verl-training', async (req, res) => {
       recipeType
     } = req.body;
 
+    // jobName 会进临时 YAML 的文件名并被 `kubectl apply -f ${path}` 使用。
+    // deployTrainingYaml() 内部有 assertSafeToken 兜底，但那会抛成 500；
+    // 在边界挡住才能给出 400，并且不产生任何中间文件。
+    {
+      const problems = collectInvalid([['jobName', jobName, 'token', { maxLength: 63 }]]);
+      if (problems.length > 0) return rejectInvalid(res, problems, req.path);
+    }
+
     console.log('VERL training launch request parsed:', {
       jobName,
       instanceType,
@@ -1049,6 +1098,14 @@ router.post('/launch-hyperpodrun-job', async (req, res) => {
       envVars = [],
     } = req.body;
 
+    // jobName 会进临时 YAML 的文件名并被 `kubectl apply -f ${path}` 使用。
+    // deployTrainingYaml() 内部有 assertSafeToken 兜底，但那会抛成 500；
+    // 在边界挡住才能给出 400，并且不产生任何中间文件。
+    {
+      const problems = collectInvalid([['jobName', jobName, 'token', { maxLength: 63 }]]);
+      if (problems.length > 0) return rejectInvalid(res, problems, req.path);
+    }
+
     if (!jobName) return res.status(400).json({ success: false, error: 'Job name is required' });
     if (!dockerImage) return res.status(400).json({ success: false, error: 'Docker image is required' });
     if (!instanceType) return res.status(400).json({ success: false, error: 'Instance type is required' });
@@ -1103,6 +1160,14 @@ router.post('/launch-rayjob', async (req, res) => {
       maxRunHours = 24,
       envVars = [],
     } = req.body;
+
+    // jobName 会进临时 YAML 的文件名并被 `kubectl apply -f ${path}` 使用。
+    // deployTrainingYaml() 内部有 assertSafeToken 兜底，但那会抛成 500；
+    // 在边界挡住才能给出 400，并且不产生任何中间文件。
+    {
+      const problems = collectInvalid([['jobName', jobName, 'token', { maxLength: 63 }]]);
+      if (problems.length > 0) return rejectInvalid(res, problems, req.path);
+    }
 
     if (!jobName) return res.status(400).json({ success: false, error: 'Job name is required' });
     if (!dockerImage) return res.status(400).json({ success: false, error: 'Docker image is required' });
@@ -1833,6 +1898,12 @@ router.get('/hyperpod-jobs', async (req, res) => {
 router.delete('/hyperpod-jobs/:jobName', async (req, res) => {
   try {
     const { jobName } = req.params;
+
+    // jobName 拼进 `kubectl delete/get ... ${jobName}`（以及 label selector）
+    {
+      const problems = collectInvalid([['jobName', jobName, 'token', { maxLength: 63 }]]);
+      if (problems.length > 0) return rejectInvalid(res, problems, req.path);
+    }
     console.log(`Deleting training job: ${jobName}`);
 
     const output = await executeKubectl(`delete hyperpodpytorchjob ${jobName}`);
@@ -1874,6 +1945,12 @@ router.delete('/hyperpod-jobs/:jobName', async (req, res) => {
 router.get('/hyperpod-jobs/:jobName/pods', async (req, res) => {
   try {
     const { jobName } = req.params;
+
+    // jobName 拼进 `kubectl delete/get ... ${jobName}`（以及 label selector）
+    {
+      const problems = collectInvalid([['jobName', jobName, 'token', { maxLength: 63 }]]);
+      if (problems.length > 0) return rejectInvalid(res, problems, req.path);
+    }
     console.log(`Fetching pods for training job: ${jobName}`);
 
     // 获取所有pods，然后筛选出属于该训练任务的pods
@@ -1947,6 +2024,12 @@ router.get('/rayjobs', async (req, res) => {
 router.delete('/rayjobs/:jobName', async (req, res) => {
   try {
     const { jobName } = req.params;
+
+    // jobName 拼进 `kubectl delete/get ... ${jobName}`（以及 label selector）
+    {
+      const problems = collectInvalid([['jobName', jobName, 'token', { maxLength: 63 }]]);
+      if (problems.length > 0) return rejectInvalid(res, problems, req.path);
+    }
     console.log(`Deleting RayJob: ${jobName}`);
 
     const output = await executeKubectl(`delete rayjob ${jobName}`);
@@ -1988,6 +2071,12 @@ router.delete('/rayjobs/:jobName', async (req, res) => {
 router.get('/rayjobs/:jobName/pods', async (req, res) => {
   try {
     const { jobName } = req.params;
+
+    // jobName 拼进 `kubectl delete/get ... ${jobName}`（以及 label selector）
+    {
+      const problems = collectInvalid([['jobName', jobName, 'token', { maxLength: 63 }]]);
+      if (problems.length > 0) return rejectInvalid(res, problems, req.path);
+    }
     console.log(`Fetching pods for RayJob: ${jobName}`);
 
     // 首先获取RayJob信息来找到对应的RayCluster名称

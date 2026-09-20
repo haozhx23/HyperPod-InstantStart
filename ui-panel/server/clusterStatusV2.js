@@ -1,4 +1,4 @@
-const { exec } = require('child_process');
+const { runKubectl } = require('./utils/kubectl');
 
 /**
  * 集群状态服务 V2 - 优化版本
@@ -22,28 +22,15 @@ class ClusterStatusV2 {
 
   /**
    * 带超时的kubectl执行函数
+   *
+   * 2026-09-20：实现搬到 `utils/kubectl.js`，这里只是保留方法名的薄壳。
+   * 这一改同时修掉两件事（D3）：maxBuffer 从 10 MiB 提到与其它路径一致的 64 MiB
+   * （同一份 `get pods -A -o json` 原先只在这条路径上 ENOBUFS），以及补上在飞去重
+   * ——缓存过期瞬间多个标签页并发进来，原先每个都独立跑一次 kubectl。
+   * 另外 reject 的不再是普通对象而是 Error，上层 `error.message` 不再是 undefined（D5）。
    */
   executeKubectlWithTimeout(command, timeout = this.defaultTimeout) {
-    return new Promise((resolve, reject) => {
-      const child = exec(`kubectl ${command}`, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
-        if (error) {
-          console.error(`kubectl error: ${error.message}`);
-          reject({ error: error.message, stderr, command });
-        } else {
-          resolve(stdout.trim());
-        }
-      });
-
-      // 设置超时
-      const timer = setTimeout(() => {
-        child.kill('SIGTERM');
-        reject(new Error(`Command timeout after ${timeout}ms: kubectl ${command}`));
-      }, timeout);
-
-      child.on('exit', () => {
-        clearTimeout(timer);
-      });
-    });
+    return runKubectl(command, { timeout, trim: true, dedup: true });
   }
 
   /**

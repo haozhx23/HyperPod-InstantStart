@@ -101,11 +101,7 @@ const TrainingHistoryPanel = () => {
       }
     };
 
-    operationRefreshManager.subscribe(componentId, refreshFunction);
-
-    return () => {
-      operationRefreshManager.unsubscribe(componentId);
-    };
+    return operationRefreshManager.subscribe(componentId, refreshFunction);
   }, []); // 空依赖数组，只在组件挂载时执行一次
 
   // 获取MLflow配置

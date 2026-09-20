@@ -24,6 +24,7 @@ const {
   generateResourcesSection
 } = require('./utils/inferenceUtils');
 const EKSServiceHelper = require('./utils/eksServiceHelper');
+const { collectInvalid, collectPresent, rejectInvalid } = require('./utils/validateInput');
 const { renderTemplate, patches: P } = require('./utils/renderTemplate');
 
 // 依赖注入
@@ -46,6 +47,9 @@ function initialize(deps) {
  * POST /api/test-model
  * 生成测试模型的 curl 命令
  */
+// `/test-model` **故意不设防**：它只把 serviceUrl 拼成一条 curl 命令**字符串返回给前端**，
+// 服务端不执行（下面没有任何 exec/spawn）。给它套 URL 白名单会把合法的集群内地址拒掉，
+// 而真正需要挡 SSRF 的是 `/api/proxy-request*`——那条路径已由 `utils/ssrfGuard.js` 两层校验。
 router.post('/test-model', async (req, res) => {
   const { serviceUrl, payload } = req.body;
 
@@ -120,6 +124,10 @@ router.post('/undeploy', async (req, res) => {
         error: 'Model tag is required'
       });
     }
+
+    // modelTag 会拼进多条 `kubectl delete ...` 命令（deployment / service / 等）。
+    const problems = collectInvalid([['modelTag', modelTag]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, 'POST /undeploy');
 
     console.log(`Undeploying deployment: ${modelTag}, type: ${deleteType}`);
 
@@ -256,6 +264,13 @@ router.post('/scale-deployment', async (req, res) => {
   try {
     const { deploymentName, replicas, isModelPool } = req.body;
 
+    // 两者都会拼进 `kubectl scale deployment ${deploymentName} --replicas=${replicas}`
+    const problems = collectInvalid([
+      ['deploymentName', deploymentName],
+      ['replicas', replicas, 'int', { max: 10000 }],
+    ]);
+    if (problems.length > 0) return rejectInvalid(res, problems, 'POST /scale-deployment');
+
     console.log(`Scaling deployment ${deploymentName} to ${replicas} replicas (Model Pool: ${isModelPool})`);
 
     if (isModelPool) {
@@ -345,6 +360,14 @@ router.post('/assign-pod', async (req, res) => {
   try {
     const { podName, businessTag, modelId } = req.body;
 
+    // 三者都会作为 kubectl 的参数/label 选择器拼进命令
+    const problems = collectInvalid([
+      ['podName', podName],
+      ['businessTag', businessTag, 'token', { maxLength: 63 }],
+      ['modelId', modelId, 'token', { maxLength: 63 }],
+    ]);
+    if (problems.length > 0) return rejectInvalid(res, problems, 'POST /assign-pod');
+
     console.log('Pod assignment request:', { podName, businessTag, modelId });
 
     // 验证参数
@@ -413,6 +436,9 @@ router.post('/assign-pod', async (req, res) => {
 router.delete('/delete-service/:serviceName', async (req, res) => {
   try {
     const { serviceName } = req.params;
+
+    const problems = collectInvalid([['serviceName', serviceName]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, 'DELETE /delete-service/:serviceName');
 
     console.log(`Deleting service: ${serviceName}`);
 
@@ -672,6 +698,14 @@ router.post('/deploy-service', async (req, res) => {
       serviceType
     });
 
+    // modelPool 直接进 `kubectl get deployment ${modelPool} -o json`（下一行）；
+    // serviceName 进 EKSServiceHelper 生成的 Service YAML 的 metadata.name。
+    const problems = collectInvalid([
+      ['serviceName', serviceName, 'token', { maxLength: 253 }],
+      ['modelPool', modelPool, 'token', { maxLength: 253 }],
+    ]);
+    if (problems.length > 0) return rejectInvalid(res, problems, 'POST /deploy-service');
+
     // 获取 deployment 信息以提取 model-type 和端口
     const deploymentOutput = await executeKubectl(`get deployment ${modelPool} -o json`);
     const deployment = JSON.parse(deploymentOutput);
@@ -817,6 +851,14 @@ router.delete('/inference-endpoints/:name', async (req, res) => {
     const { namespace } = req.query; // 从 query 获取 namespace，默认为 default
     const ns = namespace || 'default';
 
+    // name 与 ns 都拼进 `kubectl delete inferenceendpointconfig ${name} -n ${ns}`。
+    // ns 有默认值，但默认值不能掩盖非法的显式输入——所以校验最终用到的 ns。
+    const problems = collectInvalid([
+      ['name', name],
+      ['namespace', ns, 'token', { maxLength: 63 }],
+    ]);
+    if (problems.length > 0) return rejectInvalid(res, problems, 'DELETE /inference-endpoints/:name');
+
     console.log(`Deleting InferenceEndpointConfig: ${name} in namespace: ${ns}`);
 
     const output = await executeKubectl(`delete inferenceendpointconfig ${name} -n ${ns}`);
@@ -956,6 +998,14 @@ router.post('/deploy/container', async (req, res) => {
     });
 
     // 生成带时间戳的唯一标签
+    // deploymentName 原样进 `generateDeploymentTag()`（它只拼时间戳，不做任何清洗，
+    // 见 `utils/inferenceUtils.js:305`），结果成为落盘文件名
+    // `${finalDeploymentTag}-${servEngine}-...yaml`，再进 `kubectl apply -f ${tempYamlPath}`。
+    // 所以这一个字段同时是**路径注入**（`../../` 可写出目录）和**命令注入**（`;` 进 shell）面。
+    // YAML 内容本身走 `renderTemplate()` 的 AST 渲染，那部分是安全的——危险只在文件名这一段。
+    const problems = collectPresent([['deploymentName', deploymentName, 'token', { maxLength: 200 }]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, 'POST /deploy/container');
+
     const finalDeploymentTag = generateDeploymentTag(deploymentName || 'model');
     console.log(`Generated deployment tag: "${finalDeploymentTag}"`);
 
@@ -1179,6 +1229,14 @@ router.post('/deploy/managed-inference', async (req, res) => {
     }
 
     // 生成带时间戳的唯一标签
+    // 同 `/deploy/container`：deploymentName → 文件名 → `kubectl apply -f`。
+    // 这里 deploymentName 是必填（上面已查过存在性），所以用 collectInvalid。
+    // 其余字段（s3BucketName / s3Region / instanceType / modelLocation）只进
+    // `renderTemplate()` 的 AST 渲染，不进 shell 也不进路径；modelLocation 合法地含 `/`，
+    // 给它套 token 白名单会把正常输入拒掉。
+    const problems = collectInvalid([['deploymentName', deploymentName, 'token', { maxLength: 200 }]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, 'POST /deploy/managed-inference');
+
     const finalDeploymentTag = generateDeploymentTag(deploymentName);
     console.log(`Generated deployment tag: "${finalDeploymentTag}"`);
 

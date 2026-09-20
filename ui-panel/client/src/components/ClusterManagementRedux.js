@@ -56,7 +56,7 @@ import {
   selectEffectiveDependenciesStatus,
   selectHyperPodGroups
 } from '../store/selectors';
-import globalRefreshManager from '../hooks/useGlobalRefresh';
+import operationRefreshManager from '../hooks/useOperationRefresh';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -365,17 +365,11 @@ const ClusterManagementRedux = () => {
     dispatch(fetchClusters());
   }, [dispatch]);
 
-  // 注册到全局刷新管理器
+  // 注册到操作刷新管理器：WS 事件触发的操作刷新会经 refreshAll() 调到这里
   useEffect(() => {
     const componentId = 'cluster-management-redux';
 
-    globalRefreshManager.subscribe(componentId, refreshAllStatus, {
-      priority: 5
-    });
-
-    return () => {
-      globalRefreshManager.unsubscribe(componentId);
-    };
+    return operationRefreshManager.subscribe(componentId, refreshAllStatus);
   }, []);
 
   // 监听活跃集群变化
@@ -500,7 +494,13 @@ const ClusterManagementRedux = () => {
 
       // 更新其他功能（仅当有实际 diff 时才调用后端）
       if (Object.keys(updates).length > 0) {
-        await dispatch(updateAdvancedFeatures(updates)).unwrap();
+        const result = await dispatch(updateAdvancedFeatures(updates)).unwrap();
+        // 后端逐个 feature 处理，某一项失败时 HTTP 仍是 200，靠 envelope 的 success
+        // 区分。不看这个字段就会把「HyperPod cluster required for Tiered Storage」
+        // 显示成更新成功（2026-09-20 修，配套后端 updateAdvancedFeatures 的汇总）。
+        if (result && result.success === false) {
+          throw new Error(result.message || 'Failed to update advanced features');
+        }
       }
 
       message.success('Cluster add-ons updated successfully');

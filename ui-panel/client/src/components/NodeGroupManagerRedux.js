@@ -24,7 +24,6 @@ import {
   selectEffectiveDependenciesStatus,
   selectClusterConfig
 } from '../store/selectors';
-import globalRefreshManager from '../hooks/useGlobalRefresh';
 import operationRefreshManager from '../hooks/useOperationRefresh';
 
 const { Text } = Typography;
@@ -509,33 +508,14 @@ const NodeGroupManagerRedux = ({ activeCluster, refreshTrigger, cluster }) => {
     fetchHyperPodKarpenterResources,
   ]);
 
-  // 注册到全局刷新管理器
-  useEffect(() => {
-    const componentId = 'node-group-manager-redux';
-
-    globalRefreshManager.subscribe(componentId, handleCompleteRefresh, {
-      priority: 6
-    });
-
-    return () => {
-      globalRefreshManager.unsubscribe(componentId);
-    };
-  }, [handleCompleteRefresh]);
-
   // 注册到操作刷新管理器（响应 WebSocket 广播）
+  // 原先这里还有一份到 globalRefreshManager 的重复订阅（componentId 为
+  // 'node-group-manager-redux'），该管理器已于 2026-09-20 移除，重复订阅一并删除。
   useEffect(() => {
     const componentId = 'nodegroup-manager';
     
-    operationRefreshManager.subscribe(componentId, handleCompleteRefresh);
-    
-    return () => {
-      operationRefreshManager.unsubscribe(componentId);
-    };
+    return operationRefreshManager.subscribe(componentId, handleCompleteRefresh);
   }, [handleCompleteRefresh]);
-
-  // 移除错误的 globalRefreshManager 订阅
-  // Karpenter 状态应该通过用户主动刷新来获取，而不是 WebSocket 推送
-  // globalRefreshManager 只用于管理前端组件的刷新，不用于集群资源状态订阅
 
   // Initial data loading
   // 使用 ref 来跟踪是否已经执行过初始加载

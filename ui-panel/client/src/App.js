@@ -7,6 +7,7 @@ import LegacyRoot from './components/LegacyRoot';
 import NewRoot from './components/NewRoot';
 import ScaleDebugOverlay from './components/debug/ScaleDebugOverlay';
 import useWebSocket from './hooks/useWebSocket';
+import { loadRefreshConfig } from './hooks/useAutoRefresh';
 import { fetchAppStatusConfig } from './store/slices/appStatusSlice';
 import InferencePage from './pages/InferencePage';
 import ManagedInferencePage from './pages/ManagedInferencePage';
@@ -28,6 +29,9 @@ function AppBootstrap({ children }) {
   const dispatch = useDispatch();
   useEffect(() => {
     dispatch(fetchAppStatusConfig());
+    // 周期性自动刷新的间隔来自 config/refresh-config.json（默认 60s）。
+    // 失败时 useAutoRefresh 保留内置默认值，不阻塞启动。
+    loadRefreshConfig();
   }, [dispatch]);
   useWebSocket();
   return children;

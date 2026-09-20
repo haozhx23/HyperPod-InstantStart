@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Card, Form, Input, Button, Table, Space, message, Modal, Typography, Tag, Row, Col, Alert } from 'antd';
 import { CloudOutlined, DeleteOutlined, CheckCircleOutlined, ReloadOutlined } from '@ant-design/icons';
-import globalRefreshManager from '../hooks/useGlobalRefresh';
+import operationRefreshManager from '../hooks/useOperationRefresh';
 
 const { Text } = Typography;
 
@@ -100,15 +100,15 @@ const S3StorageManager = ({ onStorageChange }) => {
     fetchStorages();
     fetchDefaults(); // 获取默认值（含 region）
     
-    // 注册全局刷新监听
+    // 注册操作刷新监听
     const componentId = 's3-storage-manager';
-    globalRefreshManager.subscribe(componentId, async () => {
-      console.log('🔄 S3 Storage Manager: Global refresh triggered');
+    const unsubscribe = operationRefreshManager.subscribe(componentId, async () => {
+      console.log('🔄 S3 Storage Manager: refresh triggered');
       await fetchStorages();
     });
-    
+
     return () => {
-      globalRefreshManager.unsubscribe(componentId);
+      unsubscribe();
     };
   }, []);
 

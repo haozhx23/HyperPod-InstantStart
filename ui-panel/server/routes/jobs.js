@@ -8,6 +8,7 @@
 
 const express = require('express');
 const router = express.Router();
+const { collectInvalid, rejectInvalid } = require('../utils/validateInput');
 
 // Module-level injected dependencies
 let executeKubectl = null;
@@ -44,6 +45,10 @@ router.get('/k8s-jobs', async (req, res) => {
 router.delete('/k8s-jobs/:jobName', async (req, res) => {
   try {
     const { jobName } = req.params;
+
+    const problems = collectInvalid([['jobName', jobName, 'token', { maxLength: 63 }]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, req.path);
+
     await executeKubectl(`delete job ${jobName}`);
     res.json({ success: true, message: `Job ${jobName} deleted` });
   } catch (error) {

@@ -6,14 +6,16 @@ import { setDeploymentStatus } from '../store/slices/webSocketSlice';
 // ctx = {
 //   dispatch,            // Redux dispatch
 //   message,             // antd message API
-//   globalRefresh,       // globalRefreshManager instance
 //   operationRefresh,    // operationRefreshManager instance
+//                        // （原先还有 globalRefresh: globalRefreshManager 实例，
+//                        //   该管理器被 env 硬关闭、已于 2026-09-20 移除，
+//                        //   其调用点改为 operationRefresh.refreshAll()）
 // }
 // Each case preserves the exact text, call order, and refresh trigger semantics
 // of the original inline switch. Do not change behavior here without a matching
 // Plan update — this file is the "reference implementation" of pre-refactor WS.
 export function handleWsMessage(data, ctx) {
-  const { dispatch, message, globalRefresh, operationRefresh } = ctx;
+  const { dispatch, message, operationRefresh } = ctx;
 
   switch (data.type) {
     case 'status_update':
@@ -23,9 +25,9 @@ export function handleWsMessage(data, ctx) {
 
     case 'request_status_update_broadcast':
       console.log('🔄 Server requested status update');
-      globalRefresh.triggerGlobalRefresh({
-        source: 'websocket-broadcast',
-        silent: true,
+      operationRefresh.refreshAll({
+        operationType: 'websocket-broadcast',
+        refreshType: 'immediate',
       });
       break;
 
@@ -231,14 +233,14 @@ export function handleWsMessage(data, ctx) {
     case 'cluster_dependencies_completed':
       if (data.status === 'success') {
         message.success(data.message);
-        globalRefresh.triggerGlobalRefresh();
+        operationRefresh.refreshAll({ operationType: 'cluster_dependencies_completed' });
       }
       break;
 
     case 'cluster_dependencies_failed':
       if (data.status === 'warning') {
         message.warning(data.message);
-        globalRefresh.triggerGlobalRefresh();
+        operationRefresh.refreshAll({ operationType: 'cluster_dependencies_failed' });
       } else {
         message.error(data.message);
       }

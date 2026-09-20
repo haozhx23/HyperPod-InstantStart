@@ -18,29 +18,71 @@ const path = require('path');
 
 // 日志存储目录
 const LOGS_BASE_DIR = path.join(__dirname, '..', 'logs');
+const LOGS_BASE_RESOLVED = path.resolve(LOGS_BASE_DIR);
 
 /**
- * 确保日志目录存在
- * @param {string} jobName - 任务名称
- * @param {string} podName - Pod 名称
- * @returns {string} 日志文件完整路径
+ * K8s 资源名遵循 RFC 1123（小写字母数字与 `.`、`-`），这里的白名单是它的超集。
+ * 目的不是校验名字是否合法，而是让参数不可能构成路径分隔符。
+ * 额外禁止以 `-` 开头：这些值还会作为参数传给 `spawn('kubectl', [...])`，
+ * 以 `-` 开头会被 kubectl 当成 flag（数组形式没有 shell，但仍有参数注入）。
  */
-function ensureLogDirectory(jobName, podName) {
-  const jobLogDir = path.join(LOGS_BASE_DIR, jobName);
-  if (!fs.existsSync(jobLogDir)) {
-    fs.mkdirSync(jobLogDir, { recursive: true });
-  }
-  return path.join(jobLogDir, `${podName}.log`);
+const SAFE_NAME = /^[a-zA-Z0-9_.][a-zA-Z0-9_.-]*$/;
+
+function isSafeName(value) {
+  return typeof value === 'string' && value.length <= 253 && SAFE_NAME.test(value);
 }
 
 /**
- * 获取日志文件路径
- * @param {string} jobName - 任务名称
- * @param {string} podName - Pod 名称
+ * 校验并解析日志文件的绝对路径。
+ *
+ * 白名单已经排除了 `/` 和 `\`，但 `..` 整体是合法名字，所以必须再做一次包含性校验
+ * ——两层都要有，缺哪一层都能被绕过。
+ *
+ * @returns {string|null} 绝对路径；参数非法或结果越出 LOGS_BASE_DIR 时返回 null
+ */
+function resolveLogFilePath(jobName, podName) {
+  if (!isSafeName(jobName) || !isSafeName(podName)) return null;
+
+  const resolved = path.resolve(LOGS_BASE_RESOLVED, jobName, `${podName}.log`);
+  if (!resolved.startsWith(LOGS_BASE_RESOLVED + path.sep)) return null;
+  return resolved;
+}
+
+/**
+ * 确保日志目录存在，返回日志文件路径。
+ *
+ * 这是**写**路径：调用方把 WebSocket 消息里的 jobName/podName 直接传进来，
+ * 校验不通过必须抛错而不是退化成某个默认路径——否则会在 logs/ 之外建目录、写文件。
+ *
+ * @throws {Error} 名称非法时
  * @returns {string} 日志文件完整路径
  */
-function getLogFilePath(jobName, podName) {
-  return path.join(LOGS_BASE_DIR, jobName, `${podName}.log`);
+function ensureLogDirectory(jobName, podName) {
+  const logFilePath = resolveLogFilePath(jobName, podName);
+  if (!logFilePath) {
+    throw new Error(
+      `非法的日志路径参数: jobName=${JSON.stringify(jobName)} podName=${JSON.stringify(podName)}；` +
+      `只接受 [a-zA-Z0-9_.-]、不以 - 开头、且解析后必须位于 ${LOGS_BASE_RESOLVED} 之内`
+    );
+  }
+
+  const jobLogDir = path.dirname(logFilePath);
+  if (!fs.existsSync(jobLogDir)) {
+    fs.mkdirSync(jobLogDir, { recursive: true });
+  }
+  return logFilePath;
+}
+
+/**
+ * 参数非法时的统一响应。用 400 而不是 404：区分「名字不合法」和「文件不存在」，
+ * 否则遍历尝试和正常的缺文件长得一样，日志里看不出有人在探路。
+ */
+function rejectInvalidName(res, jobName, podName) {
+  console.warn(`[logs] 拒绝非法日志路径参数: jobName=${JSON.stringify(jobName)} podName=${JSON.stringify(podName)}`);
+  return res.status(400).json({
+    success: false,
+    error: 'Invalid jobName or podName'
+  });
 }
 
 // ==================== 获取完整日志文件 API ====================
@@ -52,7 +94,8 @@ function getLogFilePath(jobName, podName) {
 router.get('/:jobName/:podName', (req, res) => {
   try {
     const { jobName, podName } = req.params;
-    const logFilePath = getLogFilePath(jobName, podName);
+    const logFilePath = resolveLogFilePath(jobName, podName);
+    if (!logFilePath) return rejectInvalidName(res, jobName, podName);
 
     if (fs.existsSync(logFilePath)) {
       res.sendFile(path.resolve(logFilePath));
@@ -81,7 +124,8 @@ router.get('/:jobName/:podName', (req, res) => {
 router.get('/:jobName/:podName/download', (req, res) => {
   try {
     const { jobName, podName } = req.params;
-    const logFilePath = getLogFilePath(jobName, podName);
+    const logFilePath = resolveLogFilePath(jobName, podName);
+    if (!logFilePath) return rejectInvalidName(res, jobName, podName);
 
     if (fs.existsSync(logFilePath)) {
       res.download(logFilePath, `${podName}.log`, (err) => {
@@ -118,7 +162,8 @@ router.get('/:jobName/:podName/download', (req, res) => {
 router.get('/:jobName/:podName/info', (req, res) => {
   try {
     const { jobName, podName } = req.params;
-    const logFilePath = getLogFilePath(jobName, podName);
+    const logFilePath = resolveLogFilePath(jobName, podName);
+    if (!logFilePath) return rejectInvalidName(res, jobName, podName);
 
     if (fs.existsSync(logFilePath)) {
       const stats = fs.statSync(logFilePath);
@@ -152,5 +197,6 @@ module.exports = {
   router,
   LOGS_BASE_DIR,
   ensureLogDirectory,
-  getLogFilePath
+  resolveLogFilePath,
+  isSafeName
 };

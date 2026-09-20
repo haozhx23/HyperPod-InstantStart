@@ -9,6 +9,7 @@
 const express = require('express');
 const router = express.Router();
 const RoutingManager = require('../utils/routingManager');
+const { collectInvalid, collectPresent, rejectInvalid } = require('../utils/validateInput');
 
 // 模块级注入依赖
 let broadcast = null;
@@ -67,6 +68,13 @@ router.delete('/routers/:deploymentName', async (req, res) => {
         success: false,
         error: 'Deployment name is required'
       });
+    }
+
+    // 进 `kubectl get deployment -l deployment-name=${deploymentName},...`
+    // （`routingManager.js:410`），命中的资源名随后再进 6 条 `kubectl delete`。
+    const problems = collectInvalid([['deploymentName', deploymentName]]);
+    if (problems.length > 0) {
+      return rejectInvalid(res, problems, 'DELETE /routers/:deploymentName');
     }
     const result = await RoutingManager.deleteRouter(deploymentName);
     if (result.success) {
@@ -158,6 +166,22 @@ router.post('/deploy-advanced-scaling', async (req, res) => {
   try {
     const config = req.body;
     console.log('Deploying SGLang Router with config:', config);
+
+    // `RoutingManager.validateConfig()` 已经用 `/^[a-z0-9-]+$/` 卡住了 deploymentName
+    // （`routingManager.js:571`，比本项目的 token 白名单更严），但 targetDeployment 只查了
+    // 是否存在，而它会进 `app=sglang-${targetDeployment}-inference` 这个 label selector，
+    // 再进 `kubectl get deployments -l "${modelSelector}"`（同文件 `:175`/`:733`）。
+    //
+    // 端口字段那几条范围检查也挡不住字符串：`"3000; whoami" < 1000` 是 NaN 比较，结果为
+    // false，两个边界都不触发，于是原样通过。所以这里补 'int'。
+    const problems = collectPresent([
+      ['targetDeployment', config.sglangRouter?.targetDeployment, 'token', { maxLength: 253 }],
+      ['routerPort', config.sglangRouter?.routerPort, 'int', { max: 65535 }],
+      ['metricsPort', config.sglangRouter?.metricsPort, 'int', { max: 65535 }],
+      ['discoveryPort', config.sglangRouter?.discoveryPort, 'int', { max: 65535 }],
+      ['checkInterval', config.sglangRouter?.checkInterval, 'int', { max: 86400 }],
+    ]);
+    if (problems.length > 0) return rejectInvalid(res, problems, 'POST /deploy-advanced-scaling');
 
     // 验证配置
     const validation = RoutingManager.validateConfig(config.sglangRouter);

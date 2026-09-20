@@ -9,6 +9,7 @@
 const express = require('express');
 const router = express.Router();
 const HAMiManager = require('../utils/hamiManager');
+const { collectInvalid, collectPresent, rejectInvalid } = require('../utils/validateInput');
 
 let clusterManager = null;
 
@@ -20,6 +21,16 @@ function initialize(deps) {
 router.post('/cluster/hami/install', async (req, res) => {
   try {
     const { splitCount, nodePolicy, gpuPolicy } = req.body;
+
+    // 三个值都拼进同一条 helm 命令（`hamiManager.js:74` 的 `--set ...=${splitCount}` 等）。
+    // 三者都有默认值，所以只校验出现了的，不改必填契约。
+    const problems = collectPresent([
+      ['splitCount', splitCount, 'int', { max: 100 }],
+      ['nodePolicy', nodePolicy, 'token', { maxLength: 32 }],
+      ['gpuPolicy', gpuPolicy, 'token', { maxLength: 32 }],
+    ]);
+    if (problems.length > 0) return rejectInvalid(res, problems, 'POST /cluster/hami/install');
+
     const activeCluster = clusterManager.getActiveCluster();
 
     console.log(`Installing/Configuring HAMi for cluster: ${activeCluster}`);
@@ -95,6 +106,10 @@ router.post('/cluster/hami/node/enable', async (req, res) => {
       });
     }
 
+    // `kubectl label nodes ${nodeName} gpu=on`（`hamiManager.js:129`）
+    const problems = collectInvalid([['nodeName', nodeName]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, 'POST /cluster/hami/node/enable');
+
     console.log(`Enabling HAMi for node: ${nodeName}`);
     const result = await HAMiManager.enableNode(nodeName);
 
@@ -119,6 +134,11 @@ router.post('/cluster/hami/node/disable', async (req, res) => {
         message: 'Node name is required'
       });
     }
+
+    // `kubectl label nodes ${nodeName} gpu-` 与 `--field-selector spec.nodeName=${nodeName}`
+    // （`hamiManager.js:159`/`:169`）
+    const problems = collectInvalid([['nodeName', nodeName]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, 'POST /cluster/hami/node/disable');
 
     console.log(`Disabling HAMi for node: ${nodeName}`);
     const result = await HAMiManager.disableNode(nodeName);

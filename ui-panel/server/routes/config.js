@@ -75,6 +75,37 @@ router.get('/instance-efa', async (req, res) => {
   }
 });
 
+// 前端周期性自动刷新配置（从 config/refresh-config.json 读取）
+// 读失败或字段非法都返回内置默认值，不让前端因为一个坏配置失去自动刷新。
+const REFRESH_DEFAULTS = { autoRefreshEnabled: true, autoRefreshIntervalMs: 60000 };
+const REFRESH_MIN_INTERVAL_MS = 5000;
+
+router.get('/refresh', (req, res) => {
+  try {
+    const configPath = path.join(__dirname, '../../config/refresh-config.json');
+    const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+
+    const interval = Number(raw.autoRefreshIntervalMs);
+    const minInterval = Number(raw._minIntervalMs) > 0
+      ? Number(raw._minIntervalMs)
+      : REFRESH_MIN_INTERVAL_MS;
+
+    res.json({
+      success: true,
+      config: {
+        autoRefreshEnabled: raw.autoRefreshEnabled !== false,
+        // 非数字/非正数 → 回落默认值；过小 → 夹到下限，避免把后端打满
+        autoRefreshIntervalMs: Number.isFinite(interval) && interval > 0
+          ? Math.max(interval, minInterval)
+          : REFRESH_DEFAULTS.autoRefreshIntervalMs
+      }
+    });
+  } catch (error) {
+    console.error('Error reading refresh-config.json:', error.message);
+    res.json({ success: true, config: REFRESH_DEFAULTS, usedDefaults: true });
+  }
+});
+
 // 获取 UI 组件配置（控制各模块 tab/组件 显示/隐藏）
 router.get('/app-status', (req, res) => {
   try {

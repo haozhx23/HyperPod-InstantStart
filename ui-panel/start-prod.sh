@@ -45,14 +45,28 @@ install_cli_tools() {
 }
 
 generate_auth_hash() {
-  local AUTH_FILE="$(pwd)/config/auth.json"
-  mkdir -p "$(pwd)/config"
+  local AUTH_FILE="$SCRIPT_DIR/config/auth.json"
+  mkdir -p "$SCRIPT_DIR/config"
 
   local EXISTING_HASH=""
   local EXISTING_ENABLED="true"
   if [ -f "$AUTH_FILE" ]; then
     EXISTING_HASH=$(python3 -c "import json,sys; v=json.load(open('$AUTH_FILE')).get('hash'); sys.stdout.write(v if v else '')" 2>/dev/null || echo "")
     EXISTING_ENABLED=$(python3 -c "import json,sys; v=json.load(open('$AUTH_FILE')).get('enabled', True); sys.stdout.write('false' if v is False else 'true')" 2>/dev/null || echo "true")
+  fi
+
+  # 旧版本用 sha256(AWS Account ID) 当访问密钥。Account ID 不是秘密（每个 ARN、每个
+  # ECR image URI 里都带），而且只有 12 位十进制，离线枚举是分钟级——见过账号 ID 的人
+  # 就能算出密钥。检测到这种弱密钥则强制轮换，新密钥在下面打印出来。
+  if [ -n "$EXISTING_HASH" ]; then
+    local ACCOUNT_ID
+    ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "")
+    if [ -n "$ACCOUNT_ID" ] && \
+       [ "$EXISTING_HASH" = "$(printf '%s' "$ACCOUNT_ID" | sha256sum | awk '{print $1}')" ]; then
+      echo "⚠️  检测到旧版由 AWS Account ID 派生的访问密钥，任何知道账号 ID 的人都能算出它。"
+      echo "⚠️  正在轮换为随机密钥：旧密钥立即失效，请用下面打印的新密钥重新登录。"
+      EXISTING_HASH=""
+    fi
   fi
 
   # Regeneration is controlled solely by the hash field; `enabled` is preserved.
@@ -66,18 +80,30 @@ generate_auth_hash() {
     return
   fi
 
-  ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "")
-  if [ -n "$ACCOUNT_ID" ]; then
-    AUTH_HASH=$(echo -n "$ACCOUNT_ID" | sha256sum | awk '{print $1}')
-    echo "{\"enabled\":$EXISTING_ENABLED,\"hash\":\"$AUTH_HASH\"}" > "$AUTH_FILE"
-    echo "🔑 Auth hash generated from Account ID."
+  # 32 字节随机数，与 AWS 身份无关。密钥持久化在 config/auth.json，该目录在下方挂载进
+  # 容器，所以重启不会重新生成；要主动轮换就删掉 auth.json 里的 hash 字段再启动。
+  local AUTH_HASH
+  AUTH_HASH=$(openssl rand -hex 32 2>/dev/null \
+    || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+
+  if [ "${#AUTH_HASH}" -ne 64 ]; then
+    # 不能静默跳过：缺少 hash 时后端 authMiddleware 会 fail-open，面板变成完全开放。
     if [ "$EXISTING_ENABLED" = "false" ]; then
-      echo "🔓 Auth disabled (enabled=false) — UI is open. Hash stored for future use: $AUTH_HASH"
-    else
-      echo "🔑 Access Key: $AUTH_HASH"
+      echo "⚠️  无法生成访问密钥（openssl 与 /dev/urandom 都不可用），但 enabled=false，继续以开放模式启动。"
+      return
     fi
+    echo "❌ 无法生成访问密钥：openssl 与 /dev/urandom 都不可用。"
+    echo "   继续启动会让面板处于无鉴权状态，已中止。"
+    exit 1
+  fi
+
+  echo "{\"enabled\":$EXISTING_ENABLED,\"hash\":\"$AUTH_HASH\"}" > "$AUTH_FILE"
+  chmod 600 "$AUTH_FILE"
+  echo "🔑 Auth hash generated (32 random bytes)."
+  if [ "$EXISTING_ENABLED" = "false" ]; then
+    echo "🔓 Auth disabled (enabled=false) — UI is open. Hash stored for future use: $AUTH_HASH"
   else
-    echo "⚠️  Could not get AWS Account ID, skipping auth hash generation."
+    echo "🔑 Access Key: $AUTH_HASH"
   fi
 }
 
@@ -132,6 +158,20 @@ if [ "$(stat -c '%u' ~/.kube)" != "1000" ]; then
   sudo chown -R 1000:1000 ~/.kube
 fi
 
+# 所有挂载源都按 $SCRIPT_DIR 定位，不用 $(pwd)：从别的目录执行本脚本时，$(pwd) 会
+# 指向不存在的路径，docker 会把它们**静默建成空目录**挂进去。后果是容器起来后
+# `require('../../config/efa-only-instance-types.json')` 报 MODULE_NOT_FOUND 并
+# 崩溃重启，同时在错误的位置留下一份新生成的 auth.json（2026-09-20 实际踩到）。
+mkdir -p "$SCRIPT_DIR"/{config,templates,deployments,logs,managed_clusters_info,tmp}
+
+# user.env 是**文件**挂载：源文件不存在时 docker 会建一个同名目录，容器里的
+# require/读取随后以难以定位的方式失败。这里响亮地挡住，而不是让它带病启动。
+if [ ! -f "$SCRIPT_DIR/client/user.env" ]; then
+  echo "❌ 缺少 $SCRIPT_DIR/client/user.env（前端运行时配置，挂载为只读文件）"
+  echo "   docker 会把缺失的文件挂载源建成目录，容器将以难以定位的方式失败，故在此中止。"
+  exit 1
+fi
+
 # Get public IP for display
 TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
 PUBLIC_IP=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null)
@@ -143,13 +183,13 @@ docker run -d \
   --restart unless-stopped \
   --network host \
   --user 1000:1000 \
-  -v $(pwd)/config:/app/config \
-  -v $(pwd)/client/user.env:/app/client/user.env:ro \
-  -v $(pwd)/templates:/app/templates \
-  -v $(pwd)/deployments:/app/deployments \
-  -v $(pwd)/logs:/app/logs \
-  -v $(pwd)/managed_clusters_info:/app/managed_clusters_info \
-  -v $(pwd)/tmp:/app/tmp \
+  -v "$SCRIPT_DIR/config":/app/config \
+  -v "$SCRIPT_DIR/client/user.env":/app/client/user.env:ro \
+  -v "$SCRIPT_DIR/templates":/app/templates \
+  -v "$SCRIPT_DIR/deployments":/app/deployments \
+  -v "$SCRIPT_DIR/logs":/app/logs \
+  -v "$SCRIPT_DIR/managed_clusters_info":/app/managed_clusters_info \
+  -v "$SCRIPT_DIR/tmp":/app/tmp \
   -v /home/ubuntu/workspace/s3:/s3-workspace-metadata:ro \
   -v ~/.kube:/home/node/.kube:rw \
   -v ~/.aws:/home/node/.aws:ro \

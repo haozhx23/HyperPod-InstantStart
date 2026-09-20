@@ -9,8 +9,8 @@
 
 const express = require('express');
 const router = express.Router();
-const { promisify } = require('util');
-const execAsync = promisify(require('child_process').exec);
+const { collectInvalid, rejectInvalid } = require('../utils/validateInput');
+const { execAsync } = require('../utils/exec');
 
 let clusterManager = null;
 
@@ -61,6 +61,11 @@ router.get('/inference-operator/deployments', async (req, res) => {
 router.get('/inference-operator/deployment/:name/metrics', async (req, res) => {
   try {
     const { name } = req.params;
+
+    // name 进 inferenceOperatorMetricsManager 的 kubectl 命令
+    const problems = collectInvalid([['name', name, 'token', { maxLength: 253 }]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, req.path);
+
     const InferenceOperatorMetricsManager = require('../utils/inferenceOperatorMetricsManager');
     const result = await InferenceOperatorMetricsManager.getDeploymentMetrics(name);
     res.json(result);

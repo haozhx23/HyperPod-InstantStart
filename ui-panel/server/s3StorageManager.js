@@ -2,6 +2,7 @@ const fs = require('fs-extra');
 const path = require('path');
 const yaml = require('yaml');
 const { exec, execAsync } = require('./utils/exec');
+const { assertSafeToken } = require('./utils/validateInput');
 const { getEffectiveRegion } = require('./utils/regionResolver');
 const { renderTemplate, patches: P } = require('./utils/renderTemplate');
 
@@ -524,6 +525,11 @@ class S3StorageManager {
 
   // 删除Kubernetes资源
   async deleteKubernetesResource(type, name) {
+    // 兜底校验：type/name 直接拼进 shell。路由边界已校验过 name，这里再挡一次以覆盖
+    // 内部调用方；拒绝时抛错而不是跳过——静默跳过会让调用方以为资源已删掉。
+    assertSafeToken(type, 'type', { maxLength: 63 });
+    assertSafeToken(name, 'name', { maxLength: 63 });
+
     return new Promise((resolve, reject) => {
       exec(`kubectl delete ${type} ${name} --ignore-not-found=true`, (error, stdout, stderr) => {
         if (error) {

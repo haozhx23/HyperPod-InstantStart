@@ -1,4 +1,4 @@
-const { execSync } = require('child_process');
+const { execSync } = require('./exec');
 
 class InferenceOperatorMetricsManager {
   /**

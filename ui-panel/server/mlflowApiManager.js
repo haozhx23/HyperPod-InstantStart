@@ -8,6 +8,7 @@ const router = express.Router();
 const fs = require('fs-extra');
 const path = require('path');
 const { spawn } = require('child_process');
+const { collectInvalid, rejectInvalid } = require('./utils/validateInput');
 
 // 依赖注入
 let broadcast = null;
@@ -105,6 +106,13 @@ router.post('/mlflow-metric-config', (req, res) => {
       });
     }
 
+    // 这个值会落进 `config/mlflow-metric-config.json`，之后由
+    // `GET /training-history` 取出来作为 argv 传给 Python 脚本（本文件 `:527`）——
+    // 属于二阶输入：存的时候看着无害，用的时候才兑现。argv 形式本身不过 shell，
+    // 但首字符是 `-` 的值会被脚本的 argparse 当成 flag，所以这里一并卡住。
+    const problems = collectInvalid([['tracking_uri', tracking_uri, 'uri']]);
+    if (problems.length > 0) return rejectInvalid(res, problems, 'POST /mlflow-metric-config');
+
     const config = { tracking_uri };
 
     if (saveMlflowConfig(config)) {
@@ -142,6 +150,14 @@ router.post('/mlflow-metric-config/test', async (req, res) => {
         error: 'tracking_uri is required'
       });
     }
+
+    // 这一处是**生成代码注入**，不是 shell 注入：tracking_uri 被插进下面那段 Python 的
+    // 字符串字面量（`tracking_uri = "${tracking_uri}"`），脚本落盘后由
+    // `spawn('python3', [tempScriptPath])` 执行。闭合双引号即可执行任意 Python，
+    // 例如 `http://x" ; import os; os.system("id") #`。
+    // 'uri' 这一类同时拒引号、反斜杠、$、反引号和换行，并要求 scheme 是 http(s)。
+    const problems = collectInvalid([['tracking_uri', tracking_uri, 'uri']]);
+    if (problems.length > 0) return rejectInvalid(res, problems, 'POST /mlflow-metric-config/test');
 
     console.log(`Testing MLflow connection to: ${tracking_uri}`);
 

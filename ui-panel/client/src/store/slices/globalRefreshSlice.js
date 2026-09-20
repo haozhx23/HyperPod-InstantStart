@@ -22,9 +22,6 @@ export const globalRefresh = createAsyncThunk(
         source = 'manual',
         refreshClusterStatus = true,
         refreshAppStatus = true,
-        refreshTraining = false,
-        refreshInference = false,
-        refreshNodeGroups = false,
         force = false
       } = options;
 
@@ -85,23 +82,11 @@ export const globalRefresh = createAsyncThunk(
         }
       }
 
-      // 3. 训练作业刷新（如果需要）
-      if (refreshTraining) {
-        // TODO: 添加训练作业的刷新逻辑
-        console.log('Training refresh not implemented yet');
-      }
-
-      // 4. 推理服务刷新（如果需要）
-      if (refreshInference) {
-        // TODO: 添加推理服务的刷新逻辑
-        console.log('Inference refresh not implemented yet');
-      }
-
-      // 5. 节点组刷新（如果需要）
-      if (refreshNodeGroups) {
-        // TODO: 添加节点组的刷新逻辑
-        console.log('Node groups refresh not implemented yet');
-      }
+      // 训练 / 推理 / 节点组不在这里刷新。
+      // 这三类面板通过 operationRefreshManager 注册订阅，由调用方（标题栏的
+      // GlobalRefreshButton）在 dispatch 本 thunk 的同时调 refreshAll() 覆盖，
+      // 不需要在 Redux 层再复制一份各自的拉取逻辑。
+      // 2026-09-20：原先这里是三个只打 console.log 的 TODO 分支。
 
       // 等待所有操作完成
       const settledResults = await Promise.allSettled(refreshPromises);
@@ -173,9 +158,6 @@ export const autoRefresh = createAsyncThunk(
       source: 'auto',
       refreshClusterStatus: true,
       refreshAppStatus: true,
-      refreshTraining: false,
-      refreshInference: false,
-      refreshNodeGroups: false,
       force: false
     }));
   }

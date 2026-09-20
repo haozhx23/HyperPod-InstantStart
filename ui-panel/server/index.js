@@ -1,7 +1,12 @@
 const express = require('express');
 const cors = require('cors');
 const WebSocket = require('ws');
-const { exec, spawn, execSync } = require('./utils/exec');
+// exec 不再直接用：kubectl 一律走 runKubectl，execSync 仍用于两处 aws CLI 同步查询
+const { spawn, execSync } = require('./utils/exec');
+// 唯一的 kubectl 执行层：统一 maxBuffer/超时/在飞去重/错误规整，并注入 --context
+const { runKubectl } = require('./utils/kubectl');
+// 路由错误的唯一兜底响应点（E8）；挂载在文件末尾、所有路由之后
+const { routeErrorHandler } = require('./utils/asyncRoute');
 const fs = require('fs-extra');
 const YAML = require('yaml');
 const path = require('path');
@@ -34,12 +39,17 @@ const {
 
 // 引入应用状态V2模块
 const {
+  appStatusV2,
   handlePodsV2,
   handleServicesV2,
   handleAppStatusV2,
   handleClearAppCache,
   handleAppCacheStatus
 } = require('./appStatusV2');
+
+// /api/proxy-request* 的目标校验（SSRF）。复用 appStatusV2 的 Service 缓存构造白名单，
+// 数据源与前端挑选可测服务的来源相同，UI 能发起的请求必然在名单内。
+const ssrfGuard = require('./utils/ssrfGuard');
 
 // 引入 HyperPod API 管理模块
 const hyperpodApiManager = require('./hyperpodApiManager');
@@ -64,7 +74,7 @@ const trainingJobManager = require('./trainingJobManager');
 const deploymentManager = require('./deploymentManager');
 
 const http = require('http');
-const { authMiddleware, verifyHandler, isAuthActive, getAuthConfig } = require('./utils/authMiddleware');
+const { authMiddleware, verifyHandler, isAuthActive, getAuthConfig, safeCompare } = require('./utils/authMiddleware');
 const app = express();
 // Unified single-port design: HTTP (static + /api) and WebSocket (/ws) share one TCP port.
 // Production (client/build exists) uses PORT; dev (no build) uses API_PORT so CRA dev server on PORT can proxy to it.
@@ -92,125 +102,22 @@ if (IS_PRODUCTION) {
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: '/ws' });
 
-// 日志存储配置 - 简化路径结构
-const LOGS_BASE_DIR = path.join(__dirname, '..', 'logs');
+// 日志路径统一由 logStreamManager 负责：它做名称白名单 + 目录包含性校验。
+// 这里曾经有一份重复的 LOGS_BASE_DIR / ensureLogDirectory，且没有任何校验，
+// 而参数直接来自 WebSocket 消息——能在 logs/ 之外建目录、写 .log 文件。
+const { ensureLogDirectory, isSafeName } = logStreamManager;
 
-// 确保日志目录存在 - 简化版本，直接使用任务名
-function ensureLogDirectory(jobName, podName) {
-  const jobLogDir = path.join(LOGS_BASE_DIR, jobName);
-  if (!fs.existsSync(jobLogDir)) {
-    fs.mkdirSync(jobLogDir, { recursive: true });
-  }
-  return path.join(jobLogDir, `${podName}.log`);
-}
-
-// 优化错误消息的函数
-function optimizeErrorMessage(errorMessage) {
-  if (!errorMessage) return 'Unknown error';
-  
-  // 如果是获取hyperpodpytorchjob但资源类型不存在，这是正常情况
-  if (errorMessage.includes(`doesn't have a resource type "hyperpodpytorchjob"`)) {
-    return 'No HyperPod training jobs found (HyperPod operator may not be installed)';
-  }
-  // 如果是获取rayjob但资源类型不存在
-  if (errorMessage.includes(`doesn't have a resource type "rayjob"`)) {
-    return 'No RayJobs found (Ray operator may not be installed)';
-  }
-  // 如果是资源不存在，使用更友好的消息
-  if (errorMessage.includes('not found') || errorMessage.includes('NotFound')) {
-    return 'Resource not found - this may be normal if no resources have been created yet';
-  }
-  // 如果是连接问题
-  if (errorMessage.includes('connection refused') || errorMessage.includes('unable to connect')) {
-    return 'Unable to connect to Kubernetes cluster. Please check if the cluster is accessible.';
-  }
-  
-  return errorMessage;
-}
-
-// 执行kubectl命令的辅助函数 - 简化版错误优化
+// 执行 kubectl 命令的辅助函数。
+//
+// 2026-09-20：实现搬到 `utils/kubectl.js`，这里只是保留函数名的薄壳。原先这里是三份
+// 近似实现中最完整的一份（含错误消息优化与成功摘要日志），另两份在 appStatusV2.js 与
+// clusterStatusV2.js，行为各不相同——那正是 D3（maxBuffer 不一致、缺在飞去重）和
+// D5（reject 普通对象导致真实 stderr 被吞）的来源。收敛后所有 kubectl 调用还会显式
+// 带 `--context`，见 utils/kubectlContext.js。
+// 同时删掉了 index.js 里那个无调用方的 optimizeErrorMessage（E4 记录的死代码）——
+// 它的逻辑与本函数内联的那份重复，现在只在 utils/kubectl.js 里有一份。
 function executeKubectl(command, timeout = 30000) { // 默认30秒超时
-  return new Promise((resolve, reject) => {
-    console.log(`Executing kubectl command: kubectl ${command}`);
-    
-    // maxBuffer 默认 1 MiB，大集群 `get pods -A -o json` 可能 4-10 MiB，必须显式拉大
-    const child = exec(`kubectl ${command}`, { timeout, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) {
-        // 检查是否是"资源类型不存在"的预期错误（CRD 未安装）
-        const isResourceTypeNotFound = stderr?.includes(`doesn't have a resource type`) || 
-                                        error.message?.includes(`doesn't have a resource type`);
-        
-        if (isResourceTypeNotFound) {
-          // 静默处理：只打印简洁的提示，不打印堆栈
-          console.error(stderr?.trim() || error.message);
-        } else {
-          // 其他错误：打印完整信息用于调试
-          console.error(`kubectl command failed: kubectl ${command}`);
-          console.error(`Error details:`, error);
-          console.error(`Stderr:`, stderr);
-        }
-        
-        if (error.code === 'ETIMEDOUT') {
-          console.error(`kubectl command timed out after ${timeout}ms: ${command}`);
-          reject(new Error(`Command timed out after ${timeout/1000} seconds. The cluster may be slow to respond.`));
-        } else {
-          const errorMessage = error.message || stderr || 'Unknown kubectl error';
-          
-          // 资源类型不存在：静默 reject，不打印额外日志
-          if (isResourceTypeNotFound) {
-            reject(new Error(errorMessage));
-            return;
-          }
-          
-          // 针对特定情况优化错误消息
-          let optimizedMessage = errorMessage;
-          
-          // 如果是资源不存在，使用更友好的消息
-          if (errorMessage.includes('not found') || errorMessage.includes('NotFound')) {
-            optimizedMessage = 'Resource not found - this may be normal if no resources have been created yet';
-          }
-          // 如果是连接问题
-          else if (errorMessage.includes('connection refused') || errorMessage.includes('unable to connect')) {
-            optimizedMessage = 'Unable to connect to Kubernetes cluster. Please check if the cluster is accessible.';
-          }
-          
-          console.error(`Optimized error message: ${optimizedMessage}`);
-          reject(new Error(optimizedMessage));
-        }
-      } else {
-        // 优化日志输出：JSON 响应只打印摘要
-        if (command.includes('-o json') && stdout.trim().startsWith('{')) {
-          try {
-            const parsed = JSON.parse(stdout);
-            const itemCount = parsed.items?.length ?? (parsed.metadata?.name ? 1 : 0);
-            const kind = parsed.kind || 'Resource';
-            console.log(`kubectl succeeded: kubectl ${command} → ${kind} (${itemCount} items)`);
-          } catch {
-            // 解析失败时打印截断的输出
-            console.log(`kubectl succeeded: kubectl ${command}`);
-            console.log(`Output (truncated): ${stdout.substring(0, 200)}...`);
-          }
-        } else {
-          // 非 JSON 命令打印完整输出（通常较短）
-          console.log(`kubectl succeeded: kubectl ${command}`);
-          if (stdout.trim()) {
-            console.log(`Output: ${stdout.trim().substring(0, 500)}${stdout.length > 500 ? '...' : ''}`);
-          }
-        }
-        resolve(stdout);
-      }
-    });
-    
-    // 额外的超时保护
-    const timeoutId = setTimeout(() => {
-      child.kill('SIGTERM');
-      console.error(`Force killing kubectl command after ${timeout}ms: ${command}`);
-    }, timeout);
-    
-    child.on('exit', () => {
-      clearTimeout(timeoutId);
-    });
-  });
+  return runKubectl(command, { timeout, optimizeError: true, logSuccess: true });
 }
 
 // shouldUseThreadsPerCore2 函数已迁移至 hyperpodApiManager.js
@@ -254,12 +161,25 @@ app.get('/api/cluster-status/cache-status', handleCacheStatus);
 // 统一日志流管理 - 避免冲突
 const unifiedLogStreams = new Map(); // 统一管理所有日志流
 
+/**
+ * streamKey 的唯一构造点。
+ *
+ * 注意这个 key 不可反解：jobName、namespace、podName 自身都含连字符，
+ * `split('-')` 拿不回原始字段。需要 jobName/podName/namespace 时读 stream 记录里
+ * 存的字段，需要删除时直接用 streamKey——不要再尝试从 key 反解。
+ * （2026-09-20：`stopAllLogStreams` 曾用 split('-') 反解，导致所有含连字符的作业名
+ * 都清理失败，kubectl logs -f 子进程永久泄漏。）
+ */
+function buildStreamKey(jobName, podName, namespace) {
+  // 包含 namespace，避免跨 ns 同名 pod 冲突（例如 kube-system 和 default 里都可能有 dns pod）
+  return namespace ? `${jobName}-${namespace}-${podName}` : `${jobName}-${podName}`;
+}
+
 // 启动统一日志流（支持自动收集和WebSocket流式传输）
 function startUnifiedLogStream(jobName, podName, options = {}) {
   const { ws = null, autoCollection = false, namespace = null } = options;
-  // streamKey 包含 namespace，避免跨 ns 同名 pod 冲突（例如 kube-system 和 default 里都可能有 dns pod）
-  const streamKey = namespace ? `${jobName}-${namespace}-${podName}` : `${jobName}-${podName}`;
-  
+  const streamKey = buildStreamKey(jobName, podName, namespace);
+
   // 如果已经有该pod的日志流，添加WebSocket连接但不重启进程
   if (unifiedLogStreams.has(streamKey)) {
     const existing = unifiedLogStreams.get(streamKey);
@@ -307,6 +227,7 @@ function startUnifiedLogStream(jobName, podName, options = {}) {
     webSockets: webSockets,
     jobName: jobName,
     podName: podName,
+    namespace: namespace,   // 存下来，清理和诊断都不需要再反解 streamKey
     autoCollection: autoCollection,
     startTime: new Date().toISOString()
   });
@@ -407,23 +328,35 @@ function startUnifiedLogStream(jobName, podName, options = {}) {
   }
 }
 
+/**
+ * 按 streamKey 摘掉一个 WebSocket，必要时回收整条流。
+ * 这是唯一的回收实现；按 jobName/podName 退订的入口走 removeWebSocketFromLogStream。
+ * @returns {boolean} 是否真的回收了底层进程
+ */
+function detachWebSocketByStreamKey(ws, streamKey) {
+  const stream = unifiedLogStreams.get(streamKey);
+  if (!stream) {
+    console.warn(`[logstream] 要退订的流不存在: ${streamKey}`);
+    return false;
+  }
+
+  stream.webSockets.delete(ws);
+  console.log(`Removed WebSocket from log stream ${streamKey}, remaining: ${stream.webSockets.size}`);
+
+  // 如果没有WebSocket连接且不是自动收集，停止日志流
+  if (stream.webSockets.size === 0 && !stream.autoCollection) {
+    console.log(`No more WebSocket connections for ${streamKey}, stopping log stream`);
+    stream.process.kill();
+    stream.logStream.end();
+    unifiedLogStreams.delete(streamKey);
+    return true;
+  }
+  return false;
+}
+
 // 从统一日志流中移除WebSocket连接
 function removeWebSocketFromLogStream(ws, jobName, podName, namespace) {
-  const streamKey = namespace ? `${jobName}-${namespace}-${podName}` : `${jobName}-${podName}`;
-  const stream = unifiedLogStreams.get(streamKey);
-  
-  if (stream) {
-    stream.webSockets.delete(ws);
-    console.log(`Removed WebSocket from log stream ${streamKey}, remaining: ${stream.webSockets.size}`);
-    
-    // 如果没有WebSocket连接且不是自动收集，停止日志流
-    if (stream.webSockets.size === 0 && !stream.autoCollection) {
-      console.log(`No more WebSocket connections for ${streamKey}, stopping log stream`);
-      stream.process.kill();
-      stream.logStream.end();
-      unifiedLogStreams.delete(streamKey);
-    }
-  }
+  detachWebSocketByStreamKey(ws, buildStreamKey(jobName, podName, namespace));
 }
 
 // 为训练任务自动开始日志收集
@@ -460,6 +393,30 @@ async function startAutoLogCollectionForJob(jobName) {
 
 // 修改原有的startLogStream函数，使用统一管理
 function startLogStream(ws, jobName, podName, namespace) {
+  // 这三个值直接来自 WebSocket 消息体，且会流向两处危险的地方：
+  // 文件路径（ensureLogDirectory）和 kubectl 参数（spawn）。在入口一次挡掉，
+  // 不要依赖下游各自校验。namespace 可以缺省（走 kubectl 当前上下文）。
+  const invalid = [];
+  if (!isSafeName(jobName)) invalid.push(`jobName=${JSON.stringify(jobName)}`);
+  if (!isSafeName(podName)) invalid.push(`podName=${JSON.stringify(podName)}`);
+  if (namespace !== undefined && namespace !== null && !isSafeName(namespace)) {
+    invalid.push(`namespace=${JSON.stringify(namespace)}`);
+  }
+
+  if (invalid.length > 0) {
+    const detail = `非法的日志流参数: ${invalid.join(', ')}`;
+    console.warn(`[logstream] 拒绝启动日志流 — ${detail}`);
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'log_stream_error',
+        jobName, podName,
+        error: detail,
+        timestamp: new Date().toISOString()
+      }));
+    }
+    return;
+  }
+
   startUnifiedLogStream(jobName, podName, { ws: ws, namespace });
 }
 
@@ -531,7 +488,23 @@ app.post('/api/proxy-request', async (req, res) => {
         error: 'Missing payload for non-GET request'
       });
     }
-    
+
+    // SSRF 防护：这个路由把响应体原样回传，所以目标必须先受限。
+    // 第一层挡协议与链路本地/IMDS/回环，第二层要求目标是本集群一个真实 Service。
+    const inspected = await ssrfGuard.inspectTarget(url);
+    if (!inspected.ok) {
+      console.warn(`[proxy-request] 拒绝目标 ${url}: ${inspected.reason}`);
+      return res.status(400).json({ success: false, error: `目标不被允许: ${inspected.reason}` });
+    }
+
+    const servicesResult = await appStatusV2.getServices();
+    const allowlist = ssrfGuard.buildAllowlist(servicesResult?.services);
+    const matched = ssrfGuard.matchAllowlist(inspected.urlObj, allowlist);
+    if (!matched.ok) {
+      console.warn(`[proxy-request] 拒绝目标 ${url}: ${matched.reason}`);
+      return res.status(400).json({ success: false, error: `目标不被允许: ${matched.reason}` });
+    }
+
     console.log(`Proxy ${method} → ${url}`);
 
     const result = await makeHttpRequest(url, payload, method);
@@ -571,9 +544,23 @@ app.post('/api/proxy-request-portforward', async (req, res) => {
     }
     
     const { serviceName, namespace, servicePort, localPort } = portForward;
-    
+
+    // SSRF 防护：这个路由的目标必然是本机的 port-forward 端口，所以允许回环，
+    // 但要求端口等于服务端自己即将建立的 localPort——否则就能借它扫本机其它端口。
+    // 链路本地/IMDS 仍然无条件拦。
+    const inspected = await ssrfGuard.inspectTarget(url, { allowLoopback: true });
+    if (!inspected.ok) {
+      console.warn(`[proxy-request-portforward] 拒绝目标 ${url}: ${inspected.reason}`);
+      return res.status(400).json({ success: false, error: `目标不被允许: ${inspected.reason}` });
+    }
+    const portCheck = ssrfGuard.checkPortForwardTarget(inspected.urlObj, localPort);
+    if (!portCheck.ok) {
+      console.warn(`[proxy-request-portforward] 拒绝目标 ${url}: ${portCheck.reason}`);
+      return res.status(400).json({ success: false, error: `目标不被允许: ${portCheck.reason}` });
+    }
+
     console.log(`[Port-Forward Mode] Starting for ${serviceName}...`);
-    
+
     // 启动 port-forward
     const pfResult = await portForwardManager.startTemporary(
       serviceName,
@@ -643,7 +630,7 @@ wss.on('connection', (ws, req) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const token = url.searchParams.get('token');
     const { hash } = getAuthConfig();
-    if (token !== hash) {
+    if (!safeCompare(token, hash)) {
       ws.close(4401, 'Unauthorized');
       return;
     }
@@ -773,46 +760,23 @@ function broadcastStatusUpdate() {
   broadcast(message);
 }
 
-// 🔄 定时检查创建中的集群状态 - 每60秒检查一次
-const clusterStatusCheckInterval = setInterval(async () => {
-  try {
-    const creatingClustersPath = path.join(__dirname, '../managed_clusters_info/creating-clusters.json');
-    
-    if (!fs.existsSync(creatingClustersPath)) return;
-    
-    const creatingClusters = JSON.parse(fs.readFileSync(creatingClustersPath, 'utf8'));
-    
-    for (const [clusterTag, clusterInfo] of Object.entries(creatingClusters)) {
-      if (clusterInfo.type === 'eks' && clusterInfo.stackName && clusterInfo.currentStackStatus !== 'COMPLETED') {
-        try {
-          const stackStatus = await CloudFormationManager.getStackStatus(clusterInfo.stackName, clusterInfo.region);
-          
-          if (stackStatus.stackStatus === 'CREATE_COMPLETE') {
-            console.log(`[Auto-Check] EKS cluster ${clusterTag} creation completed, registering...`);
-            await registerCompletedCluster(clusterTag, 'active');
-            updateCreatingClustersStatus(clusterTag, 'COMPLETED');
-            
-            broadcast({
-              type: 'cluster_creation_completed',
-              status: 'success',
-              message: `EKS cluster ${clusterTag} created successfully. Configure dependencies in Cluster Information.`,
-              clusterTag: clusterTag
-            });
-          }
-        } catch (error) {
-          console.error(`[Auto-Check] Error checking cluster ${clusterTag}:`, error);
-        }
-      }
-    }
-  } catch (error) {
-    console.error('[Auto-Check] Error in cluster status check:', error);
-  }
-}, 60000);
+// EKS 创建完成的注册走 reconcile-on-read：由 GET /api/cluster/creating-clusters
+// （eksCreationManager.js）在被查询时检测 CREATE_COMPLETE → 注册 → 清理 → 广播。
+//
+// 这里曾有一个 60 秒的 setInterval 做同一件事，但它调用的 registerCompletedCluster /
+// updateCreatingClustersStatus 定义在 eksCreationManager.js 且从未被导入到本文件作用域，
+// 每次触发都抛 ReferenceError 并被 catch 吞掉，实际从未生效。2026-09-20 移除。
+//
+// 不要重新加回来：creating-clusters.json 是 readFileSync → 改 → writeFileSync，没有任何
+// 锁；再加一个并发 writer 会和 HTTP handler 抢写、丢更新。EKS 完成只需要登记 metadata
+// （幂等、廉价），放在读路径上是安全的。
+//
+// 下面的 HyperPod 定时器是另一回事，必须保留：它触发 registerCompletedHyperPod()，会跑
+// helm 安装依赖，分钟级、不可重入、且不能依赖浏览器是否开着。
 
 // 🔄 定时检查创建中的HyperPod集群状态 - 每20秒检查一次
 const hyperPodStatusCheckInterval = setInterval(async () => {
   try {
-    const { execSync } = require('child_process');
     const creatingClusters = hyperpodApiManager.getCreatingHyperPodClusters();
     
     for (const [clusterTag, clusterInfo] of Object.entries(creatingClusters)) {
@@ -1000,6 +964,13 @@ function gracefulShutdown(signal) {
     clearInterval(heartbeatInterval);
     console.log('✅ WebSocket heartbeat interval cleared');
   }
+
+  // 清理 HyperPod 创建状态轮询：它会 execSync 调 CloudFormation 并写 metadata，
+  // 关机过程中再触发一次可能写出半完成状态
+  if (typeof hyperPodStatusCheckInterval !== 'undefined') {
+    clearInterval(hyperPodStatusCheckInterval);
+    console.log('✅ HyperPod status check interval cleared');
+  }
   
   // 关闭WebSocket服务器
   if (wss) {
@@ -1035,23 +1006,22 @@ function gracefulShutdown(signal) {
 
 // 停止某个WebSocket连接的所有日志流
 function stopAllLogStreams(ws) {
-  const streamsToStop = [];
-  
-  // 从统一日志流中移除该WebSocket连接
+  // 先收集再删除：不要在 forEach 遍历 Map 的过程中 delete。
+  // 直接收 streamKey，不从 key 反解字段（见 buildStreamKey 的注释）。
+  const streamKeys = [];
   unifiedLogStreams.forEach((stream, streamKey) => {
     if (stream.webSockets.has(ws)) {
-      const [jobName, podName] = streamKey.split('-');
-      streamsToStop.push({ jobName, podName });
+      streamKeys.push(streamKey);
     }
   });
-  
-  // 移除WebSocket连接
-  streamsToStop.forEach(({ jobName, podName }) => {
-    removeWebSocketFromLogStream(ws, jobName, podName);
+
+  let reaped = 0;
+  streamKeys.forEach(streamKey => {
+    if (detachWebSocketByStreamKey(ws, streamKey)) reaped++;
   });
-  
-  if (streamsToStop.length > 0) {
-    console.log(`🧹 Cleaned up ${streamsToStop.length} log streams for disconnected WebSocket`);
+
+  if (streamKeys.length > 0) {
+    console.log(`🧹 Cleaned up ${streamKeys.length} log streams for disconnected WebSocket (回收进程 ${reaped} 个)`);
   }
 }
 
@@ -1292,6 +1262,13 @@ if (fs.existsSync(indexHtmlPath)) {
     res.sendFile(indexHtmlPath);
   });
 }
+
+// 错误兜底中间件（E8）——必须挂在**所有**路由之后，包括上面的 SPA fallback，
+// 否则 Express 不会把它当错误处理器用。配套的 `asyncHandler` 在各路由文件里：
+// express 4 不接管 async handler 返回的 Promise，**不包 asyncHandler 的 handler
+// 抛出时根本到不了这里**，仍会走下面的 unhandledRejection → 关停整个进程。
+// 只加中间件不包 handler 等于没修。
+app.use(routeErrorHandler);
 
 server.listen(PORT, () => {
   console.log('🚀 ========================================');

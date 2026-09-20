@@ -1,6 +1,7 @@
-const { execSync } = require('child_process');
+const { execSync, exec } = require('./exec');
 const fs = require('fs');
 const path = require('path');
+const YAML = require('yaml');
 
 class KedaManager {
 
@@ -82,76 +83,6 @@ class KedaManager {
   }
 
 
-  /**
-   * 获取统一扩缩容YAML模板
-   * @returns {string} YAML模板字符串
-   */
-  static getUnifiedScalingTemplate() {
-    // 使用 ${}$ 格式避免与JavaScript模板字符串冲突
-    return `---
-# Prometheus ConfigMap for scraping SGLang Router metrics
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: prometheus-server
-  namespace: monitoring
-data:
-  prometheus.yml: |
-    global:
-      scrape_interval: 1m
-      evaluation_interval: 1m
-
-    scrape_configs:
-      - job_name: '\${ServiceName}$-prom-job'
-        static_configs:
-          - targets: ['\${ServiceName}$.default.svc.cluster.local:\${RouterMetricPort}$']
-        scrape_interval: \${ScrapeInterval}$s
-        metrics_path: /metrics
-
-      - job_name: 'kube-state-metrics'
-        static_configs:
-          - targets: ['prometheus-kube-state-metrics.monitoring.svc.cluster.local:8080']
-        scrape_interval: \${ScrapeInterval}$s
-
----
-# KEDA ScaledObject for SGLang Workers
-apiVersion: keda.sh/v1alpha1
-kind: ScaledObject
-metadata:
-  name: sglang-router-scaler
-  namespace: default
-spec:
-  scaleTargetRef:
-    name: \${DeploymentName}$
-  minReplicaCount: \${MinReplica}$
-  maxReplicaCount: \${MaxReplica}$
-  pollingInterval: \${KedaPollInterval}$
-  cooldownPeriod: \${KedaCoolDownPeriod}$
-  triggers:
-  # Trigger 1
-  - type: prometheus
-    metadata:
-      serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
-      # QPS per pod - divides total QPS by current number of replicas
-      query: |
-        (
-          rate(sgl_router_requests_total{job="\${ServiceName}$-prom-job"}[1m]) /
-          scalar(kube_deployment_status_replicas{deployment="\${DeploymentName}$"})
-        )
-      threshold: '\${KedaTrig1ValueThreshold}$'
-      activationThreshold: '\${KedaTrig1ActThreshold}$'  # Activate when any pod has >1 QPS
-
-  # Trigger 2
-  - type: prometheus
-    metadata:
-      serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
-      query: sgl_router_job_queue_depth{job="\${ServiceName}$-prom-job"}
-      threshold: '\${KedaTrig2ValueThreshold}$'
-      activationThreshold: '\${KedaTrig2ActThreshold}$'
-
-
-`;
-  }
 
   /**
    * 生成统一扩缩容YAML（使用内嵌模板）
@@ -160,46 +91,99 @@ spec:
    */
   static generateUnifiedScalingYaml(config) {
     try {
-      // 使用内嵌模板
-      let template = this.getUnifiedScalingTemplate();
+      // S5：不再用「内嵌模板 + 一串 template.replace」生成 YAML。
+      //
+      // 旧实现有两个独立的问题：
+      // 1. 任何带换行的值（serviceName / deploymentName）都能改写文档结构。同类问题
+      //    在 Karpenter 与 eksctl 上都已实测可加出执行命令的字段，见 260920-refactor.md S9。
+      // 2. trigger 的启用/禁用靠正则**删掉模板里的一段文本**，模板缩进变一个空格
+      //    那个正则就静默失配——留下没被替换的 `${KedaTrig1ValueThreshold}$` 占位符。
+      //    改成按需 push trigger 之后，这类失配在结构上不存在。
+      const serviceName = config.serviceName;
+      const deploymentName = config.deploymentName;
+      const scrapeInterval = `${config.scrapeInterval}s`;
 
-      // 基础变量替换 (使用新的 ${...}$ 格式)
-      template = template.replace(/\$\{ServiceName\}\$/g, config.serviceName);
-      template = template.replace(/\$\{RouterMetricPort\}\$/g, config.routerMetricPort);
-      template = template.replace(/\$\{DeploymentName\}\$/g, config.deploymentName);
-      template = template.replace(/\$\{MinReplica\}\$/g, config.minReplica);
-      template = template.replace(/\$\{MaxReplica\}\$/g, config.maxReplica);
-      template = template.replace(/\$\{KedaPollInterval\}\$/g, config.kedaPollInterval);
-      template = template.replace(/\$\{KedaCoolDownPeriod\}\$/g, config.kedaCoolDownPeriod);
-      template = template.replace(/\$\{ScrapeInterval\}\$/g, config.scrapeInterval);
+      // Prometheus 的配置是 ConfigMap 里的**嵌套 YAML 文档**（block scalar），
+      // 所以先序列化成字符串，再作为 data 的值——由外层序列化器负责转义。
+      const prometheusYml = {
+        global: {
+          scrape_interval: '1m',
+          evaluation_interval: '1m',
+        },
+        scrape_configs: [
+          {
+            job_name: `${serviceName}-prom-job`,
+            static_configs: [{
+              targets: [`${serviceName}.default.svc.cluster.local:${config.routerMetricPort}`],
+            }],
+            scrape_interval: scrapeInterval,
+            metrics_path: '/metrics',
+          },
+          {
+            job_name: 'kube-state-metrics',
+            static_configs: [{
+              targets: ['prometheus-kube-state-metrics.monitoring.svc.cluster.local:8080'],
+            }],
+            scrape_interval: scrapeInterval,
+          },
+        ],
+      };
 
-      // Trigger 配置处理
-      let finalYaml = template;
+      const configMap = {
+        apiVersion: 'v1',
+        kind: 'ConfigMap',
+        metadata: { name: 'prometheus-server', namespace: 'monitoring' },
+        data: { 'prometheus.yml': YAML.stringify(prometheusYml) },
+      };
 
-      // 处理 QPS Window 替换（在 query 中的 [1m] 部分）
-      if (config.enabledTriggers?.includes('qps') && config.qpsWindow) {
-        finalYaml = finalYaml.replace(/\[1m\]/g, `[${config.qpsWindow}]`);
-      }
+      const PROM_SERVER = 'http://prometheus-server.monitoring.svc.cluster.local:80';
+      const triggers = [];
 
-      // 处理 Trigger 1 (QPS per Worker)
+      // Trigger 1：每 pod QPS（总 QPS 除以当前副本数）
       if (config.enabledTriggers?.includes('qps')) {
-        finalYaml = finalYaml.replace(/\$\{KedaTrig1ValueThreshold\}\$/g, config.kedaTrig1ValueThreshold);
-        finalYaml = finalYaml.replace(/\$\{KedaTrig1ActThreshold\}\$/g, config.kedaTrig1ActThreshold);
-      } else {
-        // 如果没有启用 QPS trigger，移除相关的 trigger 1 配置
-        finalYaml = finalYaml.replace(/  # Trigger 1[\s\S]*?activationThreshold: '\$\{KedaTrig1ActThreshold\}\$'\s*\n/, '');
+        const window = config.qpsWindow || '1m';
+        triggers.push({
+          type: 'prometheus',
+          metadata: {
+            serverAddress: PROM_SERVER,
+            query: `(\n  rate(sgl_router_requests_total{job="${serviceName}-prom-job"}[${window}]) /\n`
+              + `  scalar(kube_deployment_status_replicas{deployment="${deploymentName}"})\n)\n`,
+            // KEDA 的 threshold 是字符串字段，旧模板用单引号保证这一点
+            threshold: String(config.kedaTrig1ValueThreshold),
+            activationThreshold: String(config.kedaTrig1ActThreshold),
+          },
+        });
       }
 
-      // 处理 Trigger 2 (Queue Depth)
+      // Trigger 2：队列深度
       if (config.enabledTriggers?.includes('queue')) {
-        finalYaml = finalYaml.replace(/\$\{KedaTrig2ValueThreshold\}\$/g, config.kedaTrig2ValueThreshold);
-        finalYaml = finalYaml.replace(/\$\{KedaTrig2ActThreshold\}\$/g, config.kedaTrig2ActThreshold);
-      } else {
-        // 如果没有启用 Queue trigger，移除相关的 trigger 2 配置
-        finalYaml = finalYaml.replace(/  # Trigger 2[\s\S]*?activationThreshold: '\$\{KedaTrig2ActThreshold\}\$'\s*\n?/, '');
+        triggers.push({
+          type: 'prometheus',
+          metadata: {
+            serverAddress: PROM_SERVER,
+            query: `sgl_router_job_queue_depth{job="${serviceName}-prom-job"}`,
+            threshold: String(config.kedaTrig2ValueThreshold),
+            activationThreshold: String(config.kedaTrig2ActThreshold),
+          },
+        });
       }
 
-      return finalYaml;
+      const scaledObject = {
+        apiVersion: 'keda.sh/v1alpha1',
+        kind: 'ScaledObject',
+        metadata: { name: 'sglang-router-scaler', namespace: 'default' },
+        spec: {
+          scaleTargetRef: { name: deploymentName },
+          // 这四个在 KEDA 里都是整数字段
+          minReplicaCount: Number(config.minReplica),
+          maxReplicaCount: Number(config.maxReplica),
+          pollingInterval: Number(config.kedaPollInterval),
+          cooldownPeriod: Number(config.kedaCoolDownPeriod),
+          triggers,
+        },
+      };
+
+      return [configMap, scaledObject].map(d => `---\n${YAML.stringify(d)}`).join('');
 
     } catch (error) {
       console.error('Error generating unified scaling YAML:', error);
@@ -247,7 +231,7 @@ spec:
         try {
           console.log('Checking Prometheus server rollout status...');
           const rolloutCommand = 'kubectl rollout status deployment prometheus-server -n monitoring';
-          require('child_process').exec(rolloutCommand, (error, stdout, stderr) => {
+          exec(rolloutCommand, (error, stdout, stderr) => {
             if (error) {
               console.warn('Prometheus rollout status check failed:', error.message);
             } else {

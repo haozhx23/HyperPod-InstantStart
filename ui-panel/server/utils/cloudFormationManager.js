@@ -6,6 +6,7 @@
 const { execSync, spawn } = require('child_process');
 const fs = require('fs-extra');
 const path = require('path');
+const YAML = require('yaml');
 const { getCurrentRoleArn } = require('./awsHelpers');
 
 // 读取client/user.env配置
@@ -352,6 +353,85 @@ class CloudFormationManager {
    * @param {Array} allSubnets - 所有子网信息
    * @returns {Promise<Object>} 创建结果
    */
+  /**
+   * 构建 eksctl ClusterConfig 对象（S5：不再拼字符串）。
+   *
+   * 改这一处的原因：eksctl 的 ClusterConfig 支持 `managedNodeGroups[].preBootstrapCommands`
+   * ——一个在节点启动时执行任意 shell 的字段。模板里**没有**这个字段，但只要某个插值点
+   * 能塞进换行，攻击者就能把它**加进去**（和 Karpenter 那处 `userData` 完全同形，
+   * 见 260920-refactor.md 的 S9）。序列化器让「加键」这件事在结构上不可能发生。
+   *
+   * 数值字段显式 Number()：minSize/maxSize/desiredCapacity/volumeSize 在 eksctl 里是整数，
+   * 旧版靠模板插值 + YAML 解析得到数字，序列化时必须自己保证类型。
+   *
+   * @param {Object} ctx 见两个调用点
+   * @returns {Object} 可直接交给 YAML.stringify 的对象
+   */
+  static buildEksctlNodeGroupConfig(ctx) {
+    const {
+      clusterName, region, vpcId, securityGroupId,
+      targetAZ, computeSubnetId, otherSubnet, nodeGroupConfig, efaSupported,
+      capacityBlock = false,
+    } = ctx;
+
+    const nodeGroup = {
+      name: nodeGroupConfig.nodeGroupName,
+      instanceType: nodeGroupConfig.instanceType,
+    };
+
+    if (capacityBlock) {
+      nodeGroup.capacityReservation = {
+        capacityReservationTarget: {
+          capacityReservationID: nodeGroupConfig.capacityReservationId,
+        },
+      };
+      nodeGroup.instanceMarketOptions = { marketType: 'capacity-block' };
+    } else if (nodeGroupConfig.useSpotInstances) {
+      nodeGroup.spot = true;
+    }
+
+    Object.assign(nodeGroup, {
+      volumeSize: Number(nodeGroupConfig.volumeSize || 200),
+      minSize: Number(nodeGroupConfig.minSize),
+      maxSize: Number(nodeGroupConfig.maxSize),
+      desiredCapacity: Number(nodeGroupConfig.desiredCapacity),
+      availabilityZones: [targetAZ],
+      efaEnabled: efaSupported,
+      privateNetworking: true,
+      securityGroups: {
+        attachIDs: [securityGroupId],
+        withShared: false,
+      },
+      iam: {
+        attachPolicyARNs: [
+          'arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy',
+          'arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy',
+          'arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly',
+          'arn:aws:iam::aws:policy/AmazonS3FullAccess',
+          'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore',
+        ],
+        withAddonPolicies: { ebs: true, fsx: true },
+      },
+    });
+
+    return {
+      apiVersion: 'eksctl.io/v1alpha5',
+      kind: 'ClusterConfig',
+      metadata: { name: clusterName, region },
+      vpc: {
+        id: vpcId,
+        securityGroup: securityGroupId,
+        subnets: {
+          private: {
+            [targetAZ]: { id: computeSubnetId },
+            [otherSubnet.availabilityZone]: { id: otherSubnet.subnetId },
+          },
+        },
+      },
+      managedNodeGroups: [nodeGroup],
+    };
+  }
+
   static async createEksNodeGroup(nodeGroupConfig, region, clusterName, vpcId, securityGroupId, allSubnets) {
     try {
       const fs = require('fs');
@@ -380,56 +460,16 @@ class CloudFormationManager {
         throw new Error(`No private subnet found in different AZ from ${targetAZ}`);
       }
 
-      // 生成eksctl配置
-      const spotConfig = nodeGroupConfig.useSpotInstances ? `
-    instanceType: ${nodeGroupConfig.instanceType}
-    spot: true` : `
-    instanceType: ${nodeGroupConfig.instanceType}`;
-
       // 检查实例类型是否支持EFA
       const efaSupported = await this.checkEfaSupport(nodeGroupConfig.instanceType);
       console.log(`Instance type ${nodeGroupConfig.instanceType} EFA support: ${efaSupported}`);
 
-      const eksctlConfig = `apiVersion: eksctl.io/v1alpha5
-kind: ClusterConfig
+      // 生成eksctl配置（S5：装对象 + 序列化，不拼字符串）
+      const eksctlConfig = YAML.stringify(this.buildEksctlNodeGroupConfig({
+        clusterName, region, vpcId, securityGroupId,
+        targetAZ, computeSubnetId, otherSubnet, nodeGroupConfig, efaSupported,
+      }));
 
-metadata:
-  name: ${clusterName}
-  region: ${region}
-
-vpc:
-  id: ${vpcId}
-  securityGroup: ${securityGroupId}
-  subnets:
-    private:
-      ${targetAZ}:
-        id: ${computeSubnetId}
-      ${otherSubnet.availabilityZone}:
-        id: ${otherSubnet.subnetId}
-
-managedNodeGroups:
-  - name: ${nodeGroupConfig.nodeGroupName}${spotConfig}
-    volumeSize: ${nodeGroupConfig.volumeSize || 200}
-    minSize: ${nodeGroupConfig.minSize}
-    maxSize: ${nodeGroupConfig.maxSize}
-    desiredCapacity: ${nodeGroupConfig.desiredCapacity}
-    availabilityZones: ["${targetAZ}"]
-    efaEnabled: ${efaSupported}
-    privateNetworking: true
-    securityGroups:
-      attachIDs: ["${securityGroupId}"]
-      withShared: false
-    iam:
-      attachPolicyARNs:
-        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
-        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
-        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
-        - arn:aws:iam::aws:policy/AmazonS3FullAccess
-        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
-      withAddonPolicies:
-        ebs: true
-        fsx: true
-`;
 
       // 生成临时配置文件
       const timestamp = new Date().toISOString().replace(/[-:.T]/g, '').slice(0, 14);
@@ -486,52 +526,12 @@ managedNodeGroups:
 
       const efaSupported = await this.checkEfaSupport(nodeGroupConfig.instanceType);
 
-      const eksctlConfig = `apiVersion: eksctl.io/v1alpha5
-kind: ClusterConfig
-
-metadata:
-  name: ${clusterName}
-  region: ${region}
-
-vpc:
-  id: ${vpcId}
-  securityGroup: ${securityGroupId}
-  subnets:
-    private:
-      ${targetAZ}:
-        id: ${computeSubnetId}
-      ${otherSubnet.availabilityZone}:
-        id: ${otherSubnet.subnetId}
-
-managedNodeGroups:
-  - name: ${nodeGroupConfig.nodeGroupName}
-    instanceType: ${nodeGroupConfig.instanceType}
-    capacityReservation:
-      capacityReservationTarget:
-        capacityReservationID: "${nodeGroupConfig.capacityReservationId}"
-    instanceMarketOptions:
-      marketType: "capacity-block"
-    volumeSize: ${nodeGroupConfig.volumeSize || 200}
-    minSize: ${nodeGroupConfig.minSize}
-    maxSize: ${nodeGroupConfig.maxSize}
-    desiredCapacity: ${nodeGroupConfig.desiredCapacity}
-    availabilityZones: ["${targetAZ}"]
-    efaEnabled: ${efaSupported}
-    privateNetworking: true
-    securityGroups:
-      attachIDs: ["${securityGroupId}"]
-      withShared: false
-    iam:
-      attachPolicyARNs:
-        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
-        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
-        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
-        - arn:aws:iam::aws:policy/AmazonS3FullAccess
-        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
-      withAddonPolicies:
-        ebs: true
-        fsx: true
-`;
+      // 生成eksctl配置（S5：装对象 + 序列化，不拼字符串）
+      const eksctlConfig = YAML.stringify(this.buildEksctlNodeGroupConfig({
+        clusterName, region, vpcId, securityGroupId,
+        targetAZ, computeSubnetId, otherSubnet, nodeGroupConfig, efaSupported,
+        capacityBlock: true,
+      }));
 
       const timestamp = new Date().toISOString().replace(/[-:.T]/g, '').slice(0, 14);
       const configFileName = `eksctl-nodegroup-cb-${nodeGroupConfig.nodeGroupName}-${timestamp}.yaml`;

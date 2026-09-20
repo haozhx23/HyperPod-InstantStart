@@ -3,6 +3,7 @@ const path = require('path');
 const yaml = require('yaml');
 const AWSHelpers = require('./utils/awsHelpers');
 const { execAsync } = require('./utils/exec');
+const { assertSafeToken } = require('./utils/validateInput');
 
 class FSxStorageManager {
   constructor() {
@@ -362,6 +363,11 @@ class FSxStorageManager {
   }
 
   async deleteKubernetesResource(type, name) {
+    // 兜底校验：type/name 直接拼进 shell。注意下面的 catch 只打 warn，
+    // 所以这里必须抛出去而不是被同一个 catch 吞掉——故意放在 try 之外。
+    assertSafeToken(type, 'type', { maxLength: 63 });
+    assertSafeToken(name, 'name', { maxLength: 63 });
+
     try {
       await execAsync(`kubectl delete ${type} ${name} --ignore-not-found=true`);
     } catch (error) {

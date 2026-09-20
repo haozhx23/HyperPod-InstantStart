@@ -4,6 +4,7 @@
  */
 
 const express = require('express');
+const { collectInvalid, rejectInvalid } = require('./utils/validateInput');
 const router = express.Router();
 const fs = require('fs-extra');
 const path = require('path');
@@ -443,6 +444,18 @@ router.post('/create-eks', async (req, res) => {
   try {
     const { clusterTag, awsRegion, customVpcCidr, cidrConfig: userCidrConfig } = req.body;
 
+    // clusterTag 会成为目录名（createClusterDirs → mkdirSync(path.join(...))）、
+    // CloudFormation stack 名、以及后续所有命令的插值来源。customVpcCidr 走
+    // CidrGenerator，那里只在 validateCidr 路径上校验格式，create 路径不校验。
+    const problems = collectInvalid([
+      ['clusterTag', clusterTag, 'token', { maxLength: 100 }],
+      ['awsRegion', awsRegion, 'token', { maxLength: 32 }],
+    ]);
+    if (customVpcCidr !== undefined && customVpcCidr !== null && customVpcCidr !== '') {
+      problems.push(...collectInvalid([['customVpcCidr', customVpcCidr, 'cidr']]));
+    }
+    if (problems.length > 0) return rejectInvalid(res, problems, 'POST /create-eks');
+
     // 验证必填字段
     if (!clusterTag || !awsRegion) {
       return res.status(400).json({ error: 'Missing required fields: clusterTag and awsRegion' });
@@ -733,6 +746,11 @@ router.post('/configure-dependencies', async (req, res) => {
 router.get('/:clusterTag/dependencies/status', async (req, res) => {
   try {
     const { clusterTag } = req.params;
+
+    // clusterTag 进 clusterManager 的裸 path.join；白名单禁掉 `/` 与首字符 `.`
+    const problems = collectInvalid([['clusterTag', clusterTag, 'token', { maxLength: 100 }]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, req.path);
+
     const clusterInfo = await getClusterInfo(clusterTag);
 
     if (!clusterInfo) {
@@ -762,6 +780,9 @@ router.get('/:clusterTag/dependencies/status', async (req, res) => {
 router.post('/cancel-creation/:clusterTag', async (req, res) => {
   try {
     const { clusterTag } = req.params;
+
+    const problems = collectInvalid([['clusterTag', clusterTag, 'token', { maxLength: 100 }]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, req.path);
 
     // 1. 获取创建状态信息
     const creatingClustersPath = path.join(__dirname, '../managed_clusters_info/creating-clusters.json');
@@ -832,6 +853,9 @@ router.get('/dependency-status/:clusterTag', async (req, res) => {
   try {
     const { clusterTag } = req.params;
 
+    const problems = collectInvalid([['clusterTag', clusterTag, 'token', { maxLength: 100 }]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, req.path);
+
     const clusterDir = clusterManager.getClusterDir(clusterTag);
     const configDir = path.join(clusterDir, 'config');
 
@@ -860,6 +884,26 @@ router.get('/dependency-status/:clusterTag', async (req, res) => {
 router.post('/reconfigure-dependencies/:clusterTag', async (req, res) => {
   try {
     const { clusterTag } = req.params;
+
+    const problems = collectInvalid([['clusterTag', clusterTag, 'token', { maxLength: 100 }]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, req.path);
+
+    // 这是整条依赖配置链路上**唯一**一个目标集群不是活跃集群的入口（另外两个入口都是
+    // `configureDependenciesForActiveCluster`）。依赖配置脚本里的 kubectl 会被注入
+    // `--context <活跃集群>`（R1）、helm 会被注入 `--kube-context <活跃集群>`（7.18），
+    // 所以 clusterTag ≠ 活跃集群时，脚本自己那句 `aws eks update-kubeconfig --name
+    // <clusterTag>` 已经不起作用了：命令会打到活跃集群上，也就是**给 A 装 B 的依赖**。
+    // 与其静默走错，不如要求调用方先切集群。（真正的解法是把 context 透传到调用点，
+    // 即 R6；那之前这里必须挡住。）
+    const activeCluster = clusterManager.getActiveCluster();
+    if (clusterTag !== activeCluster) {
+      return res.status(409).json({
+        success: false,
+        error: `只能重配活跃集群的依赖：请求的是 ${clusterTag}，当前活跃集群是 ` +
+               `${activeCluster || '(无)'}。依赖配置脚本里的 kubectl/helm 会带上活跃集群的 ` +
+               `context，若不一致会把依赖装到活跃集群上。请先切换集群再重试。`
+      });
+    }
 
     console.log(`Manual reconfiguration requested for cluster: ${clusterTag}`);
 
@@ -890,6 +934,9 @@ router.post('/reconfigure-dependencies/:clusterTag', async (req, res) => {
 router.get('/creation-status/:clusterTag', async (req, res) => {
   try {
     const { clusterTag } = req.params;
+
+    const problems = collectInvalid([['clusterTag', clusterTag, 'token', { maxLength: 100 }]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, req.path);
 
     // 读取创建 metadata 获取 region 和 stack 信息
     const metadataDir = clusterManager.getClusterMetadataDir(clusterTag);
@@ -929,6 +976,9 @@ router.get('/creation-status/:clusterTag', async (req, res) => {
 router.get('/creation-logs/:clusterTag', async (req, res) => {
   try {
     const { clusterTag } = req.params;
+
+    const problems = collectInvalid([['clusterTag', clusterTag, 'token', { maxLength: 100 }]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, req.path);
 
     // 读取集群配置
     const clusterInfo = await clusterManager.getClusterInfo(clusterTag);

@@ -1,38 +1,36 @@
 /**
- * 全局刷新配置文件
- * 定义刷新相关的默认设置和策略
+ * 操作后刷新的时序配置
+ *
+ * 唯一消费者是 hooks/useOperationRefresh.js。每个 key 是一个操作类型（由
+ * utils/wsMessageHandlers.js 在收到对应 WebSocket 广播时触发），值定义：
+ *
+ *   immediate: [componentId]              收到广播后立刻刷新
+ *   delayed:   [{ components, delay }]    delay 毫秒后再刷一次
+ *
+ * delayed 存在的理由是 AWS 侧最终一致：广播到达时 describe 出来的状态往往还是旧的。
+ * `['all']` 表示刷新所有已注册订阅者（走 operationRefreshManager.refreshAll()）。
+ *
+ * ── 组件 ID 必须真实存在 ──────────────────────────────────────────────
+ * ID 会先在 operationRefreshManager.refreshSubscribers 里查，查不到再回退到
+ * resourceEventBus 定向派发，两边都没有就会 console.error。
+ *
+ * 当前有效的 ID：
+ *   operationRefreshManager: app-status, pods-services, nodegroup-manager,
+ *                            training-history, cluster-management-redux,
+ *                            eks-cluster-creation, s3-storage-manager
+ *   resourceEventBus:        app-status, cluster-status
+ *
+ * 2026-09-20 清理：`status-monitor` 是改名前的旧 ID（现为 `app-status`），11 处引用
+ * 已改名并去重；`training-monitor`（TrainingMonitorPanelRedux 没有订阅任何机制）和
+ * `deployment-manager`（无任何注册）共 7 处引用已删除。改这个表时请对照上面的清单，
+ * 加不存在的 ID 不会报错在构建期，只会在运行时 console.error。
+ *
+ * 同时删除了 5 个无读取方的配置段（DEFAULT、COMPONENT_PRIORITIES、
+ * REFRESH_STRATEGIES、CACHE、UI）。周期性自动刷新的间隔现在由
+ * config/refresh-config.json 提供，见 hooks/useAutoRefresh.js。
  */
 
 export const REFRESH_CONFIG = {
-  // 默认设置
-  DEFAULT: {
-    autoRefreshEnabled: false,        // 默认关闭自动刷新
-    autoRefreshInterval: 60000,       // 自动刷新间隔60秒
-    maxConcurrentRefresh: 5,          // 最大并发刷新数
-    refreshTimeout: 120000,           // 单个刷新超时120秒 (增加以处理长时间操作如Karpenter)
-    retryAttempts: 2,                 // 失败重试次数
-    showRefreshNotifications: true,   // 显示刷新通知
-    enableDebugLogs: process.env.NODE_ENV === 'development' // 开发环境启用调试日志
-  },
-  
-  // 组件优先级配置
-  COMPONENT_PRIORITIES: {
-    'cluster-management': 10,         // 最高优先级 - 集群管理
-    'app-status': 9,                  // 高优先级 - App状态（公共组件）
-    'cluster-status': 9,              // 高优先级 - 集群状态（公共组件）
-    'pods-services': 8,               // 高优先级 - Pods和Services数据
-    'training-monitor': 8,            // 高优先级 - 训练监控
-    'deployment-manager': 7,          // 高优先级 - 部署管理
-    'nodegroup-manager': 7,           // 高优先级 - 节点组管理
-    'eks-cluster-creation': 7,        // 高优先级 - EKS集群创建状态检查
-    's3-storage-manager': 6,          // 中高优先级 - S3存储管理
-    'training-history': 6,            // 中高优先级 - 训练历史
-    'status-monitor': 4,              // 中优先级 - 状态监控（已被app-status替代）
-    'config-panel': 2,                // 低优先级 - 配置面板
-    'test-components': 1              // 最低优先级 - 测试组件
-  },
-  
-  // 操作触发刷新配置（为第二阶段准备）
   OPERATION_REFRESH: {
     'cluster-launch': {
       immediate: ['cluster-status'],
@@ -50,70 +48,69 @@ export const REFRESH_CONFIG = {
       ]
     },
     'model-deploy': {
-      immediate: ['status-monitor', 'pods-services'],
+      immediate: ['app-status', 'pods-services'],
       delayed: [
-        { components: ['status-monitor', 'cluster-status'], delay: 3000 },
+        { components: ['app-status', 'cluster-status'], delay: 3000 },
         { components: ['all'], delay: 10000 }
       ]
     },
     'service-deploy': {
-      immediate: ['status-monitor', 'app-status', 'pods-services'],
+      immediate: ['app-status', 'pods-services'],
       delayed: [
         { components: ['cluster-status'], delay: 3000 },
         { components: ['all'], delay: 8000 }
       ]
     },
     'service-delete': {
-      immediate: ['status-monitor', 'app-status', 'pods-services'],
+      immediate: ['app-status', 'pods-services'],
       delayed: [
         { components: ['cluster-status'], delay: 3000 },
         { components: ['all'], delay: 5000 }
       ]
     },
     'model-undeploy': {
-      immediate: ['deployment-manager', 'status-monitor', 'app-status', 'pods-services'],
+      immediate: ['app-status', 'pods-services'],
       delayed: [
         { components: ['cluster-status'], delay: 3000 }, // 等待资源清理完成
         { components: ['all'], delay: 8000 } // 确保所有相关状态更新
       ]
     },
     'model-download': {
-      immediate: ['status-monitor', 'app-status', 'pods-services'],
+      immediate: ['app-status', 'pods-services'],
       delayed: [
-        { components: ['cluster-status', 'deployment-manager'], delay: 3000 },
+        { components: ['cluster-status'], delay: 3000 },
         { components: ['all'], delay: 8000 } // 8秒后全局刷新，确保下载完成
       ]
     },
     'training-start': {
-      immediate: ['training-monitor', 'status-monitor', 'app-status', 'pods-services'],
+      immediate: ['app-status', 'pods-services'],
       delayed: [
         { components: ['cluster-status'], delay: 5000 },
         { components: ['all'], delay: 10000 } // 10秒后全局刷新，确保训练启动
       ]
     },
     'training-stop': {
-      immediate: ['training-monitor', 'status-monitor', 'app-status', 'pods-services'],
+      immediate: ['app-status', 'pods-services'],
       delayed: [
         { components: ['cluster-status'], delay: 3000 },
         { components: ['all'], delay: 5000 }
       ]
     },
     'rayjob-delete': {
-      immediate: ['training-monitor', 'training-history', 'status-monitor', 'app-status', 'pods-services'],
+      immediate: ['training-history', 'app-status', 'pods-services'],
       delayed: [
         { components: ['cluster-status'], delay: 5000 },
         { components: ['all'], delay: 10000 }
       ]
     },
     'pod-assign': {
-      immediate: ['status-monitor', 'app-status', 'pods-services'],
+      immediate: ['app-status', 'pods-services'],
       delayed: [
-        { components: ['deployment-manager'], delay: 2000 }, // 更新部署统计
         { components: ['all'], delay: 5000 }
       ]
     },
     'training-delete': {
-      immediate: ['training-monitor', 'training-history', 'status-monitor', 'app-status', 'pods-services'],
+      immediate: ['training-history', 'app-status', 'pods-services'],
       delayed: [
         { components: ['cluster-status'], delay: 5000 }, // 等待K8s资源清理
         { components: ['all'], delay: 10000 } // 确保训练日志和历史记录更新
@@ -148,52 +145,7 @@ export const REFRESH_CONFIG = {
     // 移除karpenter-install和karpenter-uninstall的复杂刷新配置
     // 按照简化架构思路：用户会通过定时/手动刷新查看kubectl的真实状态
   },
-  
-  // 刷新策略配置
-  REFRESH_STRATEGIES: {
-    // 立即刷新策略
-    IMMEDIATE: {
-      timeout: 5000,
-      retries: 1
-    },
-    
-    // 标准刷新策略
-    STANDARD: {
-      timeout: 15000,
-      retries: 2
-    },
-    
-    // 深度刷新策略（用于全局刷新）
-    DEEP: {
-      timeout: 30000,
-      retries: 3
-    }
-  },
-  
-  // 缓存配置
-  CACHE: {
-    enabled: true,
-    defaultTTL: 30000,                // 默认缓存30秒
-    maxSize: 100,                     // 最大缓存条目数
-    strategies: {
-      'cluster-status': { ttl: 60000 },    // 集群状态缓存1分钟
-      'pod-status': { ttl: 30000 },        // Pod状态缓存30秒
-      'service-status': { ttl: 60000 },    // Service状态缓存1分钟
-      'training-jobs': { ttl: 30000 },     // 训练任务缓存30秒
-      'deployment-status': { ttl: 45000 }  // 部署状态缓存45秒
-    }
-  },
-  
-  // 用户界面配置
-  UI: {
-    showRefreshProgress: true,        // 显示刷新进度
-    showComponentStatus: true,        // 显示组件状态
-    showRefreshStats: true,           // 显示刷新统计
-    compactMode: false,               // 紧凑模式
-    animationDuration: 300,           // 动画持续时间（毫秒）
-    notificationDuration: 3000        // 通知显示时间（毫秒）
-  },
-  
+
   // 开发和调试配置
   DEBUG: {
     enablePerformanceLogging: process.env.NODE_ENV === 'development',
@@ -206,21 +158,13 @@ export const REFRESH_CONFIG = {
 // 环境特定配置覆盖
 const ENVIRONMENT_OVERRIDES = {
   development: {
-    DEFAULT: {
-      showRefreshNotifications: true,
-      enableDebugLogs: true
-    },
     DEBUG: {
       enablePerformanceLogging: true,
       enableRefreshTracing: true
     }
   },
-  
+
   production: {
-    DEFAULT: {
-      showRefreshNotifications: false,
-      enableDebugLogs: false
-    },
     DEBUG: {
       enablePerformanceLogging: false,
       enableRefreshTracing: false
@@ -235,7 +179,7 @@ const envOverrides = ENVIRONMENT_OVERRIDES[currentEnv] || {};
 // 深度合并配置
 const mergeDeep = (target, source) => {
   const result = { ...target };
-  
+
   for (const key in source) {
     if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
       result[key] = mergeDeep(result[key] || {}, source[key]);
@@ -243,7 +187,7 @@ const mergeDeep = (target, source) => {
       result[key] = source[key];
     }
   }
-  
+
   return result;
 };
 
@@ -256,10 +200,6 @@ export const getRefreshConfig = (section = null) => {
     return FINAL_REFRESH_CONFIG[section] || {};
   }
   return FINAL_REFRESH_CONFIG;
-};
-
-export const getComponentPriority = (componentId) => {
-  return FINAL_REFRESH_CONFIG.COMPONENT_PRIORITIES[componentId] || 0;
 };
 
 export const getOperationRefreshConfig = (operationType = null) => {

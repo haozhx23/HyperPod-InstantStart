@@ -11,6 +11,7 @@ import React from 'react';
 import { Layout } from 'antd';
 import { CloudServerOutlined } from '@ant-design/icons';
 import { getActiveTheme } from '../config/themeConfig';
+import GlobalRefreshButtonRedux from './GlobalRefreshButtonRedux';
 
 const { Header } = Layout;
 
@@ -58,6 +59,10 @@ function AppHeader({ connectionStatus, getConnectionStatusIndicator }) {
           </span>
           {getConnectionStatusIndicator()}
         </div>
+
+        {/* 全局刷新按钮：按钮样式是按深色标题栏配的（透明底 + 白字白边）。
+            Neuron 项目通过 overlay 覆盖本文件定制品牌时，注意保留这一项。 */}
+        <GlobalRefreshButtonRedux size="small" />
       </div>
     </Header>
   );

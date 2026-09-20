@@ -1,282 +1,148 @@
-import React, { useEffect, useCallback, useRef } from 'react';
+/**
+ * 全局刷新按钮（标题栏）
+ *
+ * 一个手动「刷新全部」按钮 + 一个自动刷新设置浮层。挂载在 AppHeader 右侧。
+ *
+ * 手动刷新做两件事：
+ *   1. dispatch(globalRefresh)  —— 直接刷 Redux 里的集群状态和应用状态，
+ *      不依赖任何面板是否挂载。
+ *   2. operationRefreshManager.refreshAll() —— 通知所有已注册的面板
+ *      （节点组、训练历史、集群管理、EKS 创建、S3 存储，以及事件总线订阅者）。
+ * 两者合起来才是真正的「全局」；单靠前者只覆盖两类数据。
+ *
+ * 自动刷新**不自建定时器**。全应用只有一个周期性定时器，即 hooks/useAutoRefresh.js
+ * 里的 refreshManager；这里只是往它注册一个订阅者，并通过它的 updateConfig()
+ * 调整开关和间隔。间隔的默认值来自 config/refresh-config.json。
+ *
+ * 2026-09-20 从 313 行裁到当前规模：删掉了刷新统计、Recent Activity 历史列表和
+ * 错误徽章——那些是给调试刷新系统本身用的自我遥测，对使用者没有信息量。
+ */
+
+import React, { useEffect, useCallback, useState } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
-import { Button, Tooltip, Switch, Input, Badge, Popover, Typography, List } from 'antd';
-import { ReloadOutlined, SettingOutlined, CheckCircleOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
-import {
-  globalRefresh,
-  autoRefresh,
-  setAutoRefreshEnabled,
-  setAutoRefreshInterval,
-  setAutoRefreshTimerId,
-  clearError,
-  clearRefreshHistory
-} from '../store/slices/globalRefreshSlice';
-import {
-  selectIsGlobalRefreshing,
-  selectLastGlobalRefreshTime,
-  selectAutoRefreshEnabled,
-  selectAutoRefreshInterval,
-  selectGlobalRefreshStats,
-  selectRecentRefreshHistory,
-  selectGlobalRefreshError
-} from '../store/selectors';
+import { Button, Tooltip, Switch, Input, Popover, Typography } from 'antd';
+import { ReloadOutlined, SettingOutlined } from '@ant-design/icons';
+import { globalRefresh, autoRefresh, setAutoRefreshEnabled, setAutoRefreshInterval } from '../store/slices/globalRefreshSlice';
+import { selectIsGlobalRefreshing, selectLastGlobalRefreshTime } from '../store/selectors';
+import operationRefreshManager from '../hooks/useOperationRefresh';
+import { refreshManager, loadRefreshConfig } from '../hooks/useAutoRefresh';
 
-const { Text, Paragraph } = Typography;
+const { Text } = Typography;
 
-const GlobalRefreshButtonRedux = ({
-  style = {},
-  size = 'default',
-  showStats = true,
-  showAutoRefresh = true,
-  autoRefreshOptions = {}
-}) => {
+const SUBSCRIBER_ID = 'global-refresh-button';
+
+const GlobalRefreshButtonRedux = ({ style = {}, size = 'default', showAutoRefresh = true }) => {
   const dispatch = useDispatch();
-  const isInitialized = useRef(false);
 
-  // Redux 状态
   const isRefreshing = useSelector(selectIsGlobalRefreshing);
   const lastRefreshTime = useSelector(selectLastGlobalRefreshTime);
-  const autoRefreshEnabled = useSelector(selectAutoRefreshEnabled);
-  const autoRefreshInterval = useSelector(selectAutoRefreshInterval);
-  const refreshStats = useSelector(selectGlobalRefreshStats);
-  const recentHistory = useSelector(state => selectRecentRefreshHistory(state, 1)); // 只显示1个记录
-  const error = useSelector(selectGlobalRefreshError);
 
-  // 手动触发全局刷新
+  // 开关与间隔的真源是 refreshManager（它又由 config/refresh-config.json 播种），
+  // 这里只保留一份镜像用于渲染。
+  const [enabled, setEnabled] = useState(() => refreshManager.getConfig().ENABLED);
+  const [intervalMs, setIntervalMs] = useState(() => refreshManager.getConfig().INTERVAL);
+
+  // 启动时用服务端配置播种。loadRefreshConfig 幂等且会复用在飞请求，
+  // 因此和 App.js 里的那次调用不会重复发起 GET。
+  useEffect(() => {
+    let cancelled = false;
+    loadRefreshConfig().then(config => {
+      if (cancelled) return;
+      setEnabled(config.ENABLED);
+      setIntervalMs(config.INTERVAL);
+      // 同步给 Redux：autoRefresh thunk 用 state.globalRefresh.autoRefreshEnabled 做闸门
+      dispatch(setAutoRefreshEnabled(config.ENABLED));
+      dispatch(setAutoRefreshInterval(config.INTERVAL));
+    });
+    return () => { cancelled = true; };
+  }, [dispatch]);
+
+  // 往唯一的周期性定时器注册订阅者，而不是自己 setInterval
+  useEffect(() => {
+    return refreshManager.subscribe(SUBSCRIBER_ID, () => {
+      dispatch(autoRefresh());
+    });
+  }, [dispatch]);
+
   const handleManualRefresh = useCallback(async () => {
     if (isRefreshing) return;
-
     try {
-      await dispatch(globalRefresh({
-        source: 'manual',
-        refreshClusterStatus: true,
-        refreshAppStatus: true,
-        force: true
-      })).unwrap();
+      await Promise.all([
+        dispatch(globalRefresh({ source: 'manual', force: true })).unwrap(),
+        operationRefreshManager.refreshAll({ operationType: 'manual-global-refresh' })
+      ]);
     } catch (error) {
       console.error('Manual refresh failed:', error);
     }
   }, [dispatch, isRefreshing]);
 
-  // 切换自动刷新
-  const handleAutoRefreshToggle = useCallback((enabled) => {
-    dispatch(setAutoRefreshEnabled(enabled));
+  const handleToggle = useCallback((checked) => {
+    setEnabled(checked);
+    dispatch(setAutoRefreshEnabled(checked));
+    refreshManager.updateConfig({ ENABLED: checked });
   }, [dispatch]);
 
-  // 修改自动刷新间隔
-  const handleIntervalChange = useCallback((e) => {
-    const value = e.target.value;
-    const interval = Math.max(10, parseInt(value) || 10) * 1000; // 最小 10 秒，修复输入处理
-    dispatch(setAutoRefreshInterval(interval));
+  const handleIntervalChange = useCallback((event) => {
+    const seconds = parseInt(event.target.value, 10);
+    if (!Number.isFinite(seconds) || seconds < 5) return;
+    const ms = seconds * 1000;
+    setIntervalMs(ms);
+    dispatch(setAutoRefreshInterval(ms));
+    refreshManager.updateConfig({ INTERVAL: ms });
   }, [dispatch]);
 
-  // 清除错误
-  const handleClearError = useCallback(() => {
-    dispatch(clearError());
-  }, [dispatch]);
-
-  // 清除历史记录
-  const handleClearHistory = useCallback(() => {
-    dispatch(clearRefreshHistory());
-  }, [dispatch]);
-
-  // 组件初始化时设置默认配置（只在首次挂载时执行）
-  useEffect(() => {
-    if (!isInitialized.current) {
-      const { defaultEnabled, defaultInterval } = autoRefreshOptions;
-
-      if (defaultEnabled !== undefined) {
-        dispatch(setAutoRefreshEnabled(defaultEnabled));
-      }
-
-      if (defaultInterval !== undefined) {
-        dispatch(setAutoRefreshInterval(defaultInterval));
-      }
-
-      isInitialized.current = true;
-    }
-  }, [autoRefreshOptions, dispatch]); // 监听 autoRefreshOptions 但只初始化一次
-
-  // 设置自动刷新定时器
-  useEffect(() => {
-    let timerId = null;
-
-    if (autoRefreshEnabled && !isRefreshing) {
-      timerId = setInterval(() => {
-        dispatch(autoRefresh());
-      }, autoRefreshInterval);
-
-      dispatch(setAutoRefreshTimerId(timerId));
-    }
-
-    return () => {
-      if (timerId) {
-        clearInterval(timerId);
-        dispatch(setAutoRefreshTimerId(null));
-      }
-    };
-  }, [autoRefreshEnabled, autoRefreshInterval, isRefreshing, dispatch]);
-
-  // 格式化时间显示
-  const formatTime = (timestamp) => {
-    if (!timestamp) return 'Never';
-    const date = new Date(timestamp);
-    return date.toLocaleTimeString();
-  };
-
-  // 格式化间隔显示
   const formatInterval = (ms) => {
     const seconds = Math.floor(ms / 1000);
     if (seconds < 60) return `${seconds}s`;
-    const minutes = Math.floor(seconds / 60);
-    return `${minutes}m`;
+    return `${Math.floor(seconds / 60)}m`;
   };
 
-  // 获取按钮状态
-  const getButtonType = () => {
-    if (error) return 'danger';
-    if (isRefreshing) return 'primary';
-    return 'default';
-  };
+  const formatTime = (timestamp) => (
+    timestamp ? new Date(timestamp).toLocaleTimeString() : 'Never'
+  );
 
-  // 构建设置面板内容
   const settingsContent = (
-    <div style={{ width: 320, padding: '8px 0' }}>
-      <div style={{ marginBottom: 16 }}>
-        <Text strong>Auto Refresh Settings</Text>
-        <div style={{ marginTop: 8, display: 'flex', alignItems: 'center' }}>
-          <Switch
-            checked={autoRefreshEnabled}
-            onChange={handleAutoRefreshToggle}
-            size="small"
-          />
-          <Text style={{ marginLeft: 8 }}>
-            Enable Auto Refresh ({formatInterval(autoRefreshInterval)})
-          </Text>
-        </div>
-        {autoRefreshEnabled && (
-          <div style={{ marginTop: 8 }}>
-            <Text type="secondary">Refresh Interval (seconds):</Text>
-            <Input
-              size="small"
-              type="number"
-              min={10}
-              max={3600}
-              value={autoRefreshInterval / 1000}
-              onChange={handleIntervalChange}
-              style={{ width: 80, marginLeft: 8 }}
-            />
-          </div>
-        )}
+    <div style={{ width: 260, padding: '4px 0' }}>
+      <div style={{ display: 'flex', alignItems: 'center' }}>
+        <Switch checked={enabled} onChange={handleToggle} size="small" />
+        <Text style={{ marginLeft: 8 }}>
+          Auto refresh ({formatInterval(intervalMs)})
+        </Text>
       </div>
 
-      {showStats && refreshStats && (
-        <div style={{ marginBottom: 16 }}>
-          <Text strong>Refresh Statistics</Text>
-          <div style={{ marginTop: 8 }}>
-            <Paragraph style={{ margin: 0, fontSize: '12px' }}>
-              Total: {refreshStats.totalRefreshes} |
-              Success Rate: {refreshStats.successRate}% |
-              Avg Duration: {refreshStats.averageDuration}ms
-            </Paragraph>
-          </div>
-        </div>
-      )}
-
-      {recentHistory.length > 0 && (
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <Text strong>Recent Activity</Text>
-            <Button size="small" type="link" onClick={handleClearHistory}>
-              Clear
-            </Button>
-          </div>
-          <List
+      {enabled && (
+        <div style={{ marginTop: 10 }}>
+          <Text type="secondary">Interval (seconds):</Text>
+          <Input
             size="small"
-            dataSource={recentHistory}
-            renderItem={(record) => (
-              <List.Item style={{ padding: '4px 0', borderBottom: 'none' }}>
-                <div style={{ width: '100%' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Text style={{ fontSize: '12px' }}>
-                      {record.success ? (
-                        <CheckCircleOutlined style={{ color: '#52c41a', marginRight: 4 }} />
-                      ) : (
-                        <ExclamationCircleOutlined style={{ color: '#ff4d4f', marginRight: 4 }} />
-                      )}
-                      {formatTime(record.timestamp)}
-                    </Text>
-                    <Text type="secondary" style={{ fontSize: '11px' }}>
-                      {record.duration || 0}ms
-                    </Text>
-                  </div>
-                  {record.source && (
-                    <Text type="secondary" style={{ fontSize: '11px' }}>
-                      Source: {record.source}
-                    </Text>
-                  )}
-                </div>
-              </List.Item>
-            )}
+            type="number"
+            min={5}
+            max={3600}
+            defaultValue={intervalMs / 1000}
+            onBlur={handleIntervalChange}
+            onPressEnter={handleIntervalChange}
+            style={{ width: 80, marginLeft: 8 }}
           />
         </div>
       )}
 
-      {error && (
-        <div style={{ marginTop: 16 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <Text type="danger" strong>Error Message</Text>
-            <Button size="small" type="link" onClick={handleClearError}>
-              Clear
-            </Button>
-          </div>
-          <Paragraph style={{ margin: 0, fontSize: '12px', color: '#ff4d4f' }}>
-            {error}
-          </Paragraph>
-        </div>
-      )}
+      <div style={{ marginTop: 10 }}>
+        <Text type="secondary" style={{ fontSize: 11 }}>
+          本次会话内有效。默认值来自 config/refresh-config.json。
+        </Text>
+      </div>
     </div>
   );
 
-  // 主按钮 - 透明背景，白色文字和边框，与标题栏统一
-  const refreshButton = (
-    <Button
-      type={isRefreshing ? 'primary' : 'default'}
-      icon={<ReloadOutlined spin={isRefreshing} />}
-      size={size}
-      loading={isRefreshing}
-      onClick={handleManualRefresh}
-      disabled={isRefreshing}
-      style={{
-        ...style,
-        backgroundColor: isRefreshing ? undefined : 'transparent',
-        borderColor: isRefreshing ? undefined : 'rgba(255, 255, 255, 0.65)',
-        color: isRefreshing ? undefined : '#ffffff'
-      }}
-    >
-      Refresh
-    </Button>
-  );
-
-  // 如果有错误，显示错误徽章
-  const buttonWithBadge = error ? (
-    <Badge dot status="error">
-      {refreshButton}
-    </Badge>
-  ) : refreshButton;
-
-  // 构建工具提示内容
   const tooltipTitle = (
     <div>
-      <div>Click to refresh all component data</div>
-      {lastRefreshTime && (
-        <div style={{ fontSize: '11px', opacity: 0.8 }}>
-          Last refresh: {formatTime(lastRefreshTime)}
-        </div>
-      )}
-      {autoRefreshEnabled && (
-        <div style={{ fontSize: '11px', opacity: 0.8 }}>
-          Auto refresh: {formatInterval(autoRefreshInterval)}
+      <div>Refresh all panels</div>
+      <div style={{ fontSize: 11, opacity: 0.8 }}>
+        Last refresh: {formatTime(lastRefreshTime)}
+      </div>
+      {enabled && (
+        <div style={{ fontSize: 11, opacity: 0.8 }}>
+          Auto: every {formatInterval(intervalMs)}
         </div>
       )}
     </div>
@@ -285,16 +151,26 @@ const GlobalRefreshButtonRedux = ({
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <Tooltip title={tooltipTitle} placement="bottom">
-        {buttonWithBadge}
+        <Button
+          type={isRefreshing ? 'primary' : 'default'}
+          icon={<ReloadOutlined spin={isRefreshing} />}
+          size={size}
+          loading={isRefreshing}
+          onClick={handleManualRefresh}
+          disabled={isRefreshing}
+          style={{
+            ...style,
+            backgroundColor: isRefreshing ? undefined : 'transparent',
+            borderColor: isRefreshing ? undefined : 'rgba(255, 255, 255, 0.65)',
+            color: isRefreshing ? undefined : '#ffffff'
+          }}
+        >
+          Refresh
+        </Button>
       </Tooltip>
 
       {showAutoRefresh && (
-        <Popover
-          content={settingsContent}
-          title="Global Refresh Settings"
-          trigger="click"
-          placement="bottomRight"
-        >
+        <Popover content={settingsContent} title="Auto Refresh" trigger="click" placement="bottomRight">
           <Button
             icon={<SettingOutlined />}
             size={size}

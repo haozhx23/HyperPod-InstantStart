@@ -1,6 +1,5 @@
-const { execSync } = require('child_process');
-const { promisify } = require('util');
-const exec = promisify(require('child_process').exec);
+const { execSync } = require('./exec');
+const { execAsync: exec } = require('./exec');
 const fs = require('fs-extra');
 const path = require('path');
 const YAML = require('yaml');

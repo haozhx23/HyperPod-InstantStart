@@ -16,6 +16,7 @@ const router = express.Router();
 const fs = require('fs-extra');
 const path = require('path');
 const { execSync, execAsync } = require('./utils/exec');
+const { collectInvalid, collectPresent, rejectInvalid } = require('./utils/validateInput');
 
 // 依赖模块
 const ClusterManager = require('./clusterManager');
@@ -209,6 +210,27 @@ async function registerCompletedHyperPod(clusterTag) {
 router.post('/create-hyperpod', async (req, res) => {
   try {
     const { userConfig } = req.body;
+
+    // userConfig 的字段会进 CloudFormation 参数与 aws CLI 命令行。
+    // 只校验出现了的字段：这个端点的必填/默认值语义由下游负责，这里只保证「有值就必须安全」。
+    if (userConfig && typeof userConfig === 'object') {
+      const problems = collectPresent([
+        ['userConfig.instanceGroupName', userConfig.instanceGroupName, 'token', { maxLength: 63 }],
+        ['userConfig.initInstanceGroupTag', userConfig.initInstanceGroupTag, 'token', { maxLength: 63 }],
+        ['userConfig.instanceType', userConfig.instanceType, 'token', { maxLength: 32 }],
+        ['userConfig.availabilityZone', userConfig.availabilityZone, 'token', { maxLength: 32 }],
+        ['userConfig.subnetId', userConfig.subnetId, 'token', { maxLength: 64 }],
+        ['userConfig.computeSubnetId', userConfig.computeSubnetId, 'token', { maxLength: 64 }],
+        ['userConfig.instanceCount', userConfig.instanceCount, 'int', { max: 10000 }],
+        ['userConfig.volumeSize', userConfig.volumeSize, 'int', { max: 65536 }],
+        ['userConfig.trainingPlanArn', userConfig.trainingPlanArn, 'arn'],
+        ['userConfig.AcceleratedInstanceType', userConfig.AcceleratedInstanceType, 'token', { maxLength: 32 }],
+        ['userConfig.AcceleratedInstanceCount', userConfig.AcceleratedInstanceCount, 'int', { max: 10000 }],
+        ['userConfig.AcceleratedEBSVolumeSize', userConfig.AcceleratedEBSVolumeSize, 'int', { max: 65536 }],
+        ['userConfig.AcceleratedTrainingPlanArn', userConfig.AcceleratedTrainingPlanArn, 'arn'],
+      ]);
+      if (problems.length > 0) return rejectInvalid(res, problems, 'POST /create-hyperpod');
+    }
 
     // 获取当前活跃集群信息
     const activeCluster = clusterManager.getActiveCluster();
@@ -433,6 +455,10 @@ router.delete('/:clusterTag/hyperpod', async (req, res) => {
   try {
     const { clusterTag } = req.params;
 
+    // clusterTag 直接进 path.join，且这是个删除操作
+    const problems = collectInvalid([['clusterTag', clusterTag, 'token', { maxLength: 100 }]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, 'DELETE /:clusterTag/hyperpod');
+
     // 读取 HyperPod 配置获取 stackId
     const hyperPodConfigPath = path.join(MANAGED_CLUSTERS_DIR, clusterTag, 'metadata/hyperpod-config.json');
 
@@ -481,6 +507,14 @@ router.put('/hyperpod/instances/:name/scale', async (req, res) => {
   try {
     const { name } = req.params;
     const { targetCount } = req.body;
+
+    // name 与 targetCount 都会进 `aws sagemaker update-cluster`；targetCount 必须是数字，
+    // 否则 `"2 --region other"` 之类的值会被 CLI 当成真参数
+    const problems = collectInvalid([
+      ['name', name, 'token', { maxLength: 63 }],
+      ['targetCount', targetCount, 'int', { max: 10000 }],
+    ]);
+    if (problems.length > 0) return rejectInvalid(res, problems, 'PUT /hyperpod/instances/:name/scale');
 
     const activeClusterName = clusterManager.getActiveCluster();
 
@@ -551,6 +585,20 @@ router.post('/hyperpod/add-instance-group', async (req, res) => {
 
   try {
     const { userConfig } = req.body;
+
+    if (userConfig && typeof userConfig === 'object') {
+      const problems = collectPresent([
+        ['userConfig.instanceGroupName', userConfig.instanceGroupName, 'token', { maxLength: 63 }],
+        ['userConfig.instanceType', userConfig.instanceType, 'token', { maxLength: 32 }],
+        ['userConfig.availabilityZone', userConfig.availabilityZone, 'token', { maxLength: 32 }],
+        ['userConfig.subnetId', userConfig.subnetId, 'token', { maxLength: 64 }],
+        ['userConfig.computeSubnetId', userConfig.computeSubnetId, 'token', { maxLength: 64 }],
+        ['userConfig.instanceCount', userConfig.instanceCount, 'int', { max: 10000 }],
+        ['userConfig.volumeSize', userConfig.volumeSize, 'int', { max: 65536 }],
+        ['userConfig.trainingPlanArn', userConfig.trainingPlanArn, 'arn'],
+      ]);
+      if (problems.length > 0) return rejectInvalid(res, problems, 'POST /hyperpod/add-instance-group');
+    }
     const activeClusterName = clusterManager.getActiveCluster();
 
     if (!activeClusterName) {
@@ -700,6 +748,11 @@ router.post('/hyperpod/add-instance-group', async (req, res) => {
 router.post('/hyperpod/delete-instance-group', async (req, res) => {
   try {
     const { instanceGroupName } = req.body;
+
+    // 进 `aws sagemaker update-cluster --instance-groups-to-delete ${instanceGroupName}`（无引号）
+    const problems = collectInvalid([['instanceGroupName', instanceGroupName, 'token', { maxLength: 63 }]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, 'POST /hyperpod/delete-instance-group');
+
     const activeClusterName = clusterManager.getActiveCluster();
 
     if (!activeClusterName) {
@@ -753,6 +806,11 @@ router.post('/hyperpod/delete-instance-group', async (req, res) => {
 router.post('/hyperpod/update-software', async (req, res) => {
   try {
     const { clusterArn } = req.body;
+
+    // `aws sagemaker update-cluster-software --cluster-name "${clusterArn}"`：值在双引号里，
+    // 但 `$( )` 和反引号在双引号内照样展开，双引号不是防护。
+    const problems = collectInvalid([['clusterArn', clusterArn, 'arn']]);
+    if (problems.length > 0) return rejectInvalid(res, problems, 'POST /hyperpod/update-software');
 
     const activeClusterName = clusterManager.getActiveCluster();
 
@@ -827,6 +885,10 @@ router.post('/hyperpod/advanced-features', async (req, res) => {
 router.get('/hyperpod-creation-status/:clusterTag', async (req, res) => {
   try {
     const { clusterTag } = req.params;
+
+    const problems = collectInvalid([['clusterTag', clusterTag, 'token', { maxLength: 100 }]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, req.path);
+
     const creatingClusters = getCreatingHyperPodClusters();
     const status = creatingClusters[clusterTag];
 
@@ -904,6 +966,10 @@ router.get('/creating-hyperpod-clusters', async (req, res) => {
 router.get('/:clusterTag/hyperpod/dependencies/status', async (req, res) => {
   try {
     const { clusterTag } = req.params;
+
+    const problems = collectInvalid([['clusterTag', clusterTag, 'token', { maxLength: 100 }]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, req.path);
+
     const status = await HyperPodDependencyManager.getDependenciesStatus(clusterTag, clusterManager);
     res.json({ success: true, status });
   } catch (error) {
@@ -919,6 +985,10 @@ router.get('/:clusterTag/hyperpod/dependencies/status', async (req, res) => {
 router.post('/hyperpod/node/reboot', async (req, res) => {
   try {
     const { nodeId } = req.body;
+
+    // nodeId 去掉 `hyperpod-` 前缀后进 `aws sagemaker batch-*-cluster-nodes --node-ids ${instanceId}`（无引号）
+    const problems = collectInvalid([['nodeId', nodeId, 'token', { maxLength: 128 }]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, req.path);
 
     if (!nodeId) {
       return res.status(400).json({
@@ -999,6 +1069,10 @@ router.post('/hyperpod/node/replace', async (req, res) => {
   try {
     const { nodeId } = req.body;
 
+    // nodeId 去掉 `hyperpod-` 前缀后进 `aws sagemaker batch-*-cluster-nodes --node-ids ${instanceId}`（无引号）
+    const problems = collectInvalid([['nodeId', nodeId, 'token', { maxLength: 128 }]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, req.path);
+
     if (!nodeId) {
       return res.status(400).json({
         success: false,
@@ -1077,6 +1151,10 @@ router.post('/hyperpod/node/replace', async (req, res) => {
 router.post('/hyperpod/node/delete', async (req, res) => {
   try {
     const { nodeId } = req.body;
+
+    // nodeId 去掉 `hyperpod-` 前缀后进 `aws sagemaker batch-*-cluster-nodes --node-ids ${instanceId}`（无引号）
+    const problems = collectInvalid([['nodeId', nodeId, 'token', { maxLength: 128 }]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, req.path);
 
     if (!nodeId) {
       return res.status(400).json({

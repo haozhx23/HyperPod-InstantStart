@@ -1,4 +1,5 @@
-const { execSync } = require('child_process');
+const { execSync } = require('./exec');
+const YAML = require('yaml');
 
 /**
  * HyperPod Karpenter 资源管理器
@@ -161,50 +162,50 @@ class HyperPodKarpenterManager {
       const nodePoolName = `${baseName}-nodepool`;
 
       // 1. 创建 HyperpodNodeClass
-      const nodeClassYaml = `
-apiVersion: karpenter.sagemaker.amazonaws.com/v1
-kind: HyperpodNodeClass
-metadata:
-  name: ${nodeClassName}
-spec:
-  instanceGroups:
-${instanceGroups.map(ig => `    - ${ig}`).join('\n')}
-`;
+      //
+      // S5：这里原本有**两层**问题叠在一起。YAML 是字符串拼的（instanceGroups 里
+      // 一个带换行的元素就能改写结构），而且这段 YAML 是塞进 shell heredoc 的——
+      // 载荷里只要出现单独一行 `EOF`，heredoc 就提前结束，后面的内容变成 shell 命令。
+      // 现在改成：对象 + 序列化，再用 stdin 交给 `kubectl apply -f -`，
+      // heredoc 整个去掉，YAML 内容根本不经过 shell 解析。
+      const nodeClassYaml = YAML.stringify({
+        apiVersion: 'karpenter.sagemaker.amazonaws.com/v1',
+        kind: 'HyperpodNodeClass',
+        metadata: { name: nodeClassName },
+        spec: { instanceGroups },
+      });
 
-      const createNodeClassCmd = `kubectl apply -f - <<EOF
-${nodeClassYaml}
-EOF`;
-      
-      execSync(createNodeClassCmd, { encoding: 'utf8', shell: '/bin/bash' });
+      execSync('kubectl apply -f -', { encoding: 'utf8', input: nodeClassYaml });
       console.log(`HyperpodNodeClass ${nodeClassName} created`);
 
       // 2. 等待 NodeClass 就绪
       await new Promise(resolve => setTimeout(resolve, 5000));
 
-      // 3. 创建 NodePool
-      const nodePoolYaml = `
-apiVersion: karpenter.sh/v1
-kind: NodePool
-metadata:
-  name: ${nodePoolName}
-spec:
-  template:
-    spec:
-      nodeClassRef:
-        group: karpenter.sagemaker.amazonaws.com
-        kind: HyperpodNodeClass
-        name: ${nodeClassName}
-      expireAfter: Never
-      requirements:
-        - key: node.kubernetes.io/instance-type
-          operator: Exists
-`;
+      // 3. 创建 NodePool（同上：序列化 + stdin，不用 heredoc）
+      const nodePoolYaml = YAML.stringify({
+        apiVersion: 'karpenter.sh/v1',
+        kind: 'NodePool',
+        metadata: { name: nodePoolName },
+        spec: {
+          template: {
+            spec: {
+              nodeClassRef: {
+                group: 'karpenter.sagemaker.amazonaws.com',
+                kind: 'HyperpodNodeClass',
+                name: nodeClassName,
+              },
+              // 'Never' 必须是字符串；不加引号时 YAML 里它仍是字符串，
+              // 但显式写出来避免以后有人改成布尔语义的值
+              expireAfter: 'Never',
+              requirements: [
+                { key: 'node.kubernetes.io/instance-type', operator: 'Exists' },
+              ],
+            },
+          },
+        },
+      });
 
-      const createNodePoolCmd = `kubectl apply -f - <<EOF
-${nodePoolYaml}
-EOF`;
-
-      execSync(createNodePoolCmd, { encoding: 'utf8', shell: '/bin/bash' });
+      execSync('kubectl apply -f -', { encoding: 'utf8', input: nodePoolYaml });
       console.log(`NodePool ${nodePoolName} created`);
 
       return {

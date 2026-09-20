@@ -1,4 +1,4 @@
-const { exec } = require('child_process');
+const { runKubectl } = require('./utils/kubectl');
 
 /**
  * 应用状态服务 V2 - 优化版本
@@ -18,46 +18,19 @@ class AppStatusV2 {
       combined: { data: null, timestamp: 0, ttl: 15000 } // 组合数据缓存
     };
     this.defaultTimeout = 20000; // 20秒默认超时
-    this.activeQueries = new Map(); // 防止重复查询
   }
 
   /**
    * 带超时和去重的kubectl执行函数
+   *
+   * 2026-09-20：实现搬到 `utils/kubectl.js`，这里只是保留方法名的薄壳。
+   * 原来的 `this.activeQueries` 去重表随之删除——去重表现在在共享层，key 含目标
+   * 集群 context，所以 **clusterStatusV2 与本服务互相之间也能去重**（两者会查同一份
+   * `get pods -A -o json`），而且切集群后不会复用上一个集群的在飞结果。
+   * reject 的形状也从普通对象换成 Error（D5）。
    */
   executeKubectlWithDedup(command, timeout = this.defaultTimeout) {
-    // 如果相同命令正在执行，返回现有的Promise
-    if (this.activeQueries.has(command)) {
-      console.log(`Reusing active query: kubectl ${command}`);
-      return this.activeQueries.get(command);
-    }
-
-    const queryPromise = new Promise((resolve, reject) => {
-      // maxBuffer 默认 1 MiB，大集群 `get pods -A -o json` 常超，显式放大
-      const child = exec(`kubectl ${command}`, { maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
-        this.activeQueries.delete(command); // 清理活跃查询
-        
-        if (error) {
-          console.error(`kubectl error: ${error.message}`);
-          reject({ error: error.message, stderr, command });
-        } else {
-          resolve(stdout.trim());
-        }
-      });
-
-      // 设置超时
-      const timer = setTimeout(() => {
-        child.kill('SIGTERM');
-        this.activeQueries.delete(command);
-        reject(new Error(`Command timeout after ${timeout}ms: kubectl ${command}`));
-      }, timeout);
-
-      child.on('exit', () => {
-        clearTimeout(timer);
-      });
-    });
-
-    this.activeQueries.set(command, queryPromise);
-    return queryPromise;
+    return runKubectl(command, { timeout, trim: true, dedup: true });
   }
 
   /**

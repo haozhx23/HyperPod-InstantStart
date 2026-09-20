@@ -11,12 +11,18 @@
 const express = require('express');
 const router = express.Router();
 const ManagedScalingManager = require('../utils/managedScalingManager');
+const { collectInvalid, rejectInvalid } = require('../utils/validateInput');
 
 let broadcast = null;
 
 function initialize(deps) {
   broadcast = deps.broadcast;
 }
+
+// 这两个 POST 端点**故意不做 token 校验**：`generateScaledObjectYAML()` 把配置装进一个
+// JS 对象再交给 `YAML.stringify()`（`managedScalingManager.js:76`），序列化器自己负责转义，
+// 数值走 `parseInt`，落盘路径只含时间戳。这里不存在拼接式 YAML 或 shell 插值。
+// 给 promQuery 套名字白名单反而会把合法的 PromQL 拒掉——同 `download-model-enhanced` 的教训。
 
 // Managed Inference Scaling - Preview ScaledObject YAML
 router.post('/keda/preview-scaledobject', async (req, res) => {
@@ -47,6 +53,13 @@ router.delete('/keda/scaledobject/:name', async (req, res) => {
   try {
     const { name } = req.params;
     const { namespace = 'default' } = req.query;
+
+    // `kubectl delete scaledobject ${name} -n ${namespace}`（`managedScalingManager.js:134`）
+    const problems = collectInvalid([
+      ['name', name, 'token', { maxLength: 253 }],
+      ['namespace', namespace, 'token', { maxLength: 63 }],
+    ]);
+    if (problems.length > 0) return rejectInvalid(res, problems, 'DELETE /keda/scaledobject/:name');
 
     const result = await ManagedScalingManager.deleteScaledObject(name, namespace);
 

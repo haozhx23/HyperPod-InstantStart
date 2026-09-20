@@ -33,11 +33,18 @@ class InferenceOperatorManager {
   static NAMESPACE = 'hyperpod-inference-system';
 
   // 前置依赖 addon 列表（console Quick Install 会检查这几个）
+  //
+  // **precheck 只看「装了没有、是不是 ACTIVE」，不校验版本。** 这四行原本各带一个
+  // `minVersion` 字段，但全仓库没有任何代码读它（2026-09-20 确认），既不传
+  // `--addon-version`、也不比对 `describe-addon` 返回的 addonVersion——留着会让人以为
+  // 有版本门槛。版本校验没做是有意的：升级一个正在被别的工作负载使用的 addon 属于
+  // 独立决策，不该由 Inference Operator 的安装流程顺手替用户做。需要钉版本时在这里
+  // 加字段并**同时**改 `_installDependencyAddon` 和 `_describeDependencyAddonStatus`。
   static DEPENDENCY_ADDONS = [
-    { name: 'aws-mountpoint-s3-csi-driver', minVersion: 'v1.14.1-eksbuild.1', requiresSaRole: true },
-    { name: 'aws-fsx-csi-driver', minVersion: 'v1.6.0-eksbuild.1', requiresSaRole: true },
-    { name: 'metrics-server', minVersion: 'v0.7.2-eksbuild.4', requiresSaRole: false },
-    { name: 'cert-manager', minVersion: 'v1.18.2-eksbuild.2', requiresSaRole: false },
+    { name: 'aws-mountpoint-s3-csi-driver', requiresSaRole: true },
+    { name: 'aws-fsx-csi-driver', requiresSaRole: true },
+    { name: 'metrics-server', requiresSaRole: false },
+    { name: 'cert-manager', requiresSaRole: false },
   ];
 
   // 托管 policy（与 console 对齐）
@@ -391,15 +398,19 @@ class InferenceOperatorManager {
       console.log(`[InferenceOperator] Addon status: ${status}`);
       if (status === 'ACTIVE') return;
       if (status === 'CREATE_FAILED' || status === 'DEGRADED') {
-        // 获取 health issues 提供更多信息
+        // 取 health issues 补充原因。这里的 try 只包住取日志那一步——原先把 throw 也
+        // 写在 try 里，于是它被自己下面的 catch 接住，报出来的是套了两层的
+        // `Addon failed with status X: Addon failed with status X. Health issues: ...`。
+        let issues = '(health issues unavailable)';
         try {
           const { stdout } = await execAsync(
             `aws eks describe-addon --cluster-name ${eksClusterName} --addon-name ${InferenceOperatorManager.ADDON_NAME} --region ${region} --query "addon.health.issues" --output json`
           );
-          throw new Error(`Addon failed with status ${status}. Health issues: ${stdout.trim()}`);
-        } catch (inner) {
-          throw new Error(`Addon failed with status ${status}: ${inner.message}`);
+          if (stdout.trim()) issues = stdout.trim();
+        } catch (e) {
+          issues = `(failed to read health issues: ${e.message.split('\n')[0]})`;
         }
+        throw new Error(`Addon failed with status ${status}. Health issues: ${issues}`);
       }
       await new Promise((r) => setTimeout(r, InferenceOperatorManager.ADDON_POLL_INTERVAL_MS));
     }
@@ -1039,34 +1050,10 @@ class InferenceOperatorManager {
     console.log(`[InferenceOperator][subnet] Tagged ${subnets.length} public subnets with kubernetes.io/role/elb=1`);
   }
 
-  async _ensureS3VpcEndpoint(vpcId, region) {
-    const { stdout: existingStd } = await execAsync(
-      `aws ec2 describe-vpc-endpoints --region ${region} --filters "Name=vpc-id,Values=${vpcId}" "Name=service-name,Values=com.amazonaws.${region}.s3" --query 'VpcEndpoints[0].VpcEndpointId' --output text`
-    );
-    const existing = existingStd.trim();
-    if (existing && existing !== 'None') {
-      return { status: 'exists', vpceId: existing };
-    }
-    // 创建
-    const { stdout: rtStd } = await execAsync(
-      `aws ec2 describe-route-tables --region ${region} --filters "Name=vpc-id,Values=${vpcId}" --query 'RouteTables[].Associations[].RouteTableId' --output text`
-    );
-    const rtIds = [...new Set(rtStd.trim().split(/\s+/).filter(Boolean))];
-    if (rtIds.length === 0) {
-      console.warn('[InferenceOperator][vpce] No route tables found, skipping S3 endpoint');
-      return { status: 'no_route_tables' };
-    }
-    const { stdout: createStd } = await execAsync(
-      `aws ec2 create-vpc-endpoint --region ${region} --vpc-id ${vpcId} --vpc-endpoint-type Gateway --service-name com.amazonaws.${region}.s3 --route-table-ids ${rtIds.join(' ')} --query 'VpcEndpoint.VpcEndpointId' --output text`
-    );
-    console.log(`[InferenceOperator][vpce] Created S3 VPC endpoint: ${createStd.trim()}`);
-    return { status: 'created', vpceId: createStd.trim() };
-  }
-
   /**
    * 确保 EKS cluster 控制面 private subnet 对应的 route table 挂上 S3 VPC Gateway endpoint。
    *
-   * 为什么这是一个单独的函数（不与 _ensureS3VpcEndpoint 合并）：
+   * 为什么只关心 EKS cluster subnet 这一侧：
    *   两类子网逻辑和职责完全不同：
    *   - hp-compute-*（计算子网）：由 HyperPod cluster 创建流程负责其 RT 上的 S3 VPCE 关联
    *   - EKS Cluster Private Subnet（EKS 控制面子网）：由 Inference Operator 创建流程负责

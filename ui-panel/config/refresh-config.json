@@ -1,0 +1,7 @@
+{
+  "_comment": "前端周期性自动刷新。本文件在生产部署中通过 -v $(pwd)/config:/app/config 挂载，改完刷新浏览器即生效，不需要重新构建镜像。",
+  "autoRefreshEnabled": true,
+  "autoRefreshIntervalMs": 60000,
+  "_minIntervalMs": 5000,
+  "_note": "autoRefreshIntervalMs 低于 _minIntervalMs 会被服务端夹到 _minIntervalMs，避免误填 500 之类的值把后端打满。"
+}

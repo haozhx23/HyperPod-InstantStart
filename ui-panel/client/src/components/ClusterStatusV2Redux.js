@@ -88,11 +88,11 @@ const ClusterStatusV2Redux = () => {
       dispatch(refreshClusterData());
     };
     
-    resourceEventBus.subscribe('cluster-status', refreshCallback);
+    const unsubscribe = resourceEventBus.subscribe('cluster-status', refreshCallback);
 
     // 清理订阅
     return () => {
-      resourceEventBus.unsubscribe('cluster-status');
+      unsubscribe();
     };
   }, [dispatch]); // 只依赖dispatch，避免无限循环
 

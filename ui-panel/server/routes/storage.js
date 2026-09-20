@@ -21,6 +21,10 @@
 
 const express = require('express');
 const router = express.Router();
+const { collectInvalid, collectPresent, rejectInvalid } = require('../utils/validateInput');
+// 每个 handler 都过 asyncHandler（E8）：express 4 不接管 async handler 返回的 Promise，
+// 拒绝会成为进程级 unhandledRejection，而 index.js 的兜底是关停整个面板。
+const { asyncHandler } = require('../utils/asyncRoute');
 
 // Injected from index.js.
 let broadcast = null;
@@ -32,18 +36,32 @@ function initialize(deps) {
 }
 
 // S3存储管理API
-router.get('/s3-storages', async (req, res) => {
+router.get('/s3-storages', asyncHandler(async (req, res) => {
   const result = await s3StorageManager.getStorages();
   res.json(result);
-});
+}));
 
 // 获取S3存储默认值
-router.get('/s3-storage-defaults', (req, res) => {
+router.get('/s3-storage-defaults', asyncHandler((req, res) => {
   const result = s3StorageManager.getStorageDefaults();
   res.json(result);
-});
+}));
 
-router.post('/s3-storages', async (req, res) => {
+router.post('/s3-storages', asyncHandler(async (req, res) => {
+  // name 会原样成为 PVC 名（`s3StorageManager.js:365`「完全透传」），再拼进
+  // `kubectl get pvc ${pvcName} ...` 与 `kubectl delete ${type} ${name}`。
+  //
+  // 只校验**已出现**的字段：这里的职责是「若有值则必须安全」，不是引入必填约束。
+  // 缺字段仍由 s3StorageManager.createStorage 返回 { success:false, error } 处理——
+  // 在这里顺手把它变成必填会改掉现有 API 契约（已有的路由契约测试就只送 name）。
+  // 这条规则后来抽成了 `collectPresent()`，本处即它的第一个调用点。
+  const problems = collectPresent([
+    ['name', req.body?.name, 'token', { maxLength: 63 }],
+    ['bucketName', req.body?.bucketName, 'token', {}],
+    ['region', req.body?.region, 'token', { maxLength: 32 }],
+  ]);
+  if (problems.length > 0) return rejectInvalid(res, problems, 'POST /s3-storages');
+
   const result = await s3StorageManager.createStorage(req.body);
   if (result.success) {
     broadcast({
@@ -53,9 +71,12 @@ router.post('/s3-storages', async (req, res) => {
     });
   }
   res.json(result);
-});
+}));
 
-router.delete('/s3-storages/:name', async (req, res) => {
+router.delete('/s3-storages/:name', asyncHandler(async (req, res) => {
+  const problems = collectInvalid([['name', req.params.name, 'token', { maxLength: 63 }]]);
+  if (problems.length > 0) return rejectInvalid(res, problems, 'DELETE /s3-storages/:name');
+
   const result = await s3StorageManager.deleteStorage(req.params.name);
   if (result.success) {
     broadcast({
@@ -65,10 +86,10 @@ router.delete('/s3-storages/:name', async (req, res) => {
     });
   }
   res.json(result);
-});
+}));
 
 // 增强的模型/数据集下载API
-router.post('/download-model-enhanced', async (req, res) => {
+router.post('/download-model-enhanced', asyncHandler(async (req, res) => {
   const { modelId } = req.body;
 
   if (typeof modelId !== 'string' || !modelId.trim()) {
@@ -98,13 +119,18 @@ router.post('/download-model-enhanced', async (req, res) => {
   });
 
   res.json(result);
-});
+}));
 
 // S3存储信息API - 从s3-pv PersistentVolume获取桶信息
-router.get('/s3-storage', async (req, res) => {
+router.get('/s3-storage', asyncHandler(async (req, res) => {
   const { storage } = req.query;
+  // storage 可省略（走默认存储）；给了就必须是干净的名字——它会被用于查 PVC
+  if (storage !== undefined) {
+    const problems = collectInvalid([['storage', storage, 'token', { maxLength: 63 }]]);
+    if (problems.length > 0) return rejectInvalid(res, problems, 'GET /s3-storage');
+  }
   const result = await s3StorageManager.listStorageContent(storage);
   res.json(result);
-});
+}));
 
 module.exports = { router, initialize };

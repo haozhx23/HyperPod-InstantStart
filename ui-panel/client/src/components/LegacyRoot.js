@@ -27,7 +27,6 @@ import FSxStorageManager from './FSxStorageManager';
 import S3StoragePanel from './S3StoragePanel';
 import AdvancedScalingPanelV2 from './AdvancedScalingPanelV2';
 import ScalingPanel from './ScalingPanel';
-import globalRefreshManager from '../hooks/useGlobalRefresh';
 import operationRefreshManager from '../hooks/useOperationRefresh';
 import resourceEventBus from '../utils/resourceEventBus';
 
@@ -68,12 +67,8 @@ function LegacyRoot() {
       ]);
     };
 
-    globalRefreshManager.subscribe('app-status', appRefreshFunction, {
-      priority: 9 // 高优先级，与cluster-status同级
-    });
-
     // 🚀 注册到操作刷新管理器
-    operationRefreshManager.subscribe('app-status', appRefreshFunction);
+    const unsubscribeAppStatus = operationRefreshManager.subscribe('app-status', appRefreshFunction);
 
     // 🚀 注册pods和services刷新到全局刷新管理器
     const podsServicesRefreshFunction = async () => {
@@ -85,12 +80,8 @@ function LegacyRoot() {
       }
     };
 
-    globalRefreshManager.subscribe('pods-services', podsServicesRefreshFunction, {
-      priority: 8 // 高优先级，与status-monitor相同
-    });
-
     // 🚀 注册到操作刷新管理器
-    operationRefreshManager.subscribe('pods-services', podsServicesRefreshFunction);
+    const unsubscribePodsServices = operationRefreshManager.subscribe('pods-services', podsServicesRefreshFunction);
 
     // 初始加载集群状态
     fetchClusterStatus();
@@ -102,10 +93,8 @@ function LegacyRoot() {
     fetchBusinessServices();
 
     return () => {
-      globalRefreshManager.unsubscribe('app-status');
-      globalRefreshManager.unsubscribe('pods-services');
-      operationRefreshManager.unsubscribe('app-status');
-      operationRefreshManager.unsubscribe('pods-services');
+      unsubscribeAppStatus();
+      unsubscribePodsServices();
     };
   }, []);
 

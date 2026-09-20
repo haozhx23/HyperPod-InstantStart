@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { message } from 'antd';
-import globalRefreshManager from './useGlobalRefresh';
 import operationRefreshManager from './useOperationRefresh';
 import { handleWsMessage } from '../utils/wsMessageHandlers';
 import { setConnectionStatus } from '../store/slices/webSocketSlice';
@@ -9,11 +8,11 @@ import { selectConnectionStatus } from '../store/selectors';
 import { getAuthToken } from '../components/AuthGate';
 
 // Singleton WebSocket lifecycle manager. Follows the class-manager pattern of
-// useGlobalRefresh / useOperationRefresh. One instance per browser tab.
+// useOperationRefresh. One instance per browser tab.
 class WebSocketManager {
   constructor() {
     this.ws = null;
-    this.ctx = null;                // { dispatch, message, globalRefresh, operationRefresh }
+    this.ctx = null;                // { dispatch, message, operationRefresh }
     this.connectTimeoutId = null;   // 10s connect timeout
     this.reconnectTimeoutId = null; // 5s reconnect delay
     this.pingIntervalId = null;     // 30s heartbeat
@@ -190,7 +189,6 @@ export default function useWebSocket() {
     ctxRef.current = {
       dispatch,
       message,
-      globalRefresh: globalRefreshManager,
       operationRefresh: operationRefreshManager,
     };
     webSocketManager.connect(ctxRef.current);

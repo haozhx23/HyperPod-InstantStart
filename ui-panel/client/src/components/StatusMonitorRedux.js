@@ -133,11 +133,11 @@ const StatusMonitorRedux = ({ activeTab }) => {
       setLocalRefreshTrigger(prev => prev + 1);
     };
     
-    resourceEventBus.subscribe('app-status', refreshCallback);
+    const unsubscribe = resourceEventBus.subscribe('app-status', refreshCallback);
 
     // 清理订阅
     return () => {
-      resourceEventBus.unsubscribe('app-status');
+      unsubscribe();
     };
   }, [dispatch]); // 只依赖dispatch，避免无限循环
 

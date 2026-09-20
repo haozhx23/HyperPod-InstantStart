@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const ClusterManager = require('./clusterManager');
+const { assertSafeToken } = require('./utils/validateInput');
 
 class MultiClusterLogManager {
   constructor(clusterTag) {
@@ -24,6 +25,7 @@ class MultiClusterLogManager {
 
   // 创建新的日志文件
   createLogFile(step) {
+    assertSafeToken(step, 'step', { maxLength: 64 });
     const timestamp = new Date().toISOString().replace(/[-:.T]/g, '').slice(0, 14);
     const logFileName = `${timestamp}_${step}.log`;
     const logFilePath = path.join(this.logsDir, logFileName);
@@ -48,7 +50,12 @@ class MultiClusterLogManager {
   }
 
   // 读取日志内容（支持增量读取）
+  //
+  // step 会直接拼进文件路径。路由入口已经校验，这里再断言一次是刻意的：
+  // 与 S4 的处理方式一致——路径构造点自己也要拒绝非法名字，否则下一个调用方
+  // （例如某个后台任务）绕过路由时又是一个遍历入口。
   readLogContent(step, offset = 0) {
+    assertSafeToken(step, 'step', { maxLength: 64 });
     const currentLinkPath = path.join(this.currentDir, `${step}.log`);
     
     if (!fs.existsSync(currentLinkPath)) {

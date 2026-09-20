@@ -6,6 +6,7 @@ const EnvInjector = require('./envInjector');
 const { cleanInstanceGroupForUpdate } = require('./instanceGroupUtils');
 const HyperPodKarpenterInstaller = require('./hyperpodKarpenterInstaller');
 const dependencyConfig = require('./dependencyConfigLoader');
+const { assertSafeToken } = require('./validateInput');
 
 /**
  * HyperPod Managed Features Manager
@@ -243,9 +244,21 @@ class ManagedFeaturesManager {
       results.karpenter = await this._updateKarpenter(updates.karpenter);
     }
 
+    // 子项返回 `{ success: false }` 时总 envelope 不能还说成功。
+    // 原先恒为 `success: true`，而前端 `handleSubmitAddons` 只看 HTTP 状态、之后无条件
+    // `message.success('Cluster add-ons updated successfully')`，于是
+    // `_updateTieredStorage` / `_updateKarpenter` 在非 HyperPod 集群上返回的
+    // 「HyperPod cluster required」变成了一句「更新成功」（2026-09-20 发现）。
+    // 前端已配套改成检查这个字段。
+    const failures = Object.entries(results)
+      .filter(([, r]) => r && r.success === false)
+      .map(([key, r]) => `${key}: ${r.message || r.error || 'failed'}`);
+
     return {
-      success: true,
-      message: 'Advanced features updated successfully',
+      success: failures.length === 0,
+      message: failures.length === 0
+        ? 'Advanced features updated successfully'
+        : `部分功能未更新 — ${failures.join('；')}`,
       results
     };
   }
@@ -565,11 +578,44 @@ class ManagedFeaturesManager {
     const results = { cleanup: null, disable: null, iamCleanup: null };
 
     // 1. 清理 K8s 资源（NodePool → NodeClass）
+    //
+    // **只能删自己的 NodePool。** `karpenter.sh/v1` 的 NodePool 这个 CRD 在同一个集群
+    // 上可能被多套 Karpenter 共用，彼此只靠 `spec.template.spec.nodeClassRef.kind`
+    // 区分（本功能用的是 HyperpodNodeClass）。所以原先的
+    // `kubectl delete nodepool --all` 会把别家的 NodePool 一起删掉——关掉一个开关，
+    // 顺手拆掉另一个功能，而且 Karpenter 会因为 NodePool 消失去回收它管的节点，
+    // 连带杀掉上面在跑的负载。
+    // `hyperpodnodeclass` 是 HyperPod 独有的 CRD（karpenter.sagemaker.amazonaws.com），
+    // 那一条保留 `--all`。
+    //
+    // 注：这段注释刻意不点名另一套 Karpenter——它在标准版 manifest 里是 withheld
+    // 功能，写出产品名会触发 release 的 residual 闸。完整对照见
+    // developer-docs/260920-refactor.md 的 7.18（该目录不进公开版）。
     try {
-      await execAsync('kubectl delete nodepool --all --ignore-not-found 2>/dev/null || true');
-      await execAsync('kubectl delete hyperpodnodeclass --all --ignore-not-found 2>/dev/null || true');
-      results.cleanup = { success: true };
-      console.log('Karpenter K8s resources cleaned up');
+      const { stdout } = await execAsync('kubectl get nodepool -o json 2>/dev/null || echo "{}"');
+      const items = JSON.parse(stdout.trim() || '{}').items || [];
+      const mine = items.filter(
+        np => np?.spec?.template?.spec?.nodeClassRef?.kind === 'HyperpodNodeClass'
+      );
+      const skipped = items.length - mine.length;
+
+      for (const np of mine) {
+        const name = np?.metadata?.name;
+        // 名字来自集群（K8s 保证是 DNS-1123），仍然按项目约定过一遍白名单
+        assertSafeToken(name, 'nodePoolName');
+        await execAsync(`kubectl delete nodepool ${name} --ignore-not-found`);
+      }
+      await execAsync('kubectl delete hyperpodnodeclass --all --ignore-not-found');
+
+      results.cleanup = {
+        success: true,
+        deletedNodePools: mine.map(np => np.metadata.name),
+        keptForeignNodePools: skipped,
+      };
+      console.log(
+        `Karpenter K8s resources cleaned up: 删除 ${mine.length} 个 HyperPod NodePool，` +
+        `保留 ${skipped} 个非 HyperPod NodePool`
+      );
     } catch (error) {
       console.warn('K8s cleanup warning:', error.message);
       results.cleanup = { success: false, error: error.message };

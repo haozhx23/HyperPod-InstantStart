@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import globalRefreshManager from '../hooks/useGlobalRefresh';
+import operationRefreshManager from '../hooks/useOperationRefresh';
 import {
   Card,
   Form,
@@ -336,18 +336,12 @@ const EksClusterCreationPanel = () => {
     restoreCreationStatus();
   }, []);
 
-  // 集成全局刷新系统
+  // 集成操作刷新系统
   useEffect(() => {
     const componentId = 'eks-cluster-creation';
 
-    // 全局刷新使用与手动刷新完全相同的逻辑
-    globalRefreshManager.subscribe(componentId, handleManualRefresh, {
-      priority: 7
-    });
-
-    return () => {
-      globalRefreshManager.unsubscribe(componentId);
-    };
+    // 自动刷新使用与手动刷新完全相同的逻辑
+    return operationRefreshManager.subscribe(componentId, handleManualRefresh);
   }, []);
 
   // 获取当前步骤（简化版）
