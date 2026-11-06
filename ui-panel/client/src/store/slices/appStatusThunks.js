@@ -18,6 +18,7 @@ export const fetchPods = createAsyncThunk(
       }
 
       const data = await response.json();
+      if (data.errors?.pods) throw new Error(data.errors.pods);
       console.log('Pods V2 status response:', data);
 
       return {
@@ -44,6 +45,7 @@ export const fetchServices = createAsyncThunk(
       }
 
       const data = await response.json();
+      if (data.errors?.services) throw new Error(data.errors.services);
       console.log('Services V2 status response:', data);
 
       return {

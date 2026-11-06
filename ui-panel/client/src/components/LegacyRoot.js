@@ -143,6 +143,7 @@ function LegacyRoot() {
       // 使用 V2 优化 API
       const response = await fetch('/api/v2/app-status');
       const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
 
       console.log('App Status V2 response:', {
         pods: data.pods?.length || 0,
@@ -155,6 +156,7 @@ function LegacyRoot() {
       dispatch(setPodsServices({
         pods: data.rawPods || data.pods || [],
         services: data.rawServices || data.services || [],
+        errors: data.errors || {},
       }));
 
       if (data.fetchTime && !data.cached) {

@@ -26,7 +26,8 @@
 // 刻意直接用 child_process 而不是 ./exec：`./exec` 也会给 kubectl 命令注入 --context，
 // 两层叠加会让本模块的 `opts.context`（含显式传 null 表示「就是不要注入」）被接缝覆盖。
 // 规则是**一条调用路径上只有一层注入**：走 runKubectl 的由本模块负责，其余由 ./exec 负责。
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
+const { parse, quote } = require('shell-quote');
 const kubectlContext = require('./kubectlContext');
 
 // 大集群 `get pods -A -o json` 实测 4-10 MiB，Node 默认 1 MiB 必然截断。
@@ -40,7 +41,7 @@ const inFlight = new Map();
 /**
  * 执行一条 kubectl 命令。
  *
- * @param {string} command kubectl 之后的部分，例如 `get pods -A -o json`
+ * @param {string|string[]} command kubectl 参数，例如 `get pods -A -o json` 或 ['get', 'pods', '-A', '-o', 'json']
  * @param {object} [opts]
  * @param {number} [opts.timeout=30000]
  * @param {boolean} [opts.dedup=false] 相同 (context, command) 在飞时复用同一个 Promise
@@ -48,7 +49,7 @@ const inFlight = new Map();
  * @param {boolean} [opts.optimizeError=false] 把常见错误换成对用户更友好的说法
  * @param {boolean} [opts.logSuccess=false] 成功时打印摘要（index.js 的既有行为）
  * @param {string}  [opts.context] 显式指定目标集群 context，覆盖活跃集群解析
- * @param {object}  [opts.env] 透传给 child_process.exec 的环境变量（不传则继承本进程）
+ * @param {object}  [opts.env] 透传给 child_process.execFile 的环境变量（不传则继承本进程）
  * @returns {Promise<string>} stdout
  */
 function runKubectl(command, opts = {}) {
@@ -63,8 +64,9 @@ function runKubectl(command, opts = {}) {
   } = opts;
 
   const context = explicitContext !== undefined ? explicitContext : kubectlContext.resolveActiveContext();
-  const fullCommand = kubectlContext.injectContextIntoCommand(`kubectl ${command}`, context);
-  const dedupKey = `${context || '-'}::${command}`;
+  const args = kubectlContext.injectContextIntoArgs(parseKubectlArgs(command), context);
+  const fullCommand = quote(['kubectl', ...args]);
+  const dedupKey = JSON.stringify([context, args]);
 
   if (dedup && inFlight.has(dedupKey)) {
     console.log(`Reusing active query: ${fullCommand}`);
@@ -77,7 +79,7 @@ function runKubectl(command, opts = {}) {
     const execOptions = { timeout, maxBuffer: MAX_BUFFER };
     if (env) execOptions.env = env;
 
-    exec(fullCommand, execOptions, (error, stdout, stderr) => {
+    execFile('kubectl', args, execOptions, (error, stdout, stderr) => {
       if (error) {
         reject(buildKubectlError({ error, stderr, command, fullCommand, context, timeout, optimizeError }));
         return;
@@ -95,6 +97,16 @@ function runKubectl(command, opts = {}) {
   }
 
   return promise;
+}
+
+function parseKubectlArgs(command) {
+  const args = Array.isArray(command) ? command.slice() : typeof command === 'string'
+    ? parse(command, () => { throw new Error('kubectl arguments cannot expand environment variables.'); })
+    : null;
+  if (!args || !args.length || args.some(arg => typeof arg !== 'string' || arg.includes('\0'))) {
+    throw new Error('kubectl requires literal arguments; shell operators and expansions are unsupported.');
+  }
+  return args;
 }
 
 /**
@@ -192,6 +204,7 @@ function logSuccessSummary(fullCommand, stdout) {
 
 module.exports = {
   runKubectl,
+  parseKubectlArgs,
   optimizeErrorMessage,
   MAX_BUFFER,
   DEFAULT_TIMEOUT,

@@ -1,4 +1,4 @@
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const { promisify } = require('util');
 const exec = promisify(require('child_process').exec);
 
@@ -30,8 +30,13 @@ class NetworkManager {
     }
 
     try {
-      const command = `aws ec2 describe-availability-zones --region ${region} --query 'AvailabilityZones[*].{ZoneName:ZoneName,ZoneId:ZoneId}' --output json`;
-      const result = execSync(command, { encoding: 'utf8' });
+      const command = [
+        'ec2', 'describe-availability-zones',
+        '--region', region,
+        '--query', 'AvailabilityZones[*].{ZoneName:ZoneName,ZoneId:ZoneId}',
+        '--output', 'json',
+      ];
+      const result = execFileSync('aws', command, { encoding: 'utf8' });
       const zones = JSON.parse(result);
 
       return { success: true, zones };
@@ -61,8 +66,8 @@ class NetworkManager {
    */
   static async getVpcCidr(vpcId, region) {
     try {
-      const command = `aws ec2 describe-vpcs --vpc-ids ${vpcId} --region ${region} --query "Vpcs[0].CidrBlock" --output text`;
-      const result = execSync(command, { encoding: 'utf8' }).trim();
+      const command = ['ec2', 'describe-vpcs', '--vpc-ids', vpcId, '--region', region, '--query', 'Vpcs[0].CidrBlock', '--output', 'text'];
+      const result = execFileSync('aws', command, { encoding: 'utf8' }).trim();
       return result && result !== 'None' ? result : null;
     } catch (error) {
       console.error(`Error getting VPC CIDR for ${vpcId}:`, error.message);
@@ -247,8 +252,8 @@ class NetworkManager {
    */
   static getSubnetAvailabilityZone(subnetId) {
     try {
-      const cmd = `aws ec2 describe-subnets --subnet-ids ${subnetId} --query "Subnets[0].AvailabilityZone" --output text`;
-      const az = execSync(cmd, { encoding: 'utf8', timeout: 10000 }).trim();
+      const cmd = ['ec2', 'describe-subnets', '--subnet-ids', subnetId, '--query', 'Subnets[0].AvailabilityZone', '--output', 'text'];
+      const az = execFileSync('aws', cmd, { encoding: 'utf8', timeout: 10000 }).trim();
       return az && az !== 'None' ? az : null;
     } catch (error) {
       console.error(`Error getting subnet AZ: ${error.message}`);
@@ -266,8 +271,14 @@ class NetworkManager {
    */
   static async getVpcCidrs(vpcId, region) {
     try {
-      const cmd = `aws ec2 describe-vpcs --region ${region} --vpc-ids ${vpcId} --query "Vpcs[0].CidrBlockAssociationSet[?CidrBlockState.State=='associated'].CidrBlock" --output json`;
-      const result = execSync(cmd, { encoding: 'utf8' });
+      const cmd = [
+        'ec2', 'describe-vpcs',
+        '--region', region,
+        '--vpc-ids', vpcId,
+        '--query', "Vpcs[0].CidrBlockAssociationSet[?CidrBlockState.State=='associated'].CidrBlock",
+        '--output', 'json',
+      ];
+      const result = execFileSync('aws', cmd, { encoding: 'utf8' });
       return JSON.parse(result);
     } catch (error) {
       console.error('Error getting VPC CIDRs:', error);
@@ -283,8 +294,14 @@ class NetworkManager {
    */
   static async getAllVpcSubnets(vpcId, region) {
     try {
-      const cmd = `aws ec2 describe-subnets --region ${region} --filters "Name=vpc-id,Values=${vpcId}" --query "Subnets[*].{SubnetId:SubnetId,CidrBlock:CidrBlock,AvailabilityZone:AvailabilityZone,MapPublicIpOnLaunch:MapPublicIpOnLaunch}" --output json`;
-      const result = execSync(cmd, { encoding: 'utf8' });
+      const cmd = [
+        'ec2', 'describe-subnets',
+        '--region', region,
+        '--filters', `Name=vpc-id,Values=${vpcId}`,
+        '--query', 'Subnets[*].{SubnetId:SubnetId,CidrBlock:CidrBlock,AvailabilityZone:AvailabilityZone,MapPublicIpOnLaunch:MapPublicIpOnLaunch}',
+        '--output', 'json',
+      ];
+      const result = execFileSync('aws', cmd, { encoding: 'utf8' });
       return JSON.parse(result);
     } catch (error) {
       console.error('Error getting VPC subnets:', error);

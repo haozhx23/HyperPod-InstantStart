@@ -78,7 +78,7 @@ def train(args):
     if rank == 0:
         
         ckpt_path = f'/opt/ml/checkpoints/saves'
-        os.system(f'mkdir -p {ckpt_path}')
+        os.makedirs(ckpt_path, exist_ok=True)
         torch.save(model.module.state_dict(), f'{ckpt_path}/model.pth')
         print("Model saved")
     

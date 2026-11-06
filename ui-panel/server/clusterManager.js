@@ -347,7 +347,7 @@ class ClusterManager {
       },
       eksCluster: {
         name: importConfig.EKS_CLUSTER_NAME,
-        arn: null,
+        arn: importConfig.EKS_CLUSTER_ARN || null,
         vpcId: null,
         securityGroupId: null
       }

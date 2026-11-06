@@ -244,14 +244,14 @@ class MetadataUtils {
    * 通过AWS CLI获取导入集群的资源信息（包含HyperPod子网）
    */
   static async fetchImportedClusterResources(eksClusterName, awsRegion, hyperPodClusters = null) {
-    const { execSync } = require('child_process');
+    const { execFileSync } = require('child_process');
     
     try {
       console.log(`Fetching resources for imported cluster: ${eksClusterName}`);
       
       // 获取EKS集群基本信息
-      const clusterCmd = `aws eks describe-cluster --name ${eksClusterName} --region ${awsRegion} --output json`;
-      const clusterResult = JSON.parse(execSync(clusterCmd, { encoding: 'utf8' }));
+      const clusterCmd = ['eks', 'describe-cluster', '--name', eksClusterName, '--region', awsRegion, '--output', 'json'];
+      const clusterResult = JSON.parse(execFileSync('aws', clusterCmd, { encoding: 'utf8' }));
       const cluster = clusterResult.cluster;
       
       // 获取HyperPod计算节点信息（容错处理）
@@ -262,8 +262,8 @@ class MetadataUtils {
           // 只取第一个HyperPod集群（一个EKS只能有一个HyperPod）
           const hpClusterName = hyperPodNames[0];
           
-          const hpCmd = `aws sagemaker describe-cluster --cluster-name ${hpClusterName} --region ${awsRegion} --output json`;
-          const hpResult = execSync(hpCmd, { encoding: 'utf8' });
+          const hpCmd = ['sagemaker', 'describe-cluster', '--cluster-name', hpClusterName, '--region', awsRegion, '--output', 'json'];
+          const hpResult = execFileSync('aws', hpCmd, { encoding: 'utf8' });
           hyperPodClusterData = JSON.parse(hpResult);
           
           // 添加来源标识
@@ -296,8 +296,14 @@ class MetadataUtils {
       // 获取 VPC CIDR（用于后续创建 HyperPod 时生成子网 CIDR）
       let vpcCidr = null;
       try {
-        const vpcCmd = `aws ec2 describe-vpcs --vpc-ids ${cluster.resourcesVpcConfig.vpcId} --region ${awsRegion} --query "Vpcs[0].CidrBlock" --output text`;
-        vpcCidr = execSync(vpcCmd, { encoding: 'utf8' }).trim();
+        const vpcCmd = [
+          'ec2', 'describe-vpcs',
+          '--vpc-ids', cluster.resourcesVpcConfig.vpcId,
+          '--region', awsRegion,
+          '--query', 'Vpcs[0].CidrBlock',
+          '--output', 'text',
+        ];
+        vpcCidr = execFileSync('aws', vpcCmd, { encoding: 'utf8' }).trim();
         console.log(`Fetched VPC CIDR: ${vpcCidr}`);
       } catch (error) {
         console.warn('Failed to fetch VPC CIDR:', error.message);

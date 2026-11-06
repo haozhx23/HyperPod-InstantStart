@@ -519,7 +519,7 @@ const ClusterManagementRedux = () => {
   return (
     <>
       {/* 注入自定义滚动条样式 */}
-      <style dangerouslySetInnerHTML={{ __html: customScrollbarStyle }} />
+      <style>{customScrollbarStyle}</style>
 
       <div>
         <Tabs

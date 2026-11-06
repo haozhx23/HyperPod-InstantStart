@@ -18,13 +18,15 @@
  * **边界（务必先读）**：本模块在 **exec 时刻** 解析活跃集群。它消除的是「命令不带
  * context、完全听凭全局 current-context」这一层，也让日志能看出目标集群；它**不能**
  * 把一个多步操作钉在操作开始时的那个集群上——那需要把 context 一路透传到调用点。
- * `utils/kubectl.js` 的 `runKubectl(cmd, { context })` 已经预留了这个入口，但目前没有
- * 任何调用点在用。所以：**不要以为引入本模块后跨集群切换的竞态就全好了。**
+ * `utils/kubectl.js` 的 `runKubectl(cmd, { context })` 接受显式目标；状态查询已通过
+ * `resolveClusterTarget()` 捕获目标，导入/连接测试使用 describe-cluster 返回的 ARN。
+ * 其他没有透传目标的多步操作仍有这个边界。
  *
  * 解析失败（没有活跃集群、metadata 缺 ARN、ARN 形状不合法）时**不注入**并告警一次，
  * 行为退回改动前——即沿用全局 current-context。这是刻意的：exec 层抛错会让一个
  * metadata 问题变成整个面板不可用，而这里的退化是「回到旧行为」而非「静默走错集群」。
- * 告警文本里带了集群 tag 和原因，便于定位。
+ * 告警文本里带了集群 tag 和原因，便于定位。显式查询入口 `resolveClusterTarget()`
+ * 不采用该退化：metadata 不足时抛错，不允许读取或缓存未知目标的数据。
  */
 const fs = require('fs');
 const path = require('path');
@@ -79,6 +81,17 @@ function readActiveClusterTag(baseDir) {
   } catch {
     return null;
   }
+}
+
+/**
+ * 捕获一次查询的目标，供多步查询和缓存共同使用。
+ * 无法确定目标时拒绝查询，避免把 current-context 的数据当成活跃集群的数据。
+ */
+function resolveClusterTarget(clusterTag = readActiveClusterTag(BASE_DIR)) {
+  if (!clusterTag) throw new Error('No active cluster selected');
+  const context = readContextFromMetadata(BASE_DIR, clusterTag);
+  if (!context) throw new Error(`No EKS context found in metadata for cluster ${clusterTag}`);
+  return { clusterTag, context };
 }
 
 // ==================== 缓存 ====================
@@ -279,6 +292,7 @@ module.exports = {
   isInjectionEnabled,
   readContextFromMetadata,
   readActiveClusterTag,
+  resolveClusterTarget,
   resolveActiveContext,
   injectContextIntoCommand,
   injectHelmContextIntoCommand,

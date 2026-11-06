@@ -1,4 +1,5 @@
 const { runKubectl } = require('./utils/kubectl');
+const kubectlContext = require('./utils/kubectlContext');
 
 /**
  * 应用状态服务 V2 - 优化版本
@@ -29,25 +30,28 @@ class AppStatusV2 {
    * `get pods -A -o json`），而且切集群后不会复用上一个集群的在飞结果。
    * reject 的形状也从普通对象换成 Error（D5）。
    */
-  executeKubectlWithDedup(command, timeout = this.defaultTimeout) {
-    return runKubectl(command, { timeout, trim: true, dedup: true });
+  executeKubectlWithDedup(command, timeout = this.defaultTimeout, context) {
+    return runKubectl(command, { timeout, trim: true, dedup: true, context });
   }
 
   /**
    * 检查缓存是否有效
    */
-  isCacheValid(cacheKey) {
+  isCacheValid(cacheKey, context = kubectlContext.resolveActiveContext()) {
     const cache = this.cache[cacheKey];
     const now = Date.now();
-    return cache.data && (now - cache.timestamp) < cache.ttl;
+    return Boolean(context && cache.context === context && cache.data && (now - cache.timestamp) < cache.ttl);
   }
 
   /**
    * 更新缓存
    */
-  updateCache(cacheKey, data) {
+  updateCache(cacheKey, data, context, requestCache) {
+    // clearCache 或另一个请求已替换条目时，不允许旧请求写回；切走的集群也不写回。
+    if (this.cache[cacheKey] !== requestCache || context !== kubectlContext.resolveActiveContext()) return;
     this.cache[cacheKey] = {
       data: { ...data, cached: false },
+      context,
       timestamp: Date.now(),
       ttl: this.cache[cacheKey].ttl
     };
@@ -63,17 +67,19 @@ class AppStatusV2 {
   /**
    * 获取 Pods 状态（带缓存）
    */
-  async getPods(forceRefresh = false) {
-    if (!forceRefresh && this.isCacheValid('pods')) {
-      console.log('Returning cached pods data');
-      return this.getCachedData('pods');
-    }
-
+  async getPods(forceRefresh = false, target) {
     try {
+      target = target || kubectlContext.resolveClusterTarget();
+      const { context } = target;
+      if (!forceRefresh && this.isCacheValid('pods', context)) {
+        console.log('Returning cached pods data');
+        return this.getCachedData('pods');
+      }
+      const requestCache = this.cache.pods;
       console.log('Fetching fresh pods data...');
       const startTime = Date.now();
       
-      const output = await this.executeKubectlWithDedup('get pods -A -o json', 15000);
+      const output = await this.executeKubectlWithDedup('get pods -A -o json', 15000, context);
       const podsData = JSON.parse(output);
       
       // 预处理 Pod 数据
@@ -88,7 +94,7 @@ class AppStatusV2 {
         version: 'v2'
       };
 
-      this.updateCache('pods', result);
+      this.updateCache('pods', result, context, requestCache);
       console.log(`Pods data fetched in ${result.fetchTime}ms: ${result.count} pods`);
       
       return result;
@@ -106,21 +112,34 @@ class AppStatusV2 {
    * 获取 Services 状态（带缓存）
    * 同时获取 default 和 hyperpod-inference-system namespace 的服务
    */
-  async getServices(forceRefresh = false) {
-    if (!forceRefresh && this.isCacheValid('services')) {
-      console.log('Returning cached services data');
-      return this.getCachedData('services');
-    }
-
+  async getServices(forceRefresh = false, target) {
     try {
+      target = target || kubectlContext.resolveClusterTarget();
+      const { context } = target;
+      if (!forceRefresh && this.isCacheValid('services', context)) {
+        console.log('Returning cached services data');
+        return this.getCachedData('services');
+      }
+      const requestCache = this.cache.services;
       console.log('Fetching fresh services data...');
       const startTime = Date.now();
       
       // 并行获取两个 namespace 的服务
       const [defaultOutput, hyperpodOutput] = await Promise.allSettled([
-        this.executeKubectlWithDedup('get services -n default -o json', 15000),
-        this.executeKubectlWithDedup('get services -n hyperpod-inference-system -o json', 15000)
+        this.executeKubectlWithDedup('get services -n default -o json', 15000, context),
+        this.executeKubectlWithDedup('get services -n hyperpod-inference-system -o json', 15000, context)
       ]);
+
+      const failures = [];
+      for (const [namespace, output] of [['default', defaultOutput], ['hyperpod-inference-system', hyperpodOutput]]) {
+        if (output.status !== 'rejected') continue;
+        const detail = output.reason?.stderr || output.reason?.message || String(output.reason);
+        // 可选命名空间确实不存在是正常情况；权限、网络、凭证等错误必须保留。
+        if (namespace === 'hyperpod-inference-system' &&
+            /namespaces? "hyperpod-inference-system" not found/.test(detail)) continue;
+        failures.push(`${namespace}: ${detail}`);
+      }
+      if (failures.length) throw new Error(`Failed to fetch services: ${failures.join('; ')}`);
 
       let allServices = [];
       
@@ -151,7 +170,7 @@ class AppStatusV2 {
         version: 'v2'
       };
 
-      this.updateCache('services', result);
+      this.updateCache('services', result, context, requestCache);
       console.log(`Services data fetched in ${result.fetchTime}ms: ${result.count} services (default + hyperpod-inference-system routing)`);
       
       return result;
@@ -169,23 +188,25 @@ class AppStatusV2 {
    * 获取组合的应用状态（Pods + Services）
    */
   async getAppStatus(forceRefresh = false) {
-    if (!forceRefresh && this.isCacheValid('combined')) {
-      console.log('Returning cached combined app status');
-      return this.getCachedData('combined');
-    }
-
     try {
+      const target = kubectlContext.resolveClusterTarget();
+      if (!forceRefresh && this.isCacheValid('combined', target.context)) {
+        console.log('Returning cached combined app status');
+        return this.getCachedData('combined');
+      }
+      const requestCache = this.cache.combined;
       console.log('Fetching fresh combined app status...');
       const startTime = Date.now();
       
       // 并行获取 Pods 和 Services
       const [podsResult, servicesResult] = await Promise.allSettled([
-        this.getPods(forceRefresh),
-        this.getServices(forceRefresh)
+        this.getPods(forceRefresh, target),
+        this.getServices(forceRefresh, target)
       ]);
 
-      const pods = podsResult.status === 'fulfilled' ? podsResult.value : { pods: [], error: podsResult.reason };
-      const services = servicesResult.status === 'fulfilled' ? servicesResult.value : { services: [], error: servicesResult.reason };
+      const errorText = error => error?.error || error?.message || String(error);
+      const pods = podsResult.status === 'fulfilled' ? podsResult.value : { pods: [], error: errorText(podsResult.reason) };
+      const services = servicesResult.status === 'fulfilled' ? servicesResult.value : { services: [], error: errorText(servicesResult.reason) };
 
       // 计算应用状态统计
       const stats = this.calculateAppStats(pods.pods || [], services.services || []);
@@ -205,7 +226,10 @@ class AppStatusV2 {
         }
       };
 
-      this.updateCache('combined', result);
+      // 部分失败可返回成功的资源，但不能缓存为一次完整成功，下一次请求应重试失败项。
+      if (!pods.error && !services.error) {
+        this.updateCache('combined', result, target.context, requestCache);
+      }
       console.log(`Combined app status fetched in ${result.fetchTime}ms`);
       
       return result;

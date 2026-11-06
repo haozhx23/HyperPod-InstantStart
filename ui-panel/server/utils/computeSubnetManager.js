@@ -1,4 +1,4 @@
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
@@ -70,11 +70,15 @@ class ComputeSubnetManager {
   static async findComputeSubnet(vpcId, availabilityZone, region) {
     try {
       const subnetName = this.computeSubnetName(availabilityZone);
-      const cmd = `aws ec2 describe-subnets --region ${region} \
-        --filters "Name=vpc-id,Values=${vpcId}" "Name=tag:Name,Values=${subnetName}" \
-        --query "Subnets[0].{SubnetId:SubnetId,CidrBlock:CidrBlock}" --output json`;
+      const cmd = [
+        'ec2', 'describe-subnets',
+        '--region', region,
+        '--filters', `Name=vpc-id,Values=${vpcId}`, `Name=tag:Name,Values=${subnetName}`,
+        '--query', 'Subnets[0].{SubnetId:SubnetId,CidrBlock:CidrBlock}',
+        '--output', 'json',
+      ];
 
-      const result = JSON.parse(execSync(cmd, { encoding: 'utf8' }));
+      const result = JSON.parse(execFileSync('aws', cmd, { encoding: 'utf8' }));
       if (result && result.SubnetId) {
         return { subnetId: result.SubnetId, cidrBlock: result.CidrBlock };
       }
@@ -105,35 +109,45 @@ class ComputeSubnetManager {
     const subnetName = newSubnet
       ? this.newSubnetName(availabilityZone)
       : this.computeSubnetName(availabilityZone);
-    const createSubnetCmd = `aws ec2 create-subnet --region ${region} \
-      --vpc-id ${vpcId} \
-      --cidr-block ${cidr} \
-      --availability-zone-id ${azId} \
-      --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=${subnetName}},{Key=karpenter.sh/discovery,Value=${clusterName}}]' \
-      --query 'Subnet.SubnetId' --output text`;
+    const createSubnetCmd = [
+      'ec2', 'create-subnet',
+      '--region', region,
+      '--vpc-id', vpcId,
+      '--cidr-block', cidr,
+      '--availability-zone-id', azId,
+      '--tag-specifications', `ResourceType=subnet,Tags=[{Key=Name,Value=${subnetName}},{Key=karpenter.sh/discovery,Value=${clusterName}}]`,
+      '--query', 'Subnet.SubnetId',
+      '--output', 'text',
+    ];
 
-    const subnetId = execSync(createSubnetCmd, { encoding: 'utf8' }).trim();
+    const subnetId = execFileSync('aws', createSubnetCmd, { encoding: 'utf8' }).trim();
     console.log(`[ComputeSubnetManager] Created subnet: ${subnetId}`);
 
     // 5. 创建路由表
     const rtName = `${subnetName}-rt`;
-    const createRtCmd = `aws ec2 create-route-table --region ${region} \
-      --vpc-id ${vpcId} \
-      --tag-specifications 'ResourceType=route-table,Tags=[{Key=Name,Value=${rtName}}]' \
-      --query 'RouteTable.RouteTableId' --output text`;
+    const createRtCmd = [
+      'ec2', 'create-route-table',
+      '--region', region,
+      '--vpc-id', vpcId,
+      '--tag-specifications', `ResourceType=route-table,Tags=[{Key=Name,Value=${rtName}}]`,
+      '--query', 'RouteTable.RouteTableId',
+      '--output', 'text',
+    ];
 
-    const routeTableId = execSync(createRtCmd, { encoding: 'utf8' }).trim();
+    const routeTableId = execFileSync('aws', createRtCmd, { encoding: 'utf8' }).trim();
     console.log(`[ComputeSubnetManager] Created route table: ${routeTableId}`);
 
     // 6. 关联路由表到子网
-    execSync(`aws ec2 associate-route-table --region ${region} \
-      --route-table-id ${routeTableId} --subnet-id ${subnetId}`, { encoding: 'utf8' });
+    execFileSync('aws', ['ec2', 'associate-route-table', '--region', region, '--route-table-id', routeTableId, '--subnet-id', subnetId], { encoding: 'utf8' });
 
     // 7. 添加默认路由到 NAT Gateway
-    execSync(`aws ec2 create-route --region ${region} \
-      --route-table-id ${routeTableId} \
-      --destination-cidr-block 0.0.0.0/0 \
-      --nat-gateway-id ${natGwId}`, { encoding: 'utf8' });
+    execFileSync('aws', [
+      'ec2', 'create-route',
+      '--region', region,
+      '--route-table-id', routeTableId,
+      '--destination-cidr-block', '0.0.0.0/0',
+      '--nat-gateway-id', natGwId,
+    ], { encoding: 'utf8' });
     console.log(`[ComputeSubnetManager] Added NAT Gateway route`);
 
     // 8. 配置 S3 VPC Endpoint
@@ -152,15 +166,24 @@ class ComputeSubnetManager {
     const cidrRange = config.cidrRange;
 
     // 获取 VPC CIDR
-    const vpcCmd = `aws ec2 describe-vpcs --region ${region} --vpc-ids ${vpcId} \
-      --query "Vpcs[0].CidrBlockAssociationSet[?CidrBlockState.State=='associated'].CidrBlock" --output text`;
-    const vpcCidrs = execSync(vpcCmd, { encoding: 'utf8' }).trim().split(/\s+/);
+    const vpcCmd = [
+      'ec2', 'describe-vpcs',
+      '--region', region,
+      '--vpc-ids', vpcId,
+      '--query', "Vpcs[0].CidrBlockAssociationSet[?CidrBlockState.State=='associated'].CidrBlock",
+      '--output', 'text',
+    ];
+    const vpcCidrs = execFileSync('aws', vpcCmd, { encoding: 'utf8' }).trim().split(/\s+/);
 
     // 获取已存在的子网 CIDR
-    const subnetCmd = `aws ec2 describe-subnets --region ${region} \
-      --filters "Name=vpc-id,Values=${vpcId}" \
-      --query "Subnets[*].CidrBlock" --output text`;
-    const existingCidrs = execSync(subnetCmd, { encoding: 'utf8' }).trim().split(/\s+/).filter(c => c);
+    const subnetCmd = [
+      'ec2', 'describe-subnets',
+      '--region', region,
+      '--filters', `Name=vpc-id,Values=${vpcId}`,
+      '--query', 'Subnets[*].CidrBlock',
+      '--output', 'text',
+    ];
+    const existingCidrs = execFileSync('aws', subnetCmd, { encoding: 'utf8' }).trim().split(/\s+/).filter(c => c);
 
     const subnetSize = Math.pow(2, 32 - TARGET_PREFIX);
 
@@ -227,9 +250,13 @@ class ComputeSubnetManager {
    * 获取 AZ ID
    */
   static async getAzId(availabilityZone, region) {
-    const cmd = `aws ec2 describe-availability-zones --region ${region} \
-      --query "AvailabilityZones[?ZoneName=='${availabilityZone}'].ZoneId" --output text`;
-    const azId = execSync(cmd, { encoding: 'utf8' }).trim();
+    const cmd = [
+      'ec2', 'describe-availability-zones',
+      '--region', region,
+      '--query', `AvailabilityZones[?ZoneName=='${availabilityZone}'].ZoneId`,
+      '--output', 'text',
+    ];
+    const azId = execFileSync('aws', cmd, { encoding: 'utf8' }).trim();
     if (!azId) {
       throw new Error(`Invalid availability zone: ${availabilityZone}`);
     }
@@ -240,10 +267,14 @@ class ComputeSubnetManager {
    * 获取 NAT Gateway
    */
   static async getNatGateway(vpcId, region) {
-    const cmd = `aws ec2 describe-nat-gateways --region ${region} \
-      --filter "Name=vpc-id,Values=${vpcId}" "Name=state,Values=available" \
-      --query "NatGateways[0].NatGatewayId" --output text`;
-    const natGwId = execSync(cmd, { encoding: 'utf8' }).trim();
+    const cmd = [
+      'ec2', 'describe-nat-gateways',
+      '--region', region,
+      '--filter', `Name=vpc-id,Values=${vpcId}`, 'Name=state,Values=available',
+      '--query', 'NatGateways[0].NatGatewayId',
+      '--output', 'text',
+    ];
+    const natGwId = execFileSync('aws', cmd, { encoding: 'utf8' }).trim();
     if (!natGwId || natGwId === 'None') {
       throw new Error(`No available NAT Gateway found in VPC: ${vpcId}`);
     }
@@ -256,23 +287,28 @@ class ComputeSubnetManager {
   static async configureS3Endpoint(vpcId, routeTableId, region) {
     try {
       // 检查是否已存在
-      const checkCmd = `aws ec2 describe-vpc-endpoints --region ${region} \
-        --filters "Name=vpc-id,Values=${vpcId}" "Name=service-name,Values=com.amazonaws.${region}.s3" \
-        --query "VpcEndpoints[0].VpcEndpointId" --output text`;
-      const existingEndpoint = execSync(checkCmd, { encoding: 'utf8' }).trim();
+      const checkCmd = [
+        'ec2', 'describe-vpc-endpoints',
+        '--region', region,
+        '--filters', `Name=vpc-id,Values=${vpcId}`, `Name=service-name,Values=com.amazonaws.${region}.s3`,
+        '--query', 'VpcEndpoints[0].VpcEndpointId',
+        '--output', 'text',
+      ];
+      const existingEndpoint = execFileSync('aws', checkCmd, { encoding: 'utf8' }).trim();
 
       if (existingEndpoint && existingEndpoint !== 'None') {
         // 添加路由表到现有 endpoint
-        execSync(`aws ec2 modify-vpc-endpoint --region ${region} \
-          --vpc-endpoint-id ${existingEndpoint} \
-          --add-route-table-ids ${routeTableId}`, { encoding: 'utf8', stdio: 'pipe' });
+        execFileSync('aws', ['ec2', 'modify-vpc-endpoint', '--region', region, '--vpc-endpoint-id', existingEndpoint, '--add-route-table-ids', routeTableId], { encoding: 'utf8', stdio: 'pipe' });
         console.log(`[ComputeSubnetManager] Added route table to existing S3 endpoint`);
       } else {
         // 创建新的 endpoint
-        execSync(`aws ec2 create-vpc-endpoint --region ${region} \
-          --vpc-id ${vpcId} \
-          --service-name com.amazonaws.${region}.s3 \
-          --route-table-ids ${routeTableId}`, { encoding: 'utf8' });
+        execFileSync('aws', [
+          'ec2', 'create-vpc-endpoint',
+          '--region', region,
+          '--vpc-id', vpcId,
+          '--service-name', `com.amazonaws.${region}.s3`,
+          '--route-table-ids', routeTableId,
+        ], { encoding: 'utf8' });
         console.log(`[ComputeSubnetManager] Created new S3 VPC endpoint`);
       }
     } catch (error) {

@@ -143,6 +143,7 @@ export const fetchAppStatusV2 = createAsyncThunk(
         timestamp: new Date().toISOString(),
         stats: data.stats || null,
         fetchTime: data.fetchTime || null,
+        errors: data.errors || {},
         version: 'v2'
       };
     } catch (error) {
@@ -285,7 +286,7 @@ const appStatusSlice = createSlice({
 
     // 批量写入 pods + services（用于 WebSocket status_update 消息）
     setPodsServices: (state, action) => {
-      const { pods, services } = action.payload || {};
+      const { pods, services, errors } = action.payload || {};
       if (Array.isArray(pods)) {
         state.pods = pods;
         state.lastPodsUpdate = new Date().toISOString();
@@ -293,6 +294,11 @@ const appStatusSlice = createSlice({
       if (Array.isArray(services)) {
         state.services = services;
         state.lastServicesUpdate = new Date().toISOString();
+      }
+      if (errors) {
+        state.podsError = errors.pods || null;
+        state.servicesError = errors.services || null;
+        state.error = [state.podsError, state.servicesError].filter(Boolean).join('; ') || null;
       }
       appStatusSlice.caseReducers.updateStats(state);
     },
@@ -485,6 +491,9 @@ const appStatusSlice = createSlice({
         state.servicesLoading = false;
         state.pods = action.payload.pods;
         state.services = action.payload.services;
+        state.podsError = action.payload.errors?.pods || null;
+        state.servicesError = action.payload.errors?.services || null;
+        state.error = [state.podsError, state.servicesError].filter(Boolean).join('; ') || null;
         state.lastPodsUpdate = action.payload.timestamp;
         state.lastServicesUpdate = action.payload.timestamp;
 
@@ -501,6 +510,7 @@ const appStatusSlice = createSlice({
         state.servicesLoading = false;
         state.podsError = action.payload;
         state.servicesError = action.payload;
+        state.error = action.payload;
         // 清空旧数据
         state.pods = [];
         state.services = [];

@@ -8,7 +8,7 @@ const { collectInvalid, rejectInvalid } = require('./utils/validateInput');
 const router = express.Router();
 const fs = require('fs-extra');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 
 // 依赖注入
 let broadcast = null;
@@ -803,8 +803,10 @@ router.post('/cancel-creation/:clusterTag', async (req, res) => {
     if (clusterInfo.stackName && clusterInfo.region) {
       process.nextTick(() => {
         try {
-          const deleteCmd = `aws cloudformation delete-stack --stack-name ${clusterInfo.stackName} --region ${clusterInfo.region}`;
-          execSync(deleteCmd, { stdio: 'inherit' });
+          execFileSync('aws', [
+            'cloudformation', 'delete-stack', '--stack-name', clusterInfo.stackName,
+            '--region', clusterInfo.region,
+          ], { stdio: 'inherit' });
           console.log(`CloudFormation stack deletion triggered: ${clusterInfo.stackName}`);
 
           // 广播删除开始

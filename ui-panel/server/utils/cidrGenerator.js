@@ -3,7 +3,7 @@
  * 基于原bash脚本逻辑，提供VPC和子网CIDR的自动生成功能
  */
 
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 
 class CidrGenerator {
   /**
@@ -113,8 +113,8 @@ class CidrGenerator {
    */
   static async getExistingVpcCidrs(region) {
     try {
-      const command = `aws ec2 describe-vpcs --region ${region} --query 'Vpcs[].CidrBlock' --output text`;
-      const result = execSync(command, { encoding: 'utf8' });
+      const command = ['ec2', 'describe-vpcs', '--region', region, '--query', 'Vpcs[].CidrBlock', '--output', 'text'];
+      const result = execFileSync('aws', command, { encoding: 'utf8' });
       
       return result.trim().split(/\s+/).filter(cidr => cidr && cidr !== 'None');
     } catch (error) {

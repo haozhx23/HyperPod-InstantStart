@@ -7,7 +7,7 @@ data:
   validation: /fsx/data/gsm8k/test.parquet
 
 tool:
-  config: /workspace/verl/verl/examples/sglang_multiturn/config/tool_config/gsm8k_tool_config.yaml
+  config: /workspace/verl/examples/sglang_multiturn/config/tool_config/gsm8k_tool_config.yaml
 
 verl:
   projectName: agentic-rl-tooluse

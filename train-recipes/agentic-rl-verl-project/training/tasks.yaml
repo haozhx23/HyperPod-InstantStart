@@ -27,7 +27,7 @@ tasks:
     taskConfig: /fsx/rl-agentic-on-aws/aws/training/configs/gsm8k.yaml
     trainData: /fsx/data/gsm8k/train.parquet
     valData: /fsx/data/gsm8k/test.parquet
-    toolConfig: /workspace/verl/verl/examples/sglang_multiturn/config/tool_config/gsm8k_tool_config.yaml
+    toolConfig: /workspace/verl/examples/sglang_multiturn/config/tool_config/gsm8k_tool_config.yaml
     sandboxServiceRequired: false
 
   swe-k8s:

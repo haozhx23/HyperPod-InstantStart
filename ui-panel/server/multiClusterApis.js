@@ -1,6 +1,8 @@
 const fs = require('fs-extra');
 const path = require('path');
 const { exec } = require('./utils/exec');
+const { runKubectl } = require('./utils/kubectl');
+const kubectlContext = require('./utils/kubectlContext');
 const ClusterManager = require('./clusterManager');
 const MultiClusterLogManager = require('./multiClusterLogManager');
 const { getCurrentIdentity, extractRoleArn } = require('./utils/awsHelpers');
@@ -335,6 +337,7 @@ class MultiClusterAPIs {
       const importConfig = {
         CLUSTER_TYPE: 'imported',
         EKS_CLUSTER_NAME: eksClusterName,
+        EKS_CLUSTER_ARN: clusterExists.context,
         AWS_REGION: awsRegion,
         SKIP_CLUSTER_CREATION: 'true',
         SKIP_CLOUDFORMATION: 'true'
@@ -359,7 +362,7 @@ class MultiClusterAPIs {
       }
 
       // 7. 检测集群实际状态（传递用户指定的HyperPod集群）
-      const detectedState = await this.detectClusterState(eksClusterName, awsRegion, hyperPodClusters);
+      const detectedState = await this.detectClusterState(eksClusterName, awsRegion, hyperPodClusters, clusterExists.context);
       
       // 8. 更新配置文件包含检测状态
       await this.clusterManager.updateImportConfigWithDetectedState(eksClusterName, detectedState);
@@ -379,8 +382,8 @@ class MultiClusterAPIs {
       // 不自动切换 active cluster，让用户在 Cluster Information 页面手动选择
       // 与创建集群的流程保持一致
 
-      // 10. 获取节点数量（使用当前 active cluster 的 kubectl 配置）
-      const nodeCount = await this.getNodeCount();
+      // 导入不切换活跃集群，查询必须使用 describe-cluster 返回的目标 ARN。
+      const nodeCount = await this.getNodeCount(clusterExists.context);
       
       res.json({
         success: true,
@@ -434,44 +437,46 @@ class MultiClusterAPIs {
   // 验证集群存在（不测试连接）
   async verifyClusterExists(eksClusterName, awsRegion) {
     return new Promise((resolve) => {
-      exec(`aws eks describe-cluster --region ${awsRegion} --name ${eksClusterName}`, (error, stdout) => {
+      exec(`aws eks describe-cluster --region ${awsRegion} --name ${eksClusterName} --output json`, (error, stdout) => {
         if (error) {
           resolve({
             success: false,
             error: `EKS cluster not found or access denied: ${error.message}`
           });
         } else {
-          resolve({
-            success: true,
-            message: `Cluster ${eksClusterName} exists and is accessible`
-          });
+          try {
+            const context = JSON.parse(stdout).cluster?.arn;
+            if (!kubectlContext.isValidContextName(context)) throw new Error('EKS response is missing a valid cluster ARN');
+            resolve({
+              success: true,
+              context,
+              message: `Cluster ${eksClusterName} exists and is accessible`
+            });
+          } catch (parseError) {
+            resolve({ success: false, error: parseError.message });
+          }
         }
       });
     });
   }
 
   // 获取节点数量（在权限配置完成后）
-  async getNodeCount() {
-    return new Promise((resolve) => {
-      exec('kubectl get nodes --no-headers | wc -l', (error, stdout) => {
-        if (error) {
-          console.warn('Failed to get node count:', error.message);
-          resolve(0);
-        } else {
-          resolve(parseInt(stdout.trim()) || 0);
-        }
-      });
-    });
+  async getNodeCount(context) {
+    if (!kubectlContext.isValidContextName(context)) throw new Error('A target EKS context is required');
+    const output = await runKubectl('get nodes -o json', { context });
+    return JSON.parse(output).items.length;
   }
 
   // 检测集群实际状态
-  async detectClusterState(eksClusterName, awsRegion, userSpecifiedHyperPodClusters = null) {
+  async detectClusterState(eksClusterName, awsRegion, userSpecifiedHyperPodClusters = null,
+    context = kubectlContext.resolveClusterTarget(eksClusterName).context) {
+    if (!kubectlContext.isValidContextName(context)) throw new Error('A target EKS context is required');
     console.log(`Detecting state for cluster: ${eksClusterName}`);
     
     const state = {
-      dependencies: await this.detectDependencies(),
+      dependencies: await this.detectDependencies(context),
       hyperPodClusters: await this.detectHyperPodClusters(eksClusterName, awsRegion, userSpecifiedHyperPodClusters),
-      nodeGroups: await this.detectNodeGroups(),
+      nodeGroups: await this.detectNodeGroups(context),
       detectedAt: new Date().toISOString()
     };
     
@@ -480,7 +485,7 @@ class MultiClusterAPIs {
   }
 
   // 检测依赖组件状态
-  async detectDependencies() {
+  async detectDependencies(context) {
     const components = {
       helmDependencies: false,
       nlbController: false,
@@ -490,15 +495,15 @@ class MultiClusterAPIs {
 
     try {
       // 检测 AWS Load Balancer Controller
-      const nlbResult = await this.execCommand('kubectl get deployment -n kube-system aws-load-balancer-controller --no-headers 2>/dev/null');
+      const nlbResult = await this.execCommand('kubectl get deployment -n kube-system aws-load-balancer-controller --no-headers 2>/dev/null', context);
       components.nlbController = nlbResult.success && nlbResult.output.includes('aws-load-balancer-controller');
 
       // 检测 S3 CSI Driver
-      const s3Result = await this.execCommand('kubectl get daemonset -n kube-system s3-csi-node --no-headers 2>/dev/null');
+      const s3Result = await this.execCommand('kubectl get daemonset -n kube-system s3-csi-node --no-headers 2>/dev/null', context);
       components.s3CsiDriver = s3Result.success && s3Result.output.includes('s3-csi-node');
 
       // 检测 Cert Manager
-      const certResult = await this.execCommand('kubectl get pods -n cert-manager --no-headers 2>/dev/null');
+      const certResult = await this.execCommand('kubectl get pods -n cert-manager --no-headers 2>/dev/null', context);
       components.certManager = certResult.success && certResult.output.includes('cert-manager');
 
       // 检测 Helm 相关组件 (简化检测)
@@ -559,9 +564,9 @@ class MultiClusterAPIs {
   }
 
   // 检测节点组
-  async detectNodeGroups() {
+  async detectNodeGroups(context) {
     try {
-      const result = await this.execCommand('kubectl get nodes -o json 2>/dev/null');
+      const result = await this.execCommand('kubectl get nodes -o json 2>/dev/null', context);
       if (result.success) {
         const nodes = JSON.parse(result.output);
         const nodeGroups = {};
@@ -609,7 +614,7 @@ class MultiClusterAPIs {
       console.log(`Re-detecting state for cluster: ${clusterTag}`);
 
       // 获取集群信息
-      const clusterInfo = this.clusterManager.getClusterInfo(clusterTag);
+      const clusterInfo = await this.clusterManager.getClusterInfo(clusterTag);
       if (!clusterInfo) {
         return res.status(404).json({
           success: false,
@@ -621,7 +626,10 @@ class MultiClusterAPIs {
       await this.switchKubectlConfig(clusterTag);
 
       // 重新检测状态
-      const detectedState = await this.detectClusterState(clusterTag, clusterInfo.config?.awsRegion);
+      const detectedState = await this.detectClusterState(
+        clusterInfo.eksCluster.name, clusterInfo.region, null,
+        kubectlContext.resolveClusterTarget(clusterTag).context
+      );
       
       // 更新集群信息
       await this.clusterManager.updateClusterDetectedState(clusterTag, detectedState);
@@ -642,7 +650,11 @@ class MultiClusterAPIs {
   }
 
   // 执行命令的辅助方法
-  async execCommand(command) {
+  async execCommand(command, context) {
+    if (context !== undefined) {
+      if (!kubectlContext.isValidContextName(context)) throw new Error('A target EKS context is required');
+      command = kubectlContext.injectContextIntoCommand(command, context);
+    }
     return new Promise((resolve) => {
       exec(command, (error, stdout, stderr) => {
         resolve({
@@ -780,12 +792,21 @@ class MultiClusterAPIs {
   async testConnection(eksClusterName, awsRegion) {
     return new Promise((resolve) => {
       // 1. 测试EKS集群是否存在
-      exec(`aws eks describe-cluster --region ${awsRegion} --name ${eksClusterName}`, (error, stdout) => {
+      exec(`aws eks describe-cluster --region ${awsRegion} --name ${eksClusterName} --output json`, (error, stdout) => {
         if (error) {
           resolve({
             success: false,
             error: `EKS cluster not found or access denied: ${error.message}`
           });
+          return;
+        }
+
+        let targetContext;
+        try {
+          targetContext = JSON.parse(stdout).cluster?.arn;
+          if (!kubectlContext.isValidContextName(targetContext)) throw new Error('EKS response is missing a valid cluster ARN');
+        } catch (parseError) {
+          resolve({ success: false, error: parseError.message });
           return;
         }
 
@@ -809,10 +830,8 @@ class MultiClusterAPIs {
               return;
             }
 
-            // 4. 测试kubectl连接
-            exec('kubectl get nodes --no-headers | wc -l', (nodeError, nodeStdout) => {
-              const nodeCount = nodeError ? 0 : parseInt(nodeStdout.trim()) || 0;
-              
+            // 4. 测试连接沿用统一 kubectl 层的超时和大输出限制。
+            const finishTest = (nodeError, nodeCount) => {
               // 5. 恢复原来的kubectl配置（如果有的话）
               if (originalContext && originalContext !== 'error') {
                 exec(`kubectl config use-context ${originalContext}`, (restoreError) => {
@@ -835,7 +854,11 @@ class MultiClusterAPIs {
                   warning: originalContext ? 'Kubectl context restored to original' : 'No original context to restore'
                 });
               }
-            });
+            };
+            this.getNodeCount(targetContext).then(
+              nodeCount => finishTest(null, nodeCount),
+              nodeError => finishTest(nodeError, 0)
+            );
           });
         });
       });

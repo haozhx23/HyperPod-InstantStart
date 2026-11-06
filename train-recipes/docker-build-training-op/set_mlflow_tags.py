@@ -12,7 +12,10 @@ def set_infrastructure_tags():
     """设置基础设施相关的MLflow tags"""
     
     # 设置tracking URI
-    tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "arn:aws:sagemaker:us-west-2:633205212955:mlflow-tracking-server/pdx-mlflow")
+    tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
+    if not tracking_uri:
+        print("MLFLOW_TRACKING_URI is not set; infrastructure tagging is disabled.", file=sys.stderr)
+        return
     mlflow.set_tracking_uri(tracking_uri)
     
     # experiment_name = "test-model-1-20250815_101449"

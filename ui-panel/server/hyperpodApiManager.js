@@ -16,6 +16,7 @@ const router = express.Router();
 const fs = require('fs-extra');
 const path = require('path');
 const { execSync, execAsync } = require('./utils/exec');
+const { execFileSync } = require('child_process');
 const { collectInvalid, collectPresent, rejectInvalid } = require('./utils/validateInput');
 
 // 依赖模块
@@ -481,8 +482,9 @@ router.delete('/:clusterTag/hyperpod', async (req, res) => {
     });
 
     // 使用 AWS CLI 删除 CloudFormation Stack
-    const deleteCommand = `aws cloudformation delete-stack --stack-name ${stackName} --region ${region}`;
-    execSync(deleteCommand, { encoding: 'utf8', timeout: 30000 });
+    execFileSync('aws', [
+      'cloudformation', 'delete-stack', '--stack-name', stackName, '--region', region,
+    ], { encoding: 'utf8', timeout: 30000 });
 
     // WebSocket 广播删除开始
     broadcast({

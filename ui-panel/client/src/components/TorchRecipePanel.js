@@ -93,7 +93,7 @@ const TorchRecipePanel = ({ onLaunch, hyperPodInstanceTypes, instanceTypesLoadin
         onFinish={handleSubmit}
         initialValues={{
           trainingJobName: 'hypd-recipe-torch-1',
-          dockerImage: '633205212955.dkr.ecr.us-west-2.amazonaws.com/sm-training-op-torch26-smhp-op:latest',
+          dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110',
           instanceType: '',
           nprocPerNode: 1,
           replicas: 1,
@@ -164,7 +164,7 @@ const TorchRecipePanel = ({ onLaunch, hyperPodInstanceTypes, instanceTypesLoadin
           name="dockerImage"
           rules={[{ required: true, message: 'Please input docker image!' }]}
         >
-          <Input placeholder="633205212955.dkr.ecr.us-west-2.amazonaws.com/sm-training-op-torch26-smhp-op:latest" />
+          <Input placeholder="public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110" />
         </Form.Item>
 
         {/* 资源配置 */}

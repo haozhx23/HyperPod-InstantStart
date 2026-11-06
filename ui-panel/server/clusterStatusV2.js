@@ -1,4 +1,5 @@
 const { runKubectl } = require('./utils/kubectl');
+const kubectlContext = require('./utils/kubectlContext');
 
 /**
  * 集群状态服务 V2 - 优化版本
@@ -29,8 +30,8 @@ class ClusterStatusV2 {
    * ——缓存过期瞬间多个标签页并发进来，原先每个都独立跑一次 kubectl。
    * 另外 reject 的不再是普通对象而是 Error，上层 `error.message` 不再是 undefined（D5）。
    */
-  executeKubectlWithTimeout(command, timeout = this.defaultTimeout) {
-    return runKubectl(command, { timeout, trim: true, dedup: true });
+  executeKubectlWithTimeout(command, timeout = this.defaultTimeout, context) {
+    return runKubectl(command, { timeout, trim: true, dedup: true, context });
   }
 
   /**
@@ -144,17 +145,19 @@ class ClusterStatusV2 {
   /**
    * 检查缓存是否有效
    */
-  isCacheValid() {
+  isCacheValid(context = kubectlContext.resolveActiveContext()) {
     const now = Date.now();
-    return this.cache.data && (now - this.cache.timestamp) < this.cache.ttl;
+    return Boolean(context && this.cache.context === context && this.cache.data && (now - this.cache.timestamp) < this.cache.ttl);
   }
 
   /**
    * 更新缓存
    */
-  updateCache(data) {
+  updateCache(data, context, requestCache) {
+    if (this.cache !== requestCache || context !== kubectlContext.resolveActiveContext()) return;
     this.cache = {
       data: { ...data, cached: false },
+      context,
       timestamp: Date.now(),
       ttl: 30000
     };
@@ -182,7 +185,7 @@ class ClusterStatusV2 {
   /**
    * 获取 HyperPod 实例组的 Capacity Type 映射
    */
-  async getHyperPodCapacityTypeMap() {
+  async getHyperPodCapacityTypeMap(clusterTag) {
     try {
       const ClusterManager = require('./clusterManager');
       const AWSHelpers = require('./utils/awsHelpers');
@@ -190,7 +193,7 @@ class ClusterStatusV2 {
       const path = require('path');
       
       const clusterManager = new ClusterManager();
-      const activeClusterName = clusterManager.getActiveCluster();
+      const activeClusterName = clusterTag;
       
       if (!activeClusterName) {
         return {};
@@ -238,20 +241,20 @@ class ClusterStatusV2 {
    */
   async getClusterStatus(forceRefresh = false) {
     const startTime = Date.now();
-    
-    // 检查缓存（除非强制刷新）
-    if (!forceRefresh && this.isCacheValid()) {
-      console.log('Returning cached cluster status');
-      return this.getCachedData();
-    }
 
     try {
+      const target = kubectlContext.resolveClusterTarget();
+      if (!forceRefresh && this.isCacheValid(target.context)) {
+        console.log('Returning cached cluster status');
+        return this.getCachedData();
+      }
+      const requestCache = this.cache;
       console.log('Fetching fresh cluster status (batch mode)...');
       
       // 并行获取所有节点和所有 Pod（只调用 2 次 kubectl）
       const [nodesOutput, podsOutput] = await Promise.all([
-        this.executeKubectlWithTimeout('get nodes -o json', 15000),
-        this.executeKubectlWithTimeout('get pods -A -o json', 15000)
+        this.executeKubectlWithTimeout('get nodes -o json', 15000, target.context),
+        this.executeKubectlWithTimeout('get pods -A -o json', 15000, target.context)
       ]);
       
       const nodesData = JSON.parse(nodesOutput);
@@ -266,7 +269,7 @@ class ClusterStatusV2 {
       }
 
       // 获取 HyperPod capacity type 映射
-      const hyperPodCapacityTypeMap = await this.getHyperPodCapacityTypeMap();
+      const hyperPodCapacityTypeMap = await this.getHyperPodCapacityTypeMap(target.clusterTag);
 
       // 在内存中计算所有节点的 GPU 信息（无额外 kubectl 调用）
       const gpuUsage = this.getAllNodesGPUInfoBatch(
@@ -285,7 +288,7 @@ class ClusterStatusV2 {
       };
       
       // 更新缓存
-      this.updateCache(result);
+      this.updateCache(result, target.context, requestCache);
       
       console.log(`Cluster status V2 (batch) fetched in ${fetchTime}ms: ${gpuUsage.length} nodes`);
       return result;

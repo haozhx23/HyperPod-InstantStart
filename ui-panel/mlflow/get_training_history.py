@@ -15,9 +15,11 @@ import traceback
 def get_training_history(tracking_uri=None):
     """获取训练历史数据"""
     try:
-        # MLflow tracking server URI - 从命令行参数获取，或使用默认值
+        # MLflow tracking server URI - 从命令行参数或环境变量获取
         if tracking_uri is None:
-            tracking_uri = "arn:aws:sagemaker:us-west-2:633205212955:mlflow-tracking-server/pdx-mlflow"
+            tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
+        if not tracking_uri:
+            raise ValueError("Configure a tracking server ARN or set MLFLOW_TRACKING_URI.")
         
         print(f"🔍 连接到 MLflow: {tracking_uri}", file=sys.stderr)
         mlflow.set_tracking_uri(tracking_uri)

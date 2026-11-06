@@ -137,9 +137,9 @@ router.post('/undeploy', async (req, res) => {
     // 删除Deployment
     if (deleteType === 'all' || deleteType === 'deployment') {
       try {
-        console.log(`Executing: kubectl delete deployment ${modelTag}`);
-        const output = await executeKubectl(`delete deployment ${modelTag}`);
-        console.log(`Delete deployment output: ${output}`);
+        console.log('Executing: kubectl delete deployment %s', modelTag);
+        const output = await executeKubectl(['delete', 'deployment', modelTag]);
+        console.log('Delete deployment output: %s', output);
 
         results.push({
           resource: 'deployment',
@@ -149,7 +149,7 @@ router.post('/undeploy', async (req, res) => {
         });
         actuallyDeleted++;
       } catch (error) {
-        console.error(`Failed to delete deployment ${modelTag}:`, error);
+        console.error('Failed to delete deployment %s:', modelTag, error);
         results.push({
           resource: 'deployment',
           name: modelTag,
@@ -455,7 +455,7 @@ router.delete('/delete-service/:serviceName', async (req, res) => {
     }
 
     // 2. 删除Service
-    const deleteCmd = `delete service ${serviceName}`;
+    const deleteCmd = ['delete', 'service', serviceName];
     await executeKubectl(deleteCmd);
 
     // 3. 如果有business标签，将所有相关Pod重置为unassigned
@@ -861,7 +861,7 @@ router.delete('/inference-endpoints/:name', async (req, res) => {
 
     console.log(`Deleting InferenceEndpointConfig: ${name} in namespace: ${ns}`);
 
-    const output = await executeKubectl(`delete inferenceendpointconfig ${name} -n ${ns}`);
+    const output = await executeKubectl(['delete', 'inferenceendpointconfig', name, '-n', ns]);
     console.log('Delete output:', output);
 
     // 广播删除状态更新

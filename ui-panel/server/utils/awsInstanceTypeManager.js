@@ -1,4 +1,4 @@
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const MetadataUtils = require('./metadataUtils');
 const { getEffectiveRegion } = require('./regionResolver');
 
@@ -243,8 +243,8 @@ class AWSInstanceTypeManager {
    */
   static _getSubnetAvailabilityZone(subnetId) {
     try {
-      const cmd = `aws ec2 describe-subnets --subnet-ids ${subnetId} --query "Subnets[0].AvailabilityZone" --output text`;
-      const az = execSync(cmd, { encoding: 'utf8', timeout: 10000 }).trim();
+      const cmd = ['ec2', 'describe-subnets', '--subnet-ids', subnetId, '--query', 'Subnets[0].AvailabilityZone', '--output', 'text'];
+      const az = execFileSync('aws', cmd, { encoding: 'utf8', timeout: 10000 }).trim();
       return az && az !== 'None' ? az : null;
     } catch (error) {
       console.error(`Error getting subnet AZ: ${error.message}`);
@@ -260,11 +260,17 @@ class AWSInstanceTypeManager {
     // 特殊处理 p6 家族的命名格式
     const filterPattern = family === 'p6' ? 'p6-b200.*' : `${family}.*`;
 
-    const cmd = `aws ec2 describe-instance-types --region ${region} --filters "Name=instance-type,Values=${filterPattern}" --query "InstanceTypes[?GpuInfo.Gpus].{InstanceType:InstanceType,VCpuInfo:VCpuInfo,MemoryInfo:MemoryInfo,GpuInfo:GpuInfo}" --output json`;
+    const cmd = [
+      'ec2', 'describe-instance-types',
+      '--region', region,
+      '--filters', `Name=instance-type,Values=${filterPattern}`,
+      '--query', 'InstanceTypes[?GpuInfo.Gpus].{InstanceType:InstanceType,VCpuInfo:VCpuInfo,MemoryInfo:MemoryInfo,GpuInfo:GpuInfo}',
+      '--output', 'json',
+    ];
 
     console.log(`Fetching ${family} instance types from region ${region}`);
 
-    const output = execSync(cmd, { encoding: 'utf8', timeout: 15000 });
+    const output = execFileSync('aws', cmd, { encoding: 'utf8', timeout: 15000 });
     const awsInstanceTypes = JSON.parse(output);
 
     return this._transformInstanceTypes(awsInstanceTypes, family);
@@ -278,9 +284,16 @@ class AWSInstanceTypeManager {
     console.log(`Optimized fetch: Getting all GPU instances available in ${availabilityZone}`);
 
     // Step 1: 获取该 AZ 所有可用的 GPU 实例类型
-    const azCmd = `aws ec2 describe-instance-type-offerings --location-type availability-zone --filters "Name=location,Values=${availabilityZone}" --query "InstanceTypeOfferings[?starts_with(InstanceType, 'g5.') || starts_with(InstanceType, 'g6.') || starts_with(InstanceType, 'g6e.') || starts_with(InstanceType, 'p4.') || starts_with(InstanceType, 'p5.') || starts_with(InstanceType, 'p5e.') || starts_with(InstanceType, 'p5en.') || starts_with(InstanceType, 'p6-b200.')].InstanceType" --region ${region} --output json`;
+    const azCmd = [
+      'ec2', 'describe-instance-type-offerings',
+      '--location-type', 'availability-zone',
+      '--filters', `Name=location,Values=${availabilityZone}`,
+      '--query', "InstanceTypeOfferings[?starts_with(InstanceType, 'g5.') || starts_with(InstanceType, 'g6.') || starts_with(InstanceType, 'g6e.') || starts_with(InstanceType, 'p4.') || starts_with(InstanceType, 'p5.') || starts_with(InstanceType, 'p5e.') || starts_with(InstanceType, 'p5en.') || starts_with(InstanceType, 'p6-b200.')].InstanceType",
+      '--region', region,
+      '--output', 'json',
+    ];
 
-    const azOutput = execSync(azCmd, { encoding: 'utf8', timeout: 15000 });
+    const azOutput = execFileSync('aws', azCmd, { encoding: 'utf8', timeout: 15000 });
     const availableInstanceTypeNames = JSON.parse(azOutput);
 
     console.log(`Found ${availableInstanceTypeNames.length} GPU instance types available in ${availabilityZone}`);
@@ -292,9 +305,15 @@ class AWSInstanceTypeManager {
 
     // Step 2: 获取详细信息
     console.log(`Getting detailed info for ${availableInstanceTypeNames.length} instance types...`);
-    const detailsCmd = `aws ec2 describe-instance-types --region ${region} --instance-types ${availableInstanceTypeNames.join(' ')} --query "InstanceTypes[?GpuInfo.Gpus].{InstanceType:InstanceType,VCpuInfo:VCpuInfo,MemoryInfo:MemoryInfo,GpuInfo:GpuInfo}" --output json`;
+    const detailsCmd = [
+      'ec2', 'describe-instance-types',
+      '--region', region,
+      '--instance-types', ...availableInstanceTypeNames,
+      '--query', 'InstanceTypes[?GpuInfo.Gpus].{InstanceType:InstanceType,VCpuInfo:VCpuInfo,MemoryInfo:MemoryInfo,GpuInfo:GpuInfo}',
+      '--output', 'json',
+    ];
 
-    const detailsOutput = execSync(detailsCmd, { encoding: 'utf8', timeout: 25000 });
+    const detailsOutput = execFileSync('aws', detailsCmd, { encoding: 'utf8', timeout: 25000 });
     const instanceDetails = JSON.parse(detailsOutput);
 
     // Step 3: 转换格式

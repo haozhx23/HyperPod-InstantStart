@@ -147,7 +147,7 @@ router.post('/launch-torch-training', async (req, res) => {
 
     const {
       trainingJobName,
-      dockerImage = '633205212955.dkr.ecr.us-west-2.amazonaws.com/sm-training-op-torch26-smhp-op:latest',
+      dockerImage = 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110',
       instanceType = 'ml.g5.12xlarge',
       nprocPerNode = 1,
       replicas = 1,
@@ -316,7 +316,7 @@ router.post('/launch-sagemaker-job', async (req, res) => {
 
     const {
       trainingJobName,
-      dockerImage = '633205212955.dkr.ecr.us-west-2.amazonaws.com/sm-training-op-torch26-smhp-op:latest',
+      dockerImage = 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110',
       instanceType = 'ml.g5.12xlarge',
       nprocPerNode = 1,
       replicas = 1,
@@ -807,7 +807,7 @@ router.post('/launch-script-training', async (req, res) => {
 
     const {
       trainingJobName,
-      dockerImage = '633205212955.dkr.ecr.us-west-2.amazonaws.com/sm-training-op-torch26-smhp-op:latest',
+      dockerImage = 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110',
       instanceType = 'ml.g5.12xlarge',
       nprocPerNode = 1,
       replicas = 1,
@@ -1241,7 +1241,7 @@ function makeConfigRoutes(slug, defaults) {
 
 makeConfigRoutes('hyperpodrun-job-config', {
   jobName: 'hyperpodrun-job-1',
-  dockerImage: '633205212955.dkr.ecr.us-west-2.amazonaws.com/sm-training-op-torch26-smhp-op:latest',
+  dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110',
   instanceType: '',
   entryScriptPath: '/fsx/my-project/run.sh',
   replicas: 1,
@@ -1308,7 +1308,7 @@ router.get('/llamafactory-config/load', async (req, res) => {
     if (!fs.existsSync(configPath)) {
       const defaultConfig = {
         trainingJobName: 'lmf-v1',
-        dockerImage: '633205212955.dkr.ecr.us-west-2.amazonaws.com/sm-training-op-torch26-smhp-op-v2:latest',
+        dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110',
         instanceType: 'ml.g6.12xlarge',
         nprocPerNode: 4,
         replicas: 1,
@@ -1386,7 +1386,7 @@ router.get('/msswift-config/load', async (req, res) => {
     if (!fs.existsSync(configPath)) {
       const defaultConfig = {
         trainingJobName: 'msswift-1',
-        dockerImage: '633205212955.dkr.ecr.us-west-2.amazonaws.com/sm-training-op-torch26-smhp-op-v2:latest',
+        dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110',
         instanceType: 'ml.g6.12xlarge',
         nprocPerNode: 4,
         replicas: 1,
@@ -1498,7 +1498,7 @@ router.get('/script-config/load', async (req, res) => {
     if (!fs.existsSync(configPath)) {
       const defaultConfig = {
         trainingJobName: 'hypd-recipe-script-1',
-        dockerImage: '633205212955.dkr.ecr.us-west-2.amazonaws.com/sm-training-op-torch26-smhp-op:latest',
+        dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110',
         instanceType: 'ml.g5.12xlarge',
         nprocPerNode: 1,
         replicas: 1,
@@ -1576,7 +1576,7 @@ router.get('/torch-config/load', async (req, res) => {
     if (!fs.existsSync(configPath)) {
       const defaultConfig = {
         trainingJobName: 'hypd-recipe-torch-1',
-        dockerImage: '633205212955.dkr.ecr.us-west-2.amazonaws.com/sm-training-op-torch26-smhp-op:latest',
+        dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110',
         instanceType: 'ml.g5.12xlarge',
         nprocPerNode: 1,
         replicas: 1,
@@ -1654,7 +1654,7 @@ router.get('/sagemaker-config/load', async (req, res) => {
     if (!fs.existsSync(configPath)) {
       const defaultConfig = {
         trainingJobName: 'sagemaker-job',
-        dockerImage: '633205212955.dkr.ecr.us-west-2.amazonaws.com/sm-training-op-torch26-smhp-op:latest',
+        dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110',
         instanceType: 'ml.g5.12xlarge',
         nprocPerNode: 1,
         replicas: 1,
@@ -1734,7 +1734,7 @@ router.get('/verl-config/load', async (req, res) => {
         jobName: 'verl-training-a1',
         instanceType: 'ml.g5.12xlarge',
         entryPointPath: 'verl-project/src/qwen-3b-grpo-kuberay.sh',
-        dockerImage: '633205212955.dkr.ecr.us-west-2.amazonaws.com/hypd-verl:latest',
+        dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-verl-torch28-pub:v1217a',
         workerReplicas: 1,
         gpuPerNode: 4,
         efaPerNode: 1
@@ -1906,7 +1906,7 @@ router.delete('/hyperpod-jobs/:jobName', async (req, res) => {
     }
     console.log(`Deleting training job: ${jobName}`);
 
-    const output = await executeKubectl(`delete hyperpodpytorchjob ${jobName}`);
+    const output = await executeKubectl(['delete', 'hyperpodpytorchjob', jobName]);
     console.log('Delete output:', output);
 
     // 广播删除状态更新
@@ -2032,7 +2032,7 @@ router.delete('/rayjobs/:jobName', async (req, res) => {
     }
     console.log(`Deleting RayJob: ${jobName}`);
 
-    const output = await executeKubectl(`delete rayjob ${jobName}`);
+    const output = await executeKubectl(['delete', 'rayjob', jobName]);
     console.log('RayJob delete output:', output);
 
     // 发送WebSocket广播

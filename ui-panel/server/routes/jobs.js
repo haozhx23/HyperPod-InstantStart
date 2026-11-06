@@ -49,7 +49,7 @@ router.delete('/k8s-jobs/:jobName', async (req, res) => {
     const problems = collectInvalid([['jobName', jobName, 'token', { maxLength: 63 }]]);
     if (problems.length > 0) return rejectInvalid(res, problems, req.path);
 
-    await executeKubectl(`delete job ${jobName}`);
+    await executeKubectl(['delete', 'job', jobName]);
     res.json({ success: true, message: `Job ${jobName} deleted` });
   } catch (error) {
     console.error('Error deleting k8s job:', error);
