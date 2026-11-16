@@ -32,6 +32,11 @@ if [ "$USE_LOCAL" = false ] && [ "$RELEASE_MODE" = "local-build" ]; then
   USE_LOCAL=true
   echo "📦 .release-source declares mode=local-build → using local image"
 fi
+if [ "$USE_LOCAL" = false ] && [ -z "$REMOTE_REPO" ]; then
+  echo "❌ This release has no prebuilt image (REMOTE_REPO is empty) but mode=$RELEASE_MODE asks to pull one."
+  echo "   Run: bash $0 --local   (builds the image from the bundled Dockerfile)"
+  exit 1
+fi
 IMAGE_REF=$([ "$USE_LOCAL" = true ] && echo "$LOCAL_IMAGE" || echo "$REMOTE_REPO")
 
 install_cli_tools() {
