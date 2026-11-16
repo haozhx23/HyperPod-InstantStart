@@ -13,7 +13,7 @@ deepspeed: deepspeed_conf/ds_z3_offload_config.json
 # dataset: identity # ,alpaca_en_demo
 
 dataset_dir: customized_dataset
-dataset: longconv2k
+dataset: alpaca_en  # registered in customized_dataset/dataset_info.json, downloaded from Hugging Face
 
 template: qwen
 cutoff_len: 4096

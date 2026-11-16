@@ -8,34 +8,6 @@
   "alpaca_zh_demo": {
     "file_name": "alpaca_zh_demo.json"
   },
-  "longconv2k": {
-    "file_name": "longconv2k.json",
-    "formatting": "sharegpt",
-    "columns": {
-      "messages": "conversations"
-    },
-    "tags": {
-      "role_tag": "role",
-      "content_tag": "content",
-      "user_tag": "user",
-      "assistant_tag": "assistant",
-      "system_tag": "system"
-    }
-  },
-  "longconv5k": {
-    "file_name": "longconv5k.json",
-    "formatting": "sharegpt",
-    "columns": {
-      "messages": "conversations"
-    },
-    "tags": {
-      "role_tag": "role",
-      "content_tag": "content",
-      "user_tag": "user",
-      "assistant_tag": "assistant",
-      "system_tag": "system"
-    }
-  },
   "glaive_toolcall_en_demo": {
     "file_name": "glaive_toolcall_en_demo.json",
     "formatting": "sharegpt",
