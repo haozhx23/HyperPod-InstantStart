@@ -1,5 +1,4 @@
-const { promisify } = require('util');
-const exec = promisify(require('child_process').exec);
+const { execAsync: exec } = require('./exec');
 
 class SubnetManager {
   

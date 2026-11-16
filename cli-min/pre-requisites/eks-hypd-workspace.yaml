@@ -88,11 +88,14 @@ Resources:
         - Key: Name
           Value: !Sub '${ResourceTag}-bucket'
 
-  # IAM Role
+  # Deployment and operations role. Keep the existing logical ID and role name
+  # so stack updates do not replace the role or break consumers of its ARN.
+  # Permission scope and compatibility choices: IAM_PERMISSIONS.md.
   EKSPlusHYPDAdminRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub '${ResourceTag}-admin-role'
+      Description: HyperPod InstantStart deployment and operations role with service-scoped permissions
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -112,8 +115,179 @@ Resources:
             Principal:
               AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
             Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AdministratorAccess
+      Policies:
+        - PolicyName: InstantStartPlatformOperations
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Service-wide access preserves provisioning, imported resources,
+              # cross-region management, storage selection and add-on upgrades.
+              - Sid: PlatformServices
+                Effect: Allow
+                Action:
+                  - cloudformation:*
+                  - ec2:*
+                  - eks:*
+                  - sagemaker:*
+                  - sagemaker-mlflow:*
+                  - s3:*
+                  - fsx:*
+                  - lambda:*
+                  - ecr:*
+                  - ecr-public:*
+                  - elasticloadbalancing:*
+                  - autoscaling:*
+                  - application-autoscaling:*
+                  - sqs:*
+                  - events:*
+                  - aps:*
+                  - logs:*
+                  - cloudwatch:*
+                Resource: '*'
+              - Sid: ResourceAndQuotaDiscovery
+                Effect: Allow
+                Action:
+                  - tag:GetResources
+                  - tag:GetTagKeys
+                  - tag:GetTagValues
+                  - servicequotas:Get*
+                  - servicequotas:List*
+                  - cloudtrail:LookupEvents
+                Resource: '*'
+              - Sid: EncryptedStorage
+                Effect: Allow
+                Action:
+                  - kms:DescribeKey
+                  - kms:ListKeys
+                  - kms:ListAliases
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:ReEncrypt*
+                  - kms:GenerateDataKey*
+                  - kms:ListGrants
+                  - kms:RevokeGrant
+                Resource: '*'
+              - Sid: StorageServiceGrants
+                Effect: Allow
+                Action: kms:CreateGrant
+                Resource: '*'
+                Condition:
+                  Bool:
+                    kms:GrantIsForAWSResource: 'true'
+        - PolicyName: InstantStartIdentityOperations
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: IdentityDiscoveryAndPolicyChecks
+                Effect: Allow
+                Action:
+                  - iam:Get*
+                  - iam:List*
+                  - iam:SimulateCustomPolicy
+                  - iam:SimulatePrincipalPolicy
+                  - access-analyzer:ValidatePolicy
+                Resource: '*'
+              # Do not require role-name prefixes: imported clusters and
+              # existing execution roles can use customer-selected names.
+              - Sid: AccountRoles
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:UpdateRole
+                  - iam:UpdateRoleDescription
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:TagRole
+                  - iam:UntagRole
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*'
+              - Sid: AccountPolicies
+                Effect: Allow
+                Action:
+                  - iam:CreatePolicy
+                  - iam:DeletePolicy
+                  - iam:CreatePolicyVersion
+                  - iam:DeletePolicyVersion
+                  - iam:SetDefaultPolicyVersion
+                  - iam:TagPolicy
+                  - iam:UntagPolicy
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/*'
+              - Sid: AccountInstanceProfiles
+                Effect: Allow
+                Action:
+                  - iam:CreateInstanceProfile
+                  - iam:DeleteInstanceProfile
+                  - iam:AddRoleToInstanceProfile
+                  - iam:RemoveRoleFromInstanceProfile
+                  - iam:TagInstanceProfile
+                  - iam:UntagInstanceProfile
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/*'
+              - Sid: AccountOIDCProviders
+                Effect: Allow
+                Action:
+                  - iam:CreateOpenIDConnectProvider
+                  - iam:DeleteOpenIDConnectProvider
+                  - iam:AddClientIDToOpenIDConnectProvider
+                  - iam:RemoveClientIDFromOpenIDConnectProvider
+                  - iam:UpdateOpenIDConnectProviderThumbprint
+                  - iam:TagOpenIDConnectProvider
+                  - iam:UntagOpenIDConnectProvider
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/*'
+              - Sid: AccountServiceLinkedRoles
+                Effect: Allow
+                Action:
+                  - iam:CreateServiceLinkedRole
+                  - iam:DeleteServiceLinkedRole
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/*'
+              - Sid: PassRolesToPlatformServices
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*'
+                Condition:
+                  StringEquals:
+                    iam:PassedToService:
+                      - ec2.amazonaws.com
+                      - eks.amazonaws.com
+                      - eks-nodegroup.amazonaws.com
+                      - pods.eks.amazonaws.com
+                      - sagemaker.amazonaws.com
+                      - hyperpod.sagemaker.amazonaws.com
+                      - lambda.amazonaws.com
+                      - cloudformation.amazonaws.com
+                      - autoscaling.amazonaws.com
+                      - application-autoscaling.amazonaws.com
+        - PolicyName: InstantStartSessions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: SystemsManager
+                Effect: Allow
+                Action:
+                  - ssm:*
+                  - ssmmessages:*
+                  - ec2messages:*
+                Resource: '*'
+              - Sid: CallerIdentity
+                Effect: Allow
+                Action: sts:GetCallerIdentity
+                Resource: '*'
+              - Sid: ECRPublicLogin
+                Effect: Allow
+                Action: sts:GetServiceBearerToken
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    sts:AWSServiceName: ecr-public.amazonaws.com
+              # Cross-account MLflow synchronization uses STS AssumeRole.
+              - Sid: AssumeTrustedRoles
+                Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                  - sts:TagSession
+                Resource: !Sub 'arn:${AWS::Partition}:iam::*:role/*'
 
   # Instance Profile
   HYPDInstanceProfile:
@@ -191,14 +365,14 @@ Resources:
           
           pip3 install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz
           
-          AWS_CLI_VERSION=2.36.15
-          AWS_CLI_SHA256=02a8eb2fe985be8ebcc284aaa5bae206ee8668872d6369e66a5c7d49d8671a08
-          KUBECTL_VERSION=1.35.7
-          KUBECTL_SHA256=12e97f9d23a9f6cbb87b89becd6bd291e1a858a3379a4e11e2c822c4c1530052
-          EKSCTL_VERSION=0.229.0
-          EKSCTL_SHA256=4a104d3a2a001de219e227baea1f0513ce6e87e60fef7dfc219cb0694e378829
-          HELM_VERSION=3.21.3
-          HELM_SHA256=15e041a93a590dce8100f39385cd98c84a765c9e36aeeb9e2dc6ff9e4769e2e0
+          AWS_CLI_VERSION=2.40.3
+          AWS_CLI_SHA256=4770c06c4ecfc8ba94b60d89e6c7018ab7ea2cf5341b1ef05f6f93c5d6e8b705
+          KUBECTL_VERSION=1.35.10
+          KUBECTL_SHA256=c49a28f1f4efc4d475ed05f47f2ce8e563bf7bef69ed77fe1b924ea6d83b6327
+          EKSCTL_VERSION=0.231.0
+          EKSCTL_SHA256=13cd1c4ae6ad3f74ea27aa1117c72e34ffa4ca8ff6d709261f7b1d7f411dc435
+          HELM_VERSION=3.22.1
+          HELM_SHA256=896cf63684a42a723d61c980369d6e588330927deb13676ca0d85006dd6da0ea
 
           curl -fsSLo awscliv2.zip "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-$AWS_CLI_VERSION.zip"
           echo "$AWS_CLI_SHA256  awscliv2.zip" | sha256sum -c -

@@ -65,7 +65,8 @@ class MultiClusterStatus {
       }
 
       // 查询 CloudFormation 状态
-      const command = `aws cloudformation describe-stacks --stack-name "${stackName}" --output json`;
+      const { getEffectiveRegion } = require('./utils/regionResolver');
+      const command = `aws cloudformation describe-stacks --region ${getEffectiveRegion(clusterTag)} --stack-name "${stackName}" --output json`;
       
       return new Promise((resolve) => {
         exec(command, (error, stdout, stderr) => {

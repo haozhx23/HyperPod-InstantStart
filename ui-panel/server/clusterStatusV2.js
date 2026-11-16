@@ -264,8 +264,12 @@ class ClusterStatusV2 {
       const minimizedPods = this.minimizePodData(podsData.items || []);
       
       if (!nodesData.items || nodesData.items.length === 0) {
+        // kubectl 成功返回、集群里确实没有节点（不可达会在上面抛错）。和非空结果一样入缓存，
+        // 否则刚建好的空集群上每个请求都要重新打两次 kubectl。
         console.log('No nodes found in cluster, returning empty result');
-        return { nodes: [], fetchTime: Date.now() - startTime, timestamp: Date.now(), nodeCount: 0, version: 'v2-batch' };
+        const emptyResult = { nodes: [], fetchTime: Date.now() - startTime, timestamp: Date.now(), nodeCount: 0, version: 'v2-batch' };
+        this.updateCache(emptyResult, target.context, requestCache);
+        return emptyResult;
       }
 
       // 获取 HyperPod capacity type 映射

@@ -11,6 +11,8 @@ const S3StorageManager = ({ onStorageChange }) => {
   const [loading, setLoading] = useState(false);
   const [createLoading, setCreateLoading] = useState(false);
   const [defaultsLoaded, setDefaultsLoaded] = useState(false);
+  // 集群所在 region。region 字段填的是 bucket 的 region，两者可以不同（面板管理别的 region 的集群时）
+  const [clusterRegion, setClusterRegion] = useState('');
 
   // 获取默认值
   const fetchDefaults = async () => {
@@ -18,7 +20,9 @@ const S3StorageManager = ({ onStorageChange }) => {
       const response = await fetch('/api/s3-storage-defaults');
       const result = await response.json();
       if (result.success && result.defaults) {
-        form.setFieldsValue(result.defaults);
+        const { clusterRegion: defaultClusterRegion, ...fieldDefaults } = result.defaults;
+        form.setFieldsValue(fieldDefaults);
+        setClusterRegion(defaultClusterRegion || '');
         setDefaultsLoaded(true);
       }
     } catch (error) {
@@ -56,6 +60,7 @@ const S3StorageManager = ({ onStorageChange }) => {
       if (result.success) {
         message.success(`S3 storage ${values.name} created successfully`);
         form.resetFields();
+        fetchDefaults(); // resetFields 会清空默认值，重新填回
         fetchStorages();
         onStorageChange && onStorageChange(); // 触发父组件刷新
       } else {
@@ -207,13 +212,33 @@ const S3StorageManager = ({ onStorageChange }) => {
               <Col span={8}>
                 <Form.Item
                   name="region"
-                  label="AWS Region"
-                  rules={[{ required: true, message: 'Please input AWS region' }]}
+                  label="Bucket Region"
+                  tooltip="The AWS Region of the S3 bucket. It can differ from the cluster's Region."
+                  rules={[
+                    { required: true, message: 'Please input the bucket region' },
+                    { pattern: /^[a-z]{2,4}(-[a-z]+)+-\d{1,2}$/, message: 'Not a valid AWS Region (e.g. us-east-1)' }
+                  ]}
                 >
-                  <Input disabled />
+                  <Input placeholder="us-east-1" />
                 </Form.Item>
               </Col>
             </Row>
+
+            <Form.Item noStyle shouldUpdate={(prev, cur) => prev.region !== cur.region}>
+              {({ getFieldValue }) => {
+                const bucketRegion = getFieldValue('region');
+                if (!bucketRegion || !clusterRegion || bucketRegion === clusterRegion) return null;
+                return (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                    message={`The bucket is in ${bucketRegion}, but the cluster is in ${clusterRegion}.`}
+                    description="Pods will reach the bucket across Regions: this needs a NAT gateway (an S3 gateway endpoint only covers buckets in the cluster's Region) and incurs inter-Region data transfer charges."
+                  />
+                );
+              }}
+            </Form.Item>
             
             <Form.Item>
               <Button 

@@ -31,7 +31,7 @@ Add a new HyperPod instance group to the current active cluster. Corresponds to 
 
 1. Call `hyperpod_add_instance_group` with the validated parameters
 2. Inform user: estimated wait 5-15 minutes
-3. **MUST poll** `hyperpod_get_creation_status` every **60 seconds** until the cluster status is `InService` or failed. Between each poll, call `wait_seconds(60)` to wait. Report each poll result to the user. Do NOT skip polling.
+3. **MUST poll** `hyperpod_get_instance_group_status(name=instanceGroupName)` every **60 seconds** until `ready: true` or `failed: true`. This checks actual cluster state and current/target capacity; `hyperpod_get_creation_status` only checks the initial CloudFormation creation. Between each poll, call `wait_seconds(60)` to wait. Report each poll result to the user. Do NOT skip polling.
 
 ## Step 4: Verify
 

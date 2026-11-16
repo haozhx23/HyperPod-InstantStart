@@ -3,7 +3,7 @@
  * 处理EKS集群的CloudFormation Stack创建和管理
  */
 
-const { execSync, spawn } = require('child_process');
+const { execSync } = require('./exec');
 const fs = require('fs-extra');
 const path = require('path');
 const YAML = require('yaml');
@@ -325,21 +325,26 @@ class CloudFormationManager {
 
   /**
    * 检查实例类型是否支持EFA
+   *
+   * 必须在节点组所属集群的 region 查询：不带 --region 时 CLI 用的是面板主机的默认
+   * region，集群在别的 region 时会查错地方。查询失败直接抛错——以前静默返回 false，
+   * 结果是悄悄建出不带 EFA 的节点组，用户无从察觉。
    * @param {string} instanceType - 实例类型
+   * @param {string} region - 集群所在 AWS 区域
    * @returns {Promise<boolean>} 是否支持EFA
    */
-  static async checkEfaSupport(instanceType) {
+  static async checkEfaSupport(instanceType, region) {
+    if (!region) {
+      throw new Error(`checkEfaSupport: region is required (instance type ${instanceType})`);
+    }
     try {
-      const { execSync } = require('child_process');
       const result = execSync(
-        `aws ec2 describe-instance-types --instance-types ${instanceType} --query 'InstanceTypes[0].NetworkInfo.EfaSupported' --output text`,
+        `aws ec2 describe-instance-types --region ${region} --instance-types ${instanceType} --query 'InstanceTypes[0].NetworkInfo.EfaSupported' --output text`,
         { encoding: 'utf8', timeout: 10000 }
       );
       return result.trim().toLowerCase() === 'true';
     } catch (error) {
-      console.warn(`Failed to check EFA support for ${instanceType}:`, error.message);
-      // 默认返回false，避免配置错误
-      return false;
+      throw new Error(`Failed to check EFA support for ${instanceType} in ${region}: ${error.message}`);
     }
   }
 
@@ -461,7 +466,7 @@ class CloudFormationManager {
       }
 
       // 检查实例类型是否支持EFA
-      const efaSupported = await this.checkEfaSupport(nodeGroupConfig.instanceType);
+      const efaSupported = await this.checkEfaSupport(nodeGroupConfig.instanceType, region);
       console.log(`Instance type ${nodeGroupConfig.instanceType} EFA support: ${efaSupported}`);
 
       // 生成eksctl配置（S5：装对象 + 序列化，不拼字符串）
@@ -524,7 +529,7 @@ class CloudFormationManager {
         throw new Error(`No private subnet found in different AZ from ${targetAZ}`);
       }
 
-      const efaSupported = await this.checkEfaSupport(nodeGroupConfig.instanceType);
+      const efaSupported = await this.checkEfaSupport(nodeGroupConfig.instanceType, region);
 
       // 生成eksctl配置（S5：装对象 + 序列化，不拼字符串）
       const eksctlConfig = YAML.stringify(this.buildEksctlNodeGroupConfig({
@@ -554,14 +559,17 @@ class CloudFormationManager {
    * 删除EKS节点组
    * @param {string} nodeGroupName - 节点组名称
    * @param {string} clusterName - EKS集群名称
+   * @param {string} region - 集群所在 AWS 区域（不传则 eksctl 落到面板主机的默认 region）
    * @returns {Promise<Object>} 删除结果
    */
-  static async deleteEksNodeGroup(nodeGroupName, clusterName) {
+  static async deleteEksNodeGroup(nodeGroupName, clusterName, region) {
+    if (!region) {
+      throw new Error(`Failed to delete nodegroup ${nodeGroupName}: region is required`);
+    }
     try {
-      const { execSync } = require('child_process');
 
       // 使用eksctl删除nodegroup，会自动清理CloudFormation stack
-      const deleteCommand = `eksctl delete nodegroup --cluster=${clusterName} --name=${nodeGroupName}`;
+      const deleteCommand = `eksctl delete nodegroup --cluster=${clusterName} --name=${nodeGroupName} --region=${region}`;
       console.log(`Starting nodegroup deletion: ${deleteCommand}`);
 
       const result = execSync(deleteCommand, {

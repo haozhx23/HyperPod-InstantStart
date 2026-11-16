@@ -132,6 +132,8 @@ if [ "$USE_LOCAL" = true ]; then
     fi
     echo "📦 Local image $LOCAL_IMAGE not found — building from $DOCKERFILE"
     echo "   Context: $BUILD_CONTEXT"
+    # Base images come from public.ecr.aws; a stale login there fails with 403.
+    bash "$SCRIPT_DIR/check-base-images.sh" "$DOCKERFILE"
     (cd "$BUILD_CONTEXT" && docker build -t "$LOCAL_IMAGE" .)
     if ! docker image inspect "$LOCAL_IMAGE" > /dev/null 2>&1; then
       echo "❌ Build finished but image $LOCAL_IMAGE is still missing. Aborting."

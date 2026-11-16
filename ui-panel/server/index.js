@@ -7,6 +7,7 @@ const { spawn, execSync } = require('./utils/exec');
 const { runKubectl } = require('./utils/kubectl');
 // 路由错误的唯一兜底响应点（E8）；挂载在文件末尾、所有路由之后
 const { routeErrorHandler } = require('./utils/asyncRoute');
+const { applyRequestDefaults } = require('./utils/requestDefaults');
 const fs = require('fs-extra');
 const YAML = require('yaml');
 const path = require('path');
@@ -77,18 +78,23 @@ const http = require('http');
 const { authMiddleware, verifyHandler, isAuthActive, getAuthConfig, safeCompare } = require('./utils/authMiddleware');
 const app = express();
 // Unified single-port design: HTTP (static + /api) and WebSocket (/ws) share one TCP port.
-// Production (client/build exists) uses PORT; dev (no build) uses API_PORT so CRA dev server on PORT can proxy to it.
+// Production (client/build exists) listens on PORT (default 3099, which start-prod.sh, the
+// Dockerfile EXPOSE and smoke-test.sh all assume); dev (no build) uses API_PORT so the Vite
+// dev server on :3000 can proxy /api and /ws to it. config/auth.json carries no port: the
+// field was never returned by getAuthConfig(), and start-prod.sh rewrites the file with
+// only enabled/hash.
 const clientBuildPath = path.join(__dirname, '../client/build');
 const IS_PRODUCTION = fs.existsSync(clientBuildPath);
-const authConfig = getAuthConfig();
 const PORT = IS_PRODUCTION
-  ? (process.env.PORT || authConfig.port || 3099)
+  ? (process.env.PORT || 3099)
   : (process.env.API_PORT || 3001);
 
 app.use(cors());
-app.use(express.json());
+// express.json() + the two Express 4 request defaults (qs query parser, req.body
+// defaults to {}) that the handlers rely on — see utils/requestDefaults.js.
+applyRequestDefaults(app);
 
-// Auth middleware (imported earlier for port config)
+// Auth middleware
 app.post('/api/auth/verify', verifyHandler);
 app.use('/api', authMiddleware);
 
@@ -175,9 +181,9 @@ function buildStreamKey(jobName, podName, namespace) {
   return namespace ? `${jobName}-${namespace}-${podName}` : `${jobName}-${podName}`;
 }
 
-// 启动统一日志流（支持自动收集和WebSocket流式传输）
+// 启动统一日志流（WebSocket 流式传输，同时写日志文件）
 function startUnifiedLogStream(jobName, podName, options = {}) {
-  const { ws = null, autoCollection = false, namespace = null } = options;
+  const { ws = null, namespace = null } = options;
   const streamKey = buildStreamKey(jobName, podName, namespace);
 
   // 如果已经有该pod的日志流，添加WebSocket连接但不重启进程
@@ -200,7 +206,7 @@ function startUnifiedLogStream(jobName, podName, options = {}) {
     return;
   }
   
-  console.log(`🚀 Starting unified log stream for pod: ${podName} in job: ${jobName} (auto: ${autoCollection})`);
+  console.log(`🚀 Starting unified log stream for pod: ${podName} in job: ${jobName}`);
   
   // 创建日志文件路径
   const logFilePath = ensureLogDirectory(jobName, podName);
@@ -228,7 +234,6 @@ function startUnifiedLogStream(jobName, podName, options = {}) {
     jobName: jobName,
     podName: podName,
     namespace: namespace,   // 存下来，清理和诊断都不需要再反解 streamKey
-    autoCollection: autoCollection,
     startTime: new Date().toISOString()
   });
   
@@ -343,8 +348,8 @@ function detachWebSocketByStreamKey(ws, streamKey) {
   stream.webSockets.delete(ws);
   console.log(`Removed WebSocket from log stream ${streamKey}, remaining: ${stream.webSockets.size}`);
 
-  // 如果没有WebSocket连接且不是自动收集，停止日志流
-  if (stream.webSockets.size === 0 && !stream.autoCollection) {
+  // 没有 WebSocket 连接了就停止日志流
+  if (stream.webSockets.size === 0) {
     console.log(`No more WebSocket connections for ${streamKey}, stopping log stream`);
     stream.process.kill();
     stream.logStream.end();
@@ -357,38 +362,6 @@ function detachWebSocketByStreamKey(ws, streamKey) {
 // 从统一日志流中移除WebSocket连接
 function removeWebSocketFromLogStream(ws, jobName, podName, namespace) {
   detachWebSocketByStreamKey(ws, buildStreamKey(jobName, podName, namespace));
-}
-
-// 为训练任务自动开始日志收集
-async function startAutoLogCollectionForJob(jobName) {
-  try {
-    console.log(`🔍 Starting auto log collection for training job: ${jobName}`);
-    
-    // 获取该训练任务的所有pods（-A 以支持跨 namespace 训练作业）
-    const output = await executeKubectl('get pods -A -o json');
-    const result = JSON.parse(output);
-    
-    const jobPods = result.items.filter(pod => {
-      const labels = pod.metadata.labels || {};
-      const ownerReferences = pod.metadata.ownerReferences || [];
-      
-      return labels['training-job-name'] === jobName || 
-             labels['app'] === jobName ||
-             ownerReferences.some(ref => ref.name === jobName) ||
-             pod.metadata.name.includes(jobName);
-    });
-    
-    // 为每个运行中的pod开始自动日志收集
-    jobPods.forEach(pod => {
-      if (pod.status.phase === 'Running' || pod.status.phase === 'Pending') {
-        startUnifiedLogStream(jobName, pod.metadata.name, { autoCollection: true });
-      }
-    });
-    
-    console.log(`✅ Started auto log collection for ${jobPods.length} pods in job ${jobName}`);
-  } catch (error) {
-    console.error(`❌ Failed to start auto log collection for job ${jobName}:`, error);
-  }
 }
 
 // 修改原有的startLogStream函数，使用统一管理
@@ -1255,7 +1228,9 @@ console.log('Advanced Scaling (SGLang Router) API loaded');
 // SPA fallback: serve index.html for non-API routes (must be LAST route)
 const indexHtmlPath = path.join(__dirname, '../client/build/index.html');
 if (fs.existsSync(indexHtmlPath)) {
-  app.get('*', (req, res) => {
+  // Express 5 / path-to-regexp 8: a bare '*' throws at registration; '/{*splat}'
+  // is the named wildcard that also matches '/'.
+  app.get('/{*splat}', (req, res) => {
     if (req.path.startsWith('/api/')) {
       return res.status(404).json({ error: 'API endpoint not found' });
     }
@@ -1264,10 +1239,10 @@ if (fs.existsSync(indexHtmlPath)) {
 }
 
 // 错误兜底中间件（E8）——必须挂在**所有**路由之后，包括上面的 SPA fallback，
-// 否则 Express 不会把它当错误处理器用。配套的 `asyncHandler` 在各路由文件里：
-// express 4 不接管 async handler 返回的 Promise，**不包 asyncHandler 的 handler
-// 抛出时根本到不了这里**，仍会走下面的 unhandledRejection → 关停整个进程。
-// 只加中间件不包 handler 等于没修。
+// 否则 Express 不会把它当错误处理器用。Express 5 会把 async handler 返回的
+// rejected Promise 自动交给 next(err)，所以任何路由的异步异常都会到这里，
+// 不再需要（也不再使用）逐个 handler 包 asyncHandler；Express 4 没有这一点，
+// 当时漏包的 handler 一抛就会走 unhandledRejection → 关停整个进程。
 app.use(routeErrorHandler);
 
 server.listen(PORT, () => {

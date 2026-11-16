@@ -1,7 +1,7 @@
 const { execSync } = require('./exec');
 const fs = require('fs-extra');
 const path = require('path');
-const { getCurrentAccountId } = require('./awsHelpers');
+const { getCurrentAccountId, getWorkspaceBucketInfo, getCurrentRoleArn, getCurrentRegion } = require('./awsHelpers');
 const { getEffectiveRegion } = require('./regionResolver');
 
 class MLflowTrackingServerManager {
@@ -44,15 +44,80 @@ class MLflowTrackingServerManager {
     }
   }
 
+  // 活跃集群自己的 bucket：HyperPod 栈（cli-min/2-hypd-full.yaml）在集群所在 region 创建，
+  // 写在 cluster_info.json 的 eksCluster.s3BucketName。纯导入、没经面板建过 HyperPod 的集群
+  // 没有这个字段，返回 null。
+  getClusterBucketName() {
+    try {
+      const MetadataUtils = require('./metadataUtils');
+      const clusterInfo = MetadataUtils.getClusterInfo(this.getActiveCluster());
+      return clusterInfo?.eksCluster?.s3BucketName || null;
+    } catch (error) {
+      console.warn(`Could not read cluster bucket for MLflow artifact store: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * 选 artifact store bucket。SageMaker 要求它和 tracking server 在同一个 region，不支持跨
+   * region（https://docs.aws.amazon.com/sagemaker/latest/dg/mlflow-create-tracking-server-cli.html），
+   * 而 server 建在集群 region；面板管理别的 region 的集群时，工作机 bucket 就不能用了。
+   *
+   * 顺序：调用方显式指定的 bucket → 与集群同 region 的工作机 bucket → 集群自己的 bucket。
+   * 都不满足时直接报错并说明原因，不自动创建 bucket。
+   *
+   * @param {string} region 集群 region（tracking server 所在 region）
+   * @param {string|null} artifactBucket 调用方指定的 bucket（路由层已校验命名）
+   * @returns {string}
+   */
+  resolveArtifactBucket(region, artifactBucket = null) {
+    if (artifactBucket) return artifactBucket;
+
+    let workspace = null;
+    let workspaceError = null;
+    try {
+      workspace = getWorkspaceBucketInfo();
+    } catch (error) {
+      workspaceError = error;
+    }
+
+    let workspaceRegion = null;
+    if (workspace) {
+      // 旧的 bucket 信息文件可能没有 awsRegion；工作机模板把 bucket 建在工作机栈所在 region，
+      // 所以缺字段时按主机 region 处理。
+      workspaceRegion = workspace.awsRegion;
+      if (!workspaceRegion) {
+        try { workspaceRegion = getCurrentRegion(); } catch { workspaceRegion = null; }
+      }
+      if (workspaceRegion === region) return workspace.bucketName;
+    }
+
+    const clusterBucket = this.getClusterBucketName();
+    if (clusterBucket) return clusterBucket;
+
+    if (workspaceError) throw workspaceError;
+    throw new Error(
+      `Workspace bucket ${workspace.bucketName} is in ${workspaceRegion || 'an unknown region'}, ` +
+      `but the tracking server is created in the cluster region ${region}, and SageMaker requires ` +
+      `the artifact store to be in the same region. Specify an S3 bucket in ${region} as the artifact bucket.`
+    );
+  }
+
   // 创建MLflow tracking server
-  async createTrackingServer(serverName, serverSize = 'Small') {
+  async createTrackingServer(serverName, serverSize = 'Small', { artifactBucket = null } = {}) {
     try {
       console.log(`Creating MLflow tracking server: ${serverName}`);
       
       // 获取所有必需参数 - 运维路径:优先活跃集群 region,主机兜底
       const region = getEffectiveRegion();
-      const s3Bucket = getCurrentS3Bucket();
-      const iamRoleArn = await getDevAdminRoleArn();
+      // artifact store 必须与 server 同 region，选择规则见 resolveArtifactBucket()。
+      const s3Bucket = this.resolveArtifactBucket(region, artifactBucket);
+      // tracking server 的执行角色 = 面板当前使用的角色，与 cloudFormationManager 给 HyperPod
+      // Lambda 用的是同一个。工作机模板里这个角色的信任策略包含 sagemaker.amazonaws.com，
+      // 并且已有该 bucket 的访问权限（s3fs 就是用它挂载的）。
+      // 这里原来调用的 getCurrentS3Bucket()/getDevAdminRoleArn() 从未定义，
+      // 创建按钮自 2026-06-02 初始快照起一直抛 ReferenceError。
+      const iamRoleArn = await getCurrentRoleArn();
       
       console.log(`Parameters: Region=${region}, S3Bucket=${s3Bucket}, IAMRole=${iamRoleArn}`);
       

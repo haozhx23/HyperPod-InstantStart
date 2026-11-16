@@ -1,6 +1,12 @@
-const { execSync } = require('child_process');
-const { promisify } = require('util');
-const exec = promisify(require('child_process').exec);
+const fs = require('fs');
+const { execSync, execAsync: exec } = require('./exec');
+const { isAwsRegion, isSafeBucketName } = require('./validateInput');
+
+// 工作机的默认 S3 bucket 信息。cli-min/pre-requisites/eks-hypd-workspace.yaml 在开发机上把
+// `{"bucketName": ...}` 写到 ~/workspace/s3/CURRENT_BUCKET_INFO，start-prod.sh 再把
+// ~/workspace/s3 只读挂到容器的 /s3-workspace-metadata。s3StorageManager.getStorageDefaults()
+// 读的是同一个文件。
+const WORKSPACE_BUCKET_INFO_PATH = '/s3-workspace-metadata/CURRENT_BUCKET_INFO';
 
 // 模块级缓存
 let _cachedAccountId = null;
@@ -117,9 +123,64 @@ module.exports = {
   getCurrentIdentity,
   extractRoleArn,
   getCurrentRoleArn,
+  getCurrentS3Bucket,
+  getWorkspaceBucketInfo,
+  WORKSPACE_BUCKET_INFO_PATH,
   getInstanceEfaCount,
   getInstanceTypeInfo
 };
+
+/**
+ * 读取工作机默认 S3 bucket 名（来源见 WORKSPACE_BUCKET_INFO_PATH 的注释）。
+ *
+ * 找不到或内容不对时直接抛错并写明路径：调用方（创建 MLflow tracking server）需要一个
+ * 确定的 artifact store，退化成空字符串只会让 AWS 那边报一个看不出原因的参数错误。
+ *
+ * @param {string} [infoPath] 测试用；默认读容器内挂载点
+ * @returns {string} bucket 名
+ */
+function getCurrentS3Bucket(infoPath = WORKSPACE_BUCKET_INFO_PATH) {
+  return getWorkspaceBucketInfo(infoPath).bucketName;
+}
+
+/**
+ * 读取工作机默认 S3 bucket 的名字和所在 region。
+ *
+ * region 来自同一个文件的 `awsRegion`（工作机模板写入的是 `${AWS::Region}`，即工作机栈所在
+ * region）。它不一定等于被管理集群的 region：面板可以管理别的 region 的集群，此时 S3 挂载的
+ * `region` 选项、MLflow 的 artifact store 都必须看 bucket 自己的 region，不能套用集群 region。
+ * 字段缺失或格式不对时返回 `awsRegion: null`，由调用方决定怎么处理，不在这里猜。
+ *
+ * @param {string} [infoPath] 测试用；默认读容器内挂载点
+ * @returns {{ bucketName: string, awsRegion: (string|null) }}
+ */
+function getWorkspaceBucketInfo(infoPath = WORKSPACE_BUCKET_INFO_PATH) {
+  let raw;
+  try {
+    raw = fs.readFileSync(infoPath, 'utf8');
+  } catch (error) {
+    throw new Error(
+      `Default S3 bucket unknown: cannot read ${infoPath} (${error.code || error.message}). ` +
+      'It is written by the workspace CloudFormation template and mounted by start-prod.sh.'
+    );
+  }
+  let info;
+  try {
+    info = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`Default S3 bucket unknown: ${infoPath} is not valid JSON (${error.message})`);
+  }
+  const bucketName = typeof info?.bucketName === 'string' ? info.bucketName.trim() : '';
+  if (!bucketName) {
+    throw new Error(`Default S3 bucket unknown: ${infoPath} has no "bucketName"`);
+  }
+  // 调用方会把它拼进 shell 命令；按 S3 bucket 命名规则校验，非法值不往下传。
+  if (!isSafeBucketName(bucketName)) {
+    throw new Error(`Default S3 bucket name in ${infoPath} is not a valid S3 bucket name: ${JSON.stringify(bucketName)}`);
+  }
+  const awsRegion = isAwsRegion(info.awsRegion) ? info.awsRegion : null;
+  return { bucketName, awsRegion };
+}
 
 /**
  * 获取当前调用者身份
@@ -185,9 +246,9 @@ async function getInstanceTypeInfo(instanceType, region) {
     return info;
   } catch (e) {
     console.warn(`Failed to query instance info for ${ec2Type}:`, e.message);
-    const fallback = { vCPUs: 0, memoryGiB: 0, gpuCount: 0, gpuMemoryMiB: 0, efaSupported: false, efaInterfaces: 0 };
-    _instanceInfoCache[ec2Type] = fallback;
-    return fallback;
+    // 失败结果不进缓存：缓存只按实例类型做 key、在进程内永久有效，一次失败（网络抖动、
+    // 或在另一个集群的 region 查询失败）会让这个类型此后一直显示为全零。
+    return { vCPUs: 0, memoryGiB: 0, gpuCount: 0, gpuMemoryMiB: 0, efaSupported: false, efaInterfaces: 0 };
   }
 }
 

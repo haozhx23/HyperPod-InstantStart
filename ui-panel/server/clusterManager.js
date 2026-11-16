@@ -205,27 +205,6 @@ class ClusterManager {
     }
   }
 
-  /**
-   * 获取HyperPod配置
-   * @param {string} clusterTag - 集群标识
-   * @returns {Object|null} HyperPod配置
-   */
-  async getHyperPodConfig(clusterTag) {
-    try {
-      const hyperPodConfigPath = path.join(this.clustersDir, clusterTag, 'metadata', 'hyperpod-config.json');
-      
-      if (await fs.pathExists(hyperPodConfigPath)) {
-        const config = await fs.readJson(hyperPodConfigPath);
-        return config.hyperPodCluster;
-      }
-      
-      return null;
-    } catch (error) {
-      console.error('Error getting HyperPod configuration:', error);
-      return null;
-    }
-  }
-
   // 保存导入集群配置
   async saveImportConfig(clusterTag, importConfig, accessInfo = null, detectedState = null) {
     const metadataDir = this.getClusterMetadataDir(clusterTag);

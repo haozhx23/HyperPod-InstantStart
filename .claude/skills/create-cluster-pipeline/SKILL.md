@@ -23,7 +23,7 @@ Report the detected state to the user and confirm before continuing.
 ## Step 1: Create EKS Cluster
 
 1. Call `cluster_list_all` to check for existing clusters
-2. Only ask user for cluster tag. Do NOT ask about region — always use the current region by omitting the region parameter. Only ask region if the user explicitly mentions wanting a different region.
+2. Only ask user for cluster tag. Do NOT ask about region — omit the region parameter, which creates the cluster in the panel host's region. If the user names a different region, pass it as `region`; the cluster does not have to be in the panel host's region.
 3. Check if user provided custom CIDR configuration:
    - **If user provided all 6 CIDRs** (vpcCidr, publicSubnet1Cidr, publicSubnet2Cidr, eksPrivateSubnet1Cidr, eksPrivateSubnet2Cidr, hyperPodPrivateSubnetCidr): call `cluster_create_eks_with_cidr` with all 6 CIDRs plus clusterTag and region
    - **Otherwise**: call `cluster_create_eks` with just the clusterTag (CIDR auto-generated)
@@ -35,8 +35,8 @@ Report the detected state to the user and confirm before continuing.
 ## Step 2: Switch to New Cluster and Verify
 
 1. Call `cluster_switch` with the new cluster tag
-2. Call `cluster_get_status` to verify the switch was successful
-3. Confirm the returned cluster info matches the newly created cluster (check cluster name/tag)
+2. Call `cluster_list_all` and confirm `activeCluster` matches the new cluster tag
+3. Call `cluster_get_status` to verify node connectivity and Ready state; this endpoint does not return a cluster tag
 4. If verification fails, report error and stop
 
 ## Step 3: Install Dependencies
@@ -56,11 +56,11 @@ Report the detected state to the user and confirm before continuing.
    - **Capacity type**: ask whether to use **on-demand** or **Training Plan (reserved capacity)**. If user chooses Training Plan, ask for the **AcceleratedTrainingPlanArn**.
 3. Call `hyperpod_create` with user's choices (auto-generate hyperPodTag if user doesn't specify)
 4. Inform user: estimated wait 5-15 minutes
-5. **MUST poll** `hyperpod_get_creation_status` every **60 seconds** until status is `InService` or failed. Between each poll, call `wait_seconds(60)` to wait. Report each poll result to the user. Do NOT skip polling or leave it to the user to check manually.
+5. **MUST poll** `hyperpod_get_creation_status` every **60 seconds** for initial CloudFormation creation. Once `status.cfStatus` is `CREATE_COMPLETE`, or the creation record has been cleared, poll `hyperpod_get_instance_group_status` until `ready: true` or `failed: true`. The first tool reports CloudFormation creation; the second reports actual cluster and instance-group capacity. Stop and report any creation or runtime failure. Between each poll, call `wait_seconds(60)` to wait. Report each poll result to the user. Do NOT skip polling or leave it to the user to check manually.
 
 ## Step 5: Configure S3 Storage
 
-1. Call `s3_storage_create` with no parameters (uses all defaults: s3-claim, auto-detected bucket and region)
+1. Call `s3_storage_create` with no parameters (uses all defaults: s3-claim, auto-detected bucket and that bucket's region). The default bucket is the panel host's workspace bucket; if the cluster is in a different region, tell the user that pods will read it across regions.
 2. If successful, inform user that S3 storage is mounted
 3. If failed, report error but do NOT block — this is non-critical and can be configured later
 
@@ -71,7 +71,7 @@ Report the detected state to the user and confirm before continuing.
 
 ## Rules
 
-- Do NOT ask user about region. Use the current/default region unless user explicitly requests a different one.
+- Do NOT ask user about region. Omitting it uses the panel host's region; pass `region` only when the user explicitly requests a different one.
 - Execute steps strictly in order. Do not proceed until the previous step completes.
 - Stop immediately on any failure and report the error clearly.
 - Inform user of estimated wait time before each long-running operation.

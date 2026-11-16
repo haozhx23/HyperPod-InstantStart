@@ -31,8 +31,7 @@
       "enabled": "on",
       "tabs": {
         "hyperpodrunJob": "on",
-        "rayJob": "on",
-        "sagemaker": "on"
+        "rayJob": "on"
       }
     },
     "training-recipes": {

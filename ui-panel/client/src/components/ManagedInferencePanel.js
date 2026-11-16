@@ -217,6 +217,12 @@ const ManagedInferencePanel = ({ engine = 'vllm' }) => {
             s3BucketName: s3Data.clusterBucket.name
           });
           setS3Buckets([s3Data.clusterBucket]);
+          // s3Region 写进 modelSourceConfig.s3Storage.region，指的是 bucket 的 region。
+          // bucket 可能和集群不在同一 region（例如面板主机的 workspace bucket），有就以它为准。
+          if (s3Data.clusterBucket.region) {
+            deploymentForm.setFieldsValue({ s3Region: s3Data.clusterBucket.region });
+            setS3Region(s3Data.clusterBucket.region);
+          }
         }
       }
     } catch (error) {
@@ -672,7 +678,7 @@ const ManagedInferencePanel = ({ engine = 'vllm' }) => {
                 <Space>
                   <GlobalOutlined />
                   S3 Region
-                  <Tooltip title="AWS region (auto-filled from cluster)">
+                  <Tooltip title="AWS Region of the S3 bucket (auto-filled from the bucket's storage config, otherwise the cluster's Region)">
                     <InfoCircleOutlined />
                   </Tooltip>
                 </Space>

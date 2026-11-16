@@ -13,6 +13,7 @@ const path = require('path');
 const MetadataUtils = require('../utils/metadataUtils');
 const { getEffectiveRegion } = require('../utils/regionResolver');
 const CloudFormationManager = require('../utils/cloudFormationManager');
+const { execAsync } = require('../utils/exec');
 
 // 模块级注入依赖
 let clusterManager = null;
@@ -160,8 +161,6 @@ router.get('/cluster/s3-buckets', async (req, res) => {
 // 获取EKS节点组创建所需的子网信息
 router.get('/cluster/subnets', async (req, res) => {
   try {
-    const { promisify } = require('util');
-    const execAsync = promisify(require('child_process').exec);
 
     // 获取当前活跃集群信息
     const activeCluster = clusterManager.getActiveCluster();
@@ -235,8 +234,6 @@ router.get('/cluster/subnets', async (req, res) => {
 // 保留 computeSubnets 字段兼容旧调用方；privateSubnets 包含不限名称前缀的全部私有子网。
 router.get('/cluster/compute-subnets', async (req, res) => {
   try {
-    const { promisify } = require('util');
-    const execAsync = promisify(require('child_process').exec);
 
     const activeCluster = clusterManager.getActiveCluster();
     if (!activeCluster) {

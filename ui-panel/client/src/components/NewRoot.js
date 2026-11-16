@@ -1,5 +1,5 @@
-import React from 'react';
-import { Layout } from 'antd';
+import React, { Suspense } from 'react';
+import { Layout, Spin } from 'antd';
 import { Outlet } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import AppHeader from './AppHeader';
@@ -37,7 +37,10 @@ export default function NewRoot() {
         {/* body 有 zoom，vh 是物理视口值不随 zoom 缩，所以这里除以 --zoom-factor
             才能让 Content 实际占满视口；--zoom-factor 由 index.js 从 REACT_APP_UI_ZOOM 注入。 */}
         <Content style={{ minHeight: 'calc((100vh - 64px) / var(--zoom-factor))', overflow: 'auto' }}>
-          <Outlet />
+          {/* 页面是 React.lazy 按路由拆的 chunk（见 App.js），首次进入时在这里等它下载 */}
+          <Suspense fallback={<div style={{ padding: 48, textAlign: 'center' }}><Spin /></div>}>
+            <Outlet />
+          </Suspense>
         </Content>
       </Layout>
     </Layout>

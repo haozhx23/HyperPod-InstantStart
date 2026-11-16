@@ -105,24 +105,6 @@ export const launchVerlTraining = createAsyncThunk(
   }
 );
 
-// 异步操作：启动 SageMaker 作业
-export const launchSageMakerJob = createAsyncThunk(
-  'training/launchSageMakerJob',
-  async (jobConfig, { rejectWithValue }) => {
-    try {
-      const response = await fetch('/api/launch-sagemaker-job', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(jobConfig),
-      });
-
-      if (!response.ok) throw new Error('Failed to launch SageMaker job');
-      return await response.json();
-    } catch (error) {
-      return rejectWithValue(error.message);
-    }
-  }
-);
 
 // 异步操作：删除训练作业
 export const deleteTrainingJob = createAsyncThunk(
@@ -333,18 +315,6 @@ const trainingSlice = createSlice({
         state.error = action.payload;
       })
 
-    // 处理 SageMaker 作业
-      .addCase(launchSageMakerJob.pending, (state) => {
-        state.trainingStatus = 'launching';
-        state.error = null;
-      })
-      .addCase(launchSageMakerJob.fulfilled, (state) => {
-        state.trainingStatus = 'launched';
-      })
-      .addCase(launchSageMakerJob.rejected, (state, action) => {
-        state.trainingStatus = 'error';
-        state.error = action.payload;
-      })
 
     // 处理删除训练作业
       .addCase(deleteTrainingJob.pending, (state) => {

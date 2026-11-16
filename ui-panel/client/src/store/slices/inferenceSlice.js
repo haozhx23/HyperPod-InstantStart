@@ -107,25 +107,6 @@ export const scaleDeployment = createAsyncThunk(
   }
 );
 
-// 异步操作：发送请求到模型
-export const sendModelRequest = createAsyncThunk(
-  'inference/sendModelRequest',
-  async ({ url, data, method = 'POST' }, { rejectWithValue }) => {
-    try {
-      const response = await fetch('/api/proxy-request', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, data, method }),
-      });
-
-      if (!response.ok) throw new Error('Failed to send model request');
-      return await response.json();
-    } catch (error) {
-      return rejectWithValue(error.message);
-    }
-  }
-);
-
 const inferenceSlice = createSlice({
   name: 'inference',
   initialState: {
@@ -241,20 +222,6 @@ const inferenceSlice = createSlice({
       .addCase(scaleDeployment.rejected, (state, action) => {
         state.scaleStatus = 'error';
         state.error = action.payload;
-      })
-
-    // 处理模型请求
-      .addCase(sendModelRequest.pending, (state) => {
-        state.testLoading = true;
-        state.testError = null;
-      })
-      .addCase(sendModelRequest.fulfilled, (state, action) => {
-        state.testResults = action.payload;
-        state.testLoading = false;
-      })
-      .addCase(sendModelRequest.rejected, (state, action) => {
-        state.testError = action.payload;
-        state.testLoading = false;
       });
   },
 });

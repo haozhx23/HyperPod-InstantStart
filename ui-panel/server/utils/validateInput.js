@@ -149,13 +149,30 @@ function isSafeUri(value, { maxLength = 2048, protocols = ['http:', 'https:'] } 
   }
 }
 
+// AWS region 名：`us-east-1`、`ap-southeast-5`、`us-gov-west-1`、`eusc-de-east-1`。
+// 面板可以管理与工作机不同 region 的集群，region 会被拼进 `--region ${region}`，
+// 也会写进 cluster_info.json 决定后续所有运维调用打到哪里。只做形状校验，不维护
+// region 白名单（新 region 上线不应该需要改代码），但要拒绝 AZ 名（`us-west-2c`）和大写。
+const AWS_REGION = /^[a-z]{2,4}(-[a-z]+)+-\d{1,2}$/;
+
+function isAwsRegion(value) {
+  return typeof value === 'string' && value.length <= 32 && AWS_REGION.test(value);
+}
+
+// S3 通用 bucket 命名规则的形状部分（3–63 位小写字母数字、`.`、`-`，首尾为字母数字）。
+const S3_BUCKET = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
+
+function isSafeBucketName(value) {
+  return typeof value === 'string' && S3_BUCKET.test(value);
+}
+
 /**
  * 批量校验，返回不合法的字段说明列表（空数组表示全部通过）。
  *
  * `'tokens'` 校验数组的每个元素，报错里带下标（`instanceGroups[2] ...`）——出错时要能
  * 指出是哪一个元素，否则前端只能整个表单重填。
  *
- * @param {Array<[string, *, ('token'|'tokens'|'int'|'num'|'arn'|'cidr'|'alias'|'uri'|'qname')?, object?]>} specs [字段名, 值, 类型, 选项]
+ * @param {Array<[string, *, ('token'|'tokens'|'int'|'num'|'arn'|'cidr'|'alias'|'uri'|'qname'|'region'|'bucket')?, object?]>} specs [字段名, 值, 类型, 选项]
  * @returns {string[]}
  */
 function collectInvalid(specs) {
@@ -201,6 +218,14 @@ function collectInvalid(specs) {
       if (!isSafeCidr(value)) {
         problems.push(`${field} 必须是 a.b.c.d/nn 形式的 CIDR，收到 ${JSON.stringify(value)}`);
       }
+    } else if (kind === 'region') {
+      if (!isAwsRegion(value)) {
+        problems.push(`${field} 必须是 AWS region 名（如 us-east-1，不是可用区名），收到 ${JSON.stringify(value)}`);
+      }
+    } else if (kind === 'bucket') {
+      if (!isSafeBucketName(value)) {
+        problems.push(`${field} 必须是合法的 S3 bucket 名（3–63 位小写字母数字、. 或 -），收到 ${JSON.stringify(value)}`);
+      }
     } else if (!isSafeToken(value, options)) {
       problems.push(
         `${field} 只允许字母数字与 . _ -（首字符须为字母或数字，最长 ${options.maxLength || DEFAULT_MAX_LENGTH}），` +
@@ -218,7 +243,7 @@ function collectInvalid(specs) {
  * 「缺失」也当成不合法，那这个参数就变成必填了——2026-09-20 就这么弄坏过一条
  * `POST /s3-storages` 的路由契约测试。缺字段的处理仍归下游业务逻辑。
  *
- * @param {Array<[string, *, ('token'|'tokens'|'int'|'num'|'arn'|'cidr'|'alias'|'uri'|'qname')?, object?]>} specs
+ * @param {Array<[string, *, ('token'|'tokens'|'int'|'num'|'arn'|'cidr'|'alias'|'uri'|'qname'|'region'|'bucket')?, object?]>} specs
  * @returns {string[]}
  */
 function collectPresent(specs) {
@@ -270,6 +295,8 @@ module.exports = {
   isSafeAlias,
   isSafeQualifiedName,
   isSafeUri,
+  isAwsRegion,
+  isSafeBucketName,
   collectInvalid,
   collectPresent,
   rejectInvalid,

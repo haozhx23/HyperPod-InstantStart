@@ -1,4 +1,4 @@
-const { execSync } = require('child_process');
+const { execSync } = require('./exec');
 const fs = require('fs-extra');
 const path = require('path');
 const { getCurrentAccountId } = require('./awsHelpers');

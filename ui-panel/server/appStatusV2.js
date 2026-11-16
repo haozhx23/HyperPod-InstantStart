@@ -400,7 +400,8 @@ class AppStatusV2 {
 
     const serviceStats = services.reduce((stats, service) => {
       stats.total++;
-      const type = service.type || 'ClusterIP';
+      // processServices() 原样返回 K8s Service 对象，类型在 spec.type（K8s 缺省即 ClusterIP）
+      const type = service.spec?.type || 'ClusterIP';
       stats.byType[type] = (stats.byType[type] || 0) + 1;
       return stats;
     }, {

@@ -17,12 +17,12 @@ export function makeStore() {
 
 export function installBrowserMocks() {
   global.WebSocket = class { constructor() { this.readyState = 0; } send() {} close() {} };
-  // NOTE: use a PLAIN function, not jest.fn(). CRA's jest config sets
-  // `resetMocks: true`, whose internal beforeEach runs AFTER beforeAll and would
-  // wipe a jest.fn's implementation — making fetch() return undefined and crash
-  // components that chain `.then` on it inside an unguarded useEffect. A plain
-  // function survives resetMocks. These are render-smoke tests; they don't assert
-  // on fetch calls, so a stub return is sufficient.
+  // NOTE: use a PLAIN function, not vi.fn(). Under CRA's jest config
+  // (`resetMocks: true`, until 2026-11-08) a mock's implementation was wiped
+  // after beforeAll, making fetch() return undefined and crash components that
+  // chain `.then` on it inside an unguarded useEffect. Vitest does not reset
+  // mocks by default, but a plain function stays correct either way. These are
+  // render-smoke tests; they don't assert on fetch calls.
   const fetchStub = () =>
     Promise.resolve({ ok: true, status: 200, json: async () => ({ success: true, clusters: [], jobs: [], instanceTypes: [], items: [] }), text: async () => '' });
   global.fetch = fetchStub;

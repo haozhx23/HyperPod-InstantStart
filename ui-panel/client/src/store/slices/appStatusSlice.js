@@ -62,7 +62,6 @@ export const fetchK8sJobs = createAsyncThunk(
 
 // Training-Jobs page 的 tab key,用来从 legacy training-recipes 里切分出来
 const TRAINING_JOB_TAB_KEYS = [
-  'sagemaker',
   'hyperpodrunJob',
   'rayJob',
 ];

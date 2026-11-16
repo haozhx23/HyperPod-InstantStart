@@ -7,8 +7,8 @@ const express = require('express');
 const router = express.Router();
 const fs = require('fs-extra');
 const path = require('path');
-const { spawn } = require('child_process');
-const { collectInvalid, rejectInvalid } = require('./utils/validateInput');
+const { spawn } = require('./utils/exec');
+const { collectInvalid, collectPresent, rejectInvalid } = require('./utils/validateInput');
 
 // 依赖注入
 let broadcast = null;
@@ -481,7 +481,12 @@ router.post('/configure-mlflow-auth', async (req, res) => {
  */
 router.post('/create-mlflow-tracking-server', async (req, res) => {
   try {
-    const { mlflowServerName, trackingServerSize = 'Small' } = req.body;
+    const { mlflowServerName, trackingServerSize = 'Small', artifactBucket } = req.body;
+
+    // artifactBucket 可选：集群与工作机不在同一 region、集群又没有自己的 bucket 时，由用户指定
+    // 一个集群 region 内的 bucket。它会被拼进 `--artifact-store-uri`。
+    const problems = collectPresent([['artifactBucket', artifactBucket, 'bucket']]);
+    if (problems.length > 0) return rejectInvalid(res, problems, 'POST /create-mlflow-tracking-server');
 
     const MLflowTrackingServerManager = require('./utils/mlflowTrackingServerManager');
     const mlflowManager = new MLflowTrackingServerManager();
@@ -491,7 +496,9 @@ router.post('/create-mlflow-tracking-server', async (req, res) => {
     mlflowManager.validateServerSize(trackingServerSize);
 
     // 创建 tracking server
-    const result = await mlflowManager.createTrackingServer(mlflowServerName, trackingServerSize);
+    const result = await mlflowManager.createTrackingServer(mlflowServerName, trackingServerSize, {
+      artifactBucket: artifactBucket || null,
+    });
 
     // 广播创建成功消息
     if (broadcast) {

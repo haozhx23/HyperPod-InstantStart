@@ -142,16 +142,16 @@ class AWSInstanceTypeManager {
 
     console.log(`Fetching instance types for subnet: ${subnetId}, cluster: ${clusterName}`);
 
-    // 获取子网的可用区
-    const availabilityZone = this._getSubnetAvailabilityZone(subnetId);
+    const currentRegion = getEffectiveRegion(clusterName);
+
+    // 获取子网的可用区（子网属于集群，必须在集群 region 查）
+    const availabilityZone = this._getSubnetAvailabilityZone(subnetId, currentRegion);
 
     if (!availabilityZone) {
       return { success: false, error: `Subnet ${subnetId} not found or invalid` };
     }
 
     console.log(`Subnet ${subnetId} is in availability zone: ${availabilityZone}`);
-
-    const currentRegion = getEffectiveRegion(clusterName);
 
     try {
       const instanceTypes = await this._fetchInstanceTypesByAZ(availabilityZone, currentRegion, subnetId);
@@ -241,9 +241,9 @@ class AWSInstanceTypeManager {
    * 获取子网的可用区
    * @private
    */
-  static _getSubnetAvailabilityZone(subnetId) {
+  static _getSubnetAvailabilityZone(subnetId, region) {
     try {
-      const cmd = ['ec2', 'describe-subnets', '--subnet-ids', subnetId, '--query', 'Subnets[0].AvailabilityZone', '--output', 'text'];
+      const cmd = ['ec2', 'describe-subnets', '--region', region, '--subnet-ids', subnetId, '--query', 'Subnets[0].AvailabilityZone', '--output', 'text'];
       const az = execFileSync('aws', cmd, { encoding: 'utf8', timeout: 10000 }).trim();
       return az && az !== 'None' ? az : null;
     } catch (error) {

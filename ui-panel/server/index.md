@@ -65,7 +65,6 @@ POST   /api/launch-torch-training             # 启动PyTorch训练
 POST   /api/launch-verl-training              # 启动VERL训练
 POST   /api/launch-script-training            # 启动脚本训练
 POST   /api/launch-msswift-training           # 启动MSSwift训练
-POST   /api/launch-sagemaker-job              # 启动SageMaker作业
 GET    /api/training-jobs                     # 训练作业列表
 GET    /api/hyperpod-jobs                     # HyperPod作业列表
 DELETE /api/hyperpod-jobs/:jobName            # 删除训练作业

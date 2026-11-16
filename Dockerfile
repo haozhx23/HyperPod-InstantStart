@@ -5,8 +5,18 @@
 # Usage: docker build -t instantstart-web .
 # ============================================================
 
+# Node 26 = Active LTS (2026-10-28 .. 2029-04-30). Node 25 reached end of life on
+# 2026-06-01 (nodejs/Release schedule.json). Keep both stages on the same major.
+#
+# Base images come from the ECR Public mirror of Docker Official Images rather
+# than Docker Hub (compliance rule bosco/non-ecr-docker-image). It is the same
+# image: on 2026-11-08 node:26-slim had index digest
+# sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072 on both.
+# A stale `docker login public.ecr.aws` makes even these public pulls fail with
+# 403; build.sh and start-prod.sh check for that before building.
+
 # ---- Stage 1: Build React frontend ----
-FROM node:25-slim AS build
+FROM public.ecr.aws/docker/library/node:26-slim AS build
 
 WORKDIR /build
 
@@ -14,8 +24,12 @@ WORKDIR /build
 COPY ui-panel/package*.json ./
 COPY ui-panel/client/package*.json ./client/
 
-# Install dependencies
-RUN npm install && cd client && npm install --no-package-lock
+# Install dependencies exactly as locked, so every build of a commit gets the
+# same tree. The client used to run `npm install --no-package-lock`, which
+# re-resolved all dependencies on each build: what shipped depended on the day
+# of the build, and nothing ever exercised the committed client lockfile.
+# Upgrading now means refreshing package-lock.json and running the smoke build.
+RUN npm ci && cd client && npm ci
 
 # Copy client source
 COPY ui-panel/client/ ./client/
@@ -27,7 +41,7 @@ COPY ui-panel/client/ ./client/
 RUN cd client && npm run build
 
 # ---- Stage 2: Production image ----
-FROM node:25-slim
+FROM public.ecr.aws/docker/library/node:26-slim
 
 ARG AWS_CLI_VERSION=2.36.15
 ARG AWS_CLI_SHA256=02a8eb2fe985be8ebcc284aaa5bae206ee8668872d6369e66a5c7d49d8671a08
@@ -86,10 +100,14 @@ RUN mkdir -p /home/node/.kube /home/node/.aws && chown -R node:node /home/node
 
 # Install server dependencies (production only)
 COPY ui-panel/package*.json ./
-RUN npm install --omit=dev
+RUN npm ci --omit=dev
 
 # Install Python dependencies
-RUN pip3 install --break-system-packages --force-reinstall \
+# --ignore-installed, not --force-reinstall: node:26-slim is Debian 13 (trixie),
+# where python3-pip pulls in Debian's python3-packaging. --force-reinstall tries
+# to uninstall it and fails ("no RECORD file"); --ignore-installed installs the
+# same set into /usr/local without touching the Debian-managed copies.
+RUN pip3 install --break-system-packages --ignore-installed \
     'mlflow>=3.0.0' \
     'sagemaker-mlflow>=0.2.0' \
     pandas \
@@ -97,7 +115,7 @@ RUN pip3 install --break-system-packages --force-reinstall \
     'httpx>=0.27.0'
 
 # MCP server dependencies (required by hypd-inst-mcp/server.py)
-RUN pip3 install --break-system-packages --force-reinstall \
+RUN pip3 install --break-system-packages --ignore-installed \
     'mcp>=1.28.0,<2' \
     'cryptography>=43,<50' \
     && pip3 check

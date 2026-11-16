@@ -17,9 +17,6 @@ let CloudFormationManager = null;
 let ClusterDependencyManager = null;
 let NetworkManager = null;
 
-// 防止并发配置的互斥锁
-const configurationMutex = new Set();
-
 /**
  * 初始化模块依赖
  * @param {Object} deps - 依赖对象
@@ -255,92 +252,6 @@ async function updateDependencyStatus(clusterTag, status, additionalData = {}) {
 }
 
 /**
- * 配置集群依赖（helm 等）
- */
-async function configureClusterDependencies(clusterTag) {
-  // 检查是否已经在配置中
-  if (configurationMutex.has(clusterTag)) {
-    console.log(`Dependencies configuration already in progress for ${clusterTag}, skipping...`);
-    return;
-  }
-
-  // 添加到互斥锁
-  configurationMutex.add(clusterTag);
-
-  try {
-    console.log(`Configuring dependencies for cluster: ${clusterTag}`);
-
-    // 1. 更新状态为配置依赖中
-    updateCreatingClustersStatus(clusterTag, 'IN_PROGRESS', {
-      phase: 'CONFIGURING_DEPENDENCIES',
-      currentStackStatus: 'CONFIGURING_DEPENDENCIES'
-    });
-
-    // 2. 先注册基础集群信息（让集群立即出现在列表中）
-    await registerCompletedCluster(clusterTag, 'configuring');
-
-    // 3. 广播依赖配置开始
-    if (broadcast) {
-      broadcast({
-        type: 'cluster_dependencies_started',
-        status: 'info',
-        message: `Configuring dependencies for cluster: ${clusterTag}`,
-        clusterTag: clusterTag
-      });
-    }
-
-    // 4. 配置依赖
-    await ClusterDependencyManager.configureClusterDependencies(clusterTag, clusterManager);
-
-    console.log(`Successfully configured dependencies for cluster: ${clusterTag}`);
-
-    // 5. 更新集群状态为 active
-    await updateClusterStatus(clusterTag, 'active');
-
-    // 6. 最后清理 creating 状态
-    updateCreatingClustersStatus(clusterTag, 'COMPLETED');
-
-    // 7. 广播完成
-    if (broadcast) {
-      broadcast({
-        type: 'cluster_creation_completed',
-        status: 'success',
-        message: `Cluster ${clusterTag} is now ready and available`,
-        clusterTag: clusterTag
-      });
-    }
-
-  } catch (error) {
-    console.error(`Error configuring dependencies for cluster ${clusterTag}:`, error);
-
-    // 即使依赖配置失败，也要注册集群（让用户能看到集群）
-    console.log(`Registering cluster ${clusterTag} despite dependency configuration failure`);
-    try {
-      await registerCompletedCluster(clusterTag, 'active');
-    } catch (registerError) {
-      console.error(`Failed to register cluster ${clusterTag}:`, registerError);
-    }
-
-    // 清除 creating 状态
-    updateCreatingClustersStatus(clusterTag, 'COMPLETED');
-
-    // 广播依赖配置失败
-    if (broadcast) {
-      broadcast({
-        type: 'cluster_dependencies_failed',
-        status: 'warning',
-        message: `Dependencies configuration failed for cluster: ${clusterTag}, but cluster is still available`,
-        clusterTag: clusterTag
-      });
-    }
-
-  } finally {
-    // 移除互斥锁
-    configurationMutex.delete(clusterTag);
-  }
-}
-
-/**
  * 针对当前 active 集群配置依赖
  */
 async function configureDependenciesForActiveCluster(clusterTag) {
@@ -449,7 +360,7 @@ router.post('/create-eks', async (req, res) => {
     // CidrGenerator，那里只在 validateCidr 路径上校验格式，create 路径不校验。
     const problems = collectInvalid([
       ['clusterTag', clusterTag, 'token', { maxLength: 100 }],
-      ['awsRegion', awsRegion, 'token', { maxLength: 32 }],
+      ['awsRegion', awsRegion, 'region'],
     ]);
     if (customVpcCidr !== undefined && customVpcCidr !== null && customVpcCidr !== '') {
       problems.push(...collectInvalid([['customVpcCidr', customVpcCidr, 'cidr']]));
@@ -992,7 +903,7 @@ router.get('/creation-logs/:clusterTag', async (req, res) => {
     if (!stackName) {
       return res.status(400).json({ error: 'CloudFormation stack name not found in cluster metadata' });
     }
-    const events = await CloudFormationManager.getStackEvents(stackName, clusterInfo.awsRegion);
+    const events = await CloudFormationManager.getStackEvents(stackName, clusterInfo.region);
 
     res.json({
       success: true,
@@ -1014,7 +925,6 @@ module.exports = {
   // 导出辅助函数供其他模块使用
   updateCreatingClustersStatus,
   registerCompletedCluster,
-  configureClusterDependencies,
   getClusterInfo,
   updateDependencyStatus
 };

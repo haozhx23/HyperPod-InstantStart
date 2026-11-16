@@ -4,6 +4,7 @@ const yaml = require('yaml');
 const { exec, execAsync } = require('./utils/exec');
 const { assertSafeToken } = require('./utils/validateInput');
 const { getEffectiveRegion } = require('./utils/regionResolver');
+const { getWorkspaceBucketInfo, getCurrentRegion } = require('./utils/awsHelpers');
 const { renderTemplate, patches: P } = require('./utils/renderTemplate');
 
 class S3StorageManager {
@@ -16,58 +17,45 @@ class S3StorageManager {
 
   /**
    * 获取 S3 存储默认配置
-   * 从容器元数据或环境变量中读取默认 bucket 信息
-   * @returns {Object} { success, defaults: { name, bucketName, region } }
+   *
+   * 默认 bucket 是工作机的 workspace bucket（容器内 /s3-workspace-metadata/CURRENT_BUCKET_INFO）。
+   * `region` 必须是 **bucket 自己的** region：它会写进 PV 的 `region` mount option，Mountpoint
+   * 按它访问 bucket，写成集群 region 会挂载失败。面板管理别的 region 的集群时，两者不同。
+   * 没有默认 bucket 时，用户多半会填集群 region 内的 bucket，所以 region 默认取集群 region。
+   * `clusterRegion` 一并返回，前端据此提示跨 region 访问（需要 NAT、产生跨 region 流量费）。
+   *
+   * @returns {Object} { success, defaults: { name, bucketName, region, clusterRegion } }
    */
   getStorageDefaults() {
-    let detectedRegion = '';
+    let clusterRegion = '';
     try {
       // 运维路径:优先活跃集群 region,主机兜底
-      detectedRegion = getEffectiveRegion();
+      clusterRegion = getEffectiveRegion();
     } catch (e) {
       console.warn('Could not detect AWS region for S3 defaults:', e.message);
     }
 
+    let defaultBucket = '';
+    let bucketRegion = '';
     try {
-      let defaultBucket = '';
-
-      // 从容器中的 /s3-workspace-metadata 路径读取默认bucket
-      try {
-        const metadataPath = '/s3-workspace-metadata';
-        const bucketInfoPath = path.join(metadataPath, 'CURRENT_BUCKET_INFO');
-
-        if (fs.existsSync(bucketInfoPath)) {
-          const bucketInfoContent = fs.readFileSync(bucketInfoPath, 'utf8');
-          const bucketInfo = JSON.parse(bucketInfoContent);
-          defaultBucket = bucketInfo.bucketName;
-          console.log('Successfully read bucket info from CURRENT_BUCKET_INFO:', bucketInfo.bucketName);
-        } else {
-          console.log('CURRENT_BUCKET_INFO file not found at:', bucketInfoPath);
-        }
-      } catch (error) {
-        console.log('Could not read s3-workspace-metadata:', error.message);
-      }
-
-      return {
-        success: true,
-        defaults: {
-          name: 's3-claim',
-          bucketName: defaultBucket,
-          region: detectedRegion
-        }
-      };
+      const bucketInfo = getWorkspaceBucketInfo();
+      defaultBucket = bucketInfo.bucketName;
+      // 旧的 bucket 信息文件可能没有 awsRegion；工作机模板把 bucket 建在工作机栈所在 region。
+      bucketRegion = bucketInfo.awsRegion || getCurrentRegion();
+      console.log(`Default S3 bucket from CURRENT_BUCKET_INFO: ${defaultBucket} (${bucketRegion})`);
     } catch (error) {
-      console.error('Error getting S3 storage defaults:', error);
-      return {
-        success: false,
-        error: error.message,
-        defaults: {
-          name: 's3-claim',
-          bucketName: '',
-          region: detectedRegion
-        }
-      };
+      console.log('No default S3 bucket from s3-workspace-metadata:', error.message);
     }
+
+    return {
+      success: true,
+      defaults: {
+        name: 's3-claim',
+        bucketName: defaultBucket,
+        region: defaultBucket ? bucketRegion : clusterRegion,
+        clusterRegion
+      }
+    };
   }
 
   // ==================== S3 Content Listing ====================
@@ -614,7 +602,8 @@ class S3StorageManager {
         patches: extraPatches,
       });
 
-      return { success: true, yamlContent, jobName: finalJobName };
+      // 对外返回真正写入 Kubernetes 的名称，调用方无需知道模板内部的前缀。
+      return { success: true, yamlContent, jobName: yaml.parse(yamlContent).metadata.name };
     } catch (error) {
       console.error('Error generating enhanced download job:', error);
       return { success: false, error: error.message };

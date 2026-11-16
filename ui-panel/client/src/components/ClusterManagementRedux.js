@@ -57,6 +57,7 @@ import {
   selectHyperPodGroups
 } from '../store/selectors';
 import operationRefreshManager from '../hooks/useOperationRefresh';
+import AwsRegionInput, { awsRegionRules } from './AwsRegionInput';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -238,18 +239,21 @@ const ClusterManagementRedux = () => {
   const [addonsUpdating, setAddonsUpdating] = useState(false);
   const [hamiStatus, setHamiStatus] = useState(null);
 
-  // 默认配置值
-  const defaultConfig = {
-    clusterTag: 'hypd-instrt-0801',
-    awsRegion: 'us-west-2',
-    ftpName: '',
-    gpuCapacityAz: 'us-west-2c',
-    gpuInstanceType: 'ml.g6.12xlarge',
-    gpuInstanceCount: 2
-  };
-
   const [form] = Form.useForm();
   const [currentStep, setCurrentStep] = useState(0);
+
+  // 打开导入弹窗时，region 默认填面板主机所在的 region；集群在别的 region 时由用户改掉
+  useEffect(() => {
+    if (!showImportModal || importForm.getFieldValue('awsRegion')) return;
+    fetch('/api/aws/current-region')
+      .then(response => response.json())
+      .then(result => {
+        if (result.success && result.region && !importForm.getFieldValue('awsRegion')) {
+          importForm.setFieldValue('awsRegion', result.region);
+        }
+      })
+      .catch(error => console.error('Error fetching current AWS region:', error));
+  }, [showImportModal, importForm]);
 
   // 导入现有集群
   const importExistingCluster = async (values) => {
@@ -264,6 +268,7 @@ const ClusterManagementRedux = () => {
       const result = await response.json();
       if (result.success) {
         message.success(`Successfully imported cluster: ${values.eksClusterName}. Please select it in Cluster Information to use.`);
+        (result.warnings || []).forEach(w => message.warning(w, 10));
         setShowImportModal(false);
         importForm.resetFields();
 
@@ -307,6 +312,7 @@ const ClusterManagementRedux = () => {
       const result = await response.json();
       if (result.success) {
         message.success(`Connection successful! Found ${result.nodeCount || 0} nodes`);
+        if (result.endpointWarning) message.warning(result.endpointWarning, 10);
       } else {
         message.error(`Connection failed: ${result.error}`);
       }
@@ -773,10 +779,10 @@ const ClusterManagementRedux = () => {
           <Form.Item
             label="AWS Region"
             name="awsRegion"
-            rules={[{ required: true, message: 'Please enter AWS region' }]}
-            extra="The AWS region where your EKS cluster is located"
+            rules={awsRegionRules()}
+            extra="The AWS Region where your EKS cluster is located. Defaults to the panel host's Region; it can be different."
           >
-            <Input placeholder="us-west-2" />
+            <AwsRegionInput />
           </Form.Item>
 
           <Collapse

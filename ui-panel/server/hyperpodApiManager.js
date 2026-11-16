@@ -582,6 +582,50 @@ router.put('/hyperpod/instances/:name/scale', async (req, res) => {
  * 添加 Instance Group
  * POST /api/cluster/hyperpod/add-instance-group
  */
+// 添加和扩缩容实例组后的运行状态；不读取初次创建集群的 CloudFormation 记录。
+router.get('/hyperpod/instance-group-status', async (req, res) => {
+  try {
+    const { name, clusterTag } = req.query;
+    const problems = collectPresent([
+      ['name', name, 'token', { maxLength: 63 }],
+      ['clusterTag', clusterTag, 'token', { maxLength: 100 }]
+    ]);
+    if (problems.length) return rejectInvalid(res, problems, req.path);
+    const target = clusterTag || clusterManager.getActiveCluster();
+    if (!target) return res.status(400).json({ success: false, error: 'No active cluster found' });
+    const info = await clusterManager.getClusterInfo(target);
+    const clusterName = info?.hyperPodCluster?.ClusterName;
+    if (!clusterName || !info.region) {
+      return res.status(400).json({ success: false, error: 'HyperPod cluster metadata not found' });
+    }
+    const { stdout } = await execAsync(
+      `aws sagemaker describe-cluster --cluster-name ${clusterName} --region ${info.region} --output json`
+    );
+    const data = JSON.parse(stdout);
+    const groups = (data.InstanceGroups || []).filter(group => !name || group.InstanceGroupName === name);
+    if (name && !groups.length) {
+      return res.status(404).json({ success: false, error: `Instance group ${name} not found` });
+    }
+    const instanceGroups = groups.map(group => ({
+      name: group.InstanceGroupName,
+      instanceType: group.InstanceType,
+      status: group.Status || null,
+      currentCount: group.CurrentCount ?? null,
+      targetCount: group.TargetCount ?? group.InstanceCount ?? null
+    }));
+    res.json({
+      success: true,
+      clusterTag: target,
+      clusterName: data.ClusterName || clusterName,
+      clusterStatus: data.ClusterStatus,
+      failureMessage: data.FailureMessage || null,
+      instanceGroups
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message || String(error) });
+  }
+});
+
 router.post('/hyperpod/add-instance-group', async (req, res) => {
   let tempConfigPath;
 

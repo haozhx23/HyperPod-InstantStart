@@ -9,10 +9,11 @@ const CONFIG_PATH = path.join(__dirname, '../../config/cluster-dependencies-conf
 // stale hardcoded release. Rationale: chart versions move; a fallback here
 // means a user who forgot to set a version silently gets an old release.
 // `kubernetesVersion` is the only exception — it's a K8s platform baseline,
-// needed just to create the cluster, and '1.34' is a sane safety net.
+// needed just to create the cluster. Keep it equal to eks.kubernetesVersion in
+// config/cluster-dependencies-config.json (the Dockerfile pins kubectl to that minor).
 const DEFAULTS = {
   eks: {
-    kubernetesVersion: '1.34',
+    kubernetesVersion: '1.35',
   },
   hyperpodHelmChart: {
     enabled: true,

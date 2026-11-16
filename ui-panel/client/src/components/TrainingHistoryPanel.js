@@ -879,6 +879,17 @@ const TrainingHistoryPanel = () => {
             </Form.Item>
           </Form.Item>
 
+          <Form.Item
+            label="Artifact S3 Bucket (optional)"
+            name="artifactBucket"
+            extra="Must be in the same AWS Region as the cluster. Leave empty to use the workspace bucket when it is in the cluster's Region, otherwise the cluster's own bucket."
+            rules={[
+              { pattern: /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/, message: 'Not a valid S3 bucket name' }
+            ]}
+          >
+            <Input placeholder="my-bucket-in-cluster-region" allowClear />
+          </Form.Item>
+
           <Form.Item>
             <Space>
               <Button 

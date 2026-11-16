@@ -12,16 +12,17 @@ const FSxStorageManager = ({ onStorageChange }) => {
   const [fsxInfoLoading, setFsxInfoLoading] = useState(false);
   const [fsxInfo, setFsxInfo] = useState(null);
 
-  // 获取当前AWS region
-  const fetchCurrentRegion = async () => {
+  // 获取活跃集群的 AWS region。FSx Lustre 必须与集群在同一 region（和 VPC），
+  // 不能用 /api/aws/current-region（那是面板主机的 region，集群可能在别的 region）。
+  const fetchClusterRegion = async () => {
     try {
-      const response = await fetch('/api/aws/current-region');
+      const response = await fetch('/api/aws/active-region');
       const result = await response.json();
       if (result.success && result.region) {
         form.setFieldValue('region', result.region);
       }
     } catch (error) {
-      console.error('Error fetching current AWS region:', error);
+      console.error('Error fetching active cluster AWS region:', error);
     }
   };
 
@@ -95,6 +96,7 @@ const FSxStorageManager = ({ onStorageChange }) => {
       if (result.success) {
         message.success(`FSx storage ${values.name} created successfully`);
         form.resetFields();
+        fetchClusterRegion(); // resetFields 会清空 region，而该字段不可编辑
         setFsxInfo(null);
         fetchStorages();
         onStorageChange && onStorageChange();
@@ -138,7 +140,7 @@ const FSxStorageManager = ({ onStorageChange }) => {
 
   useEffect(() => {
     fetchStorages();
-    fetchCurrentRegion();
+    fetchClusterRegion();
   }, []);
 
   const columns = [
@@ -286,6 +288,7 @@ const FSxStorageManager = ({ onStorageChange }) => {
               <Form.Item
                 name="region"
                 label="AWS Region"
+                tooltip="The active cluster's Region. The FSx file system must be in the same Region and VPC as the cluster."
                 rules={[{ required: true, message: 'Please input AWS region' }]}
               >
                 <Input disabled />

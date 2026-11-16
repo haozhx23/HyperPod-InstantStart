@@ -162,6 +162,9 @@ done'`;
     const { efaDevicePluginImageTag } = dependencyConfig.load().hyperpodHelmChart;
 
     // 与 chart 默认值一致地声明开关；字段必须精确匹配 Chart.yaml 里的 condition key。
+    // region 不写在这里，由下面的 helm 命令用 `--set global.region=$AWS_REGION`（cluster_envs 里的
+    // 集群 region）传入：chart 的 health-monitoring-agent 按 region 选镜像，取不到 global.region 时
+    // 改从节点标签探测，依赖配置时集群往往还没有节点，就会回退到 us-east-1。
     const values = {
       'cert-manager': { enabled: false },
       'neuron-device-plugin': { devicePlugin: { enabled: false } },
@@ -196,7 +199,7 @@ echo "=== Installing HyperPod Helm Chart ===" &&
 echo "Cluster: \$EKS_CLUSTER_NAME" &&
 echo "Region: \$AWS_REGION" &&
 echo "--- values override ---" && cat hyperpod-values-override.yaml && echo "--- end ---" &&
-helm upgrade --install hyperpod-dependencies ./sagemaker-hyperpod-cli/helm_chart/HyperPodHelmChart --kube-context arn:aws:eks:\$AWS_REGION:\$(aws sts get-caller-identity --query Account --output text):cluster/\$EKS_CLUSTER_NAME --namespace kube-system -f hyperpod-values-override.yaml --atomic --timeout=10m &&
+helm upgrade --install hyperpod-dependencies ./sagemaker-hyperpod-cli/helm_chart/HyperPodHelmChart --kube-context arn:aws:eks:\$AWS_REGION:\$(aws sts get-caller-identity --query Account --output text):cluster/\$EKS_CLUSTER_NAME --namespace kube-system -f hyperpod-values-override.yaml --set global.region=\$AWS_REGION --atomic --timeout=10m &&
 echo "=== HyperPod Helm Chart installation completed ==="'`;
 
     await this.executeNonBlocking(installCmd);
@@ -222,6 +225,7 @@ echo "=== HyperPod Helm Chart installation completed ==="'`;
         --namespace kube-system \\
         --override-existing-serviceaccounts \\
         --cluster $EKS_CLUSTER_NAME \\
+        --region $AWS_REGION \\
         --attach-policy-arn arn:aws:iam::aws:policy/AmazonS3FullAccess \\
         --role-name $ROLE_NAME \\
         --approve \\
@@ -235,6 +239,7 @@ echo "=== HyperPod Helm Chart installation completed ==="'`;
     eksctl create addon \\
         --name aws-mountpoint-s3-csi-driver \\
         --cluster $EKS_CLUSTER_NAME \\
+        --region $AWS_REGION \\
         --service-account-role-arn $ROLE_ARN \\
         --force || echo "S3 CSI driver addon already exists"
     
@@ -333,7 +338,7 @@ echo "=== HyperPod Helm Chart installation completed ==="'`;
 
     # 创建IAM服务账户（先删除再创建确保干净状态）
     echo "Ensuring clean ServiceAccount state..."
-    eksctl delete iamserviceaccount --cluster=\$EKS_CLUSTER_NAME --namespace=kube-system --name=aws-load-balancer-controller >> /app/tmp/dependency-install.log 2>&1 || echo "ServiceAccount not found, proceeding..."
+    eksctl delete iamserviceaccount --cluster=\$EKS_CLUSTER_NAME --region=\$AWS_REGION --namespace=kube-system --name=aws-load-balancer-controller >> /app/tmp/dependency-install.log 2>&1 || echo "ServiceAccount not found, proceeding..."
     
     # 使用短的角色名称避免64字符限制
     ROLE_NAME="ALB-\$EKS_CLUSTER_NAME"
@@ -359,13 +364,14 @@ echo "=== HyperPod Helm Chart installation completed ==="'`;
     # 获取公有子网并添加ELB标签
     echo "Tagging public subnets for ELB..."
     PUBLIC_SUBNETS=\$(aws ec2 describe-subnets \\
+        --region \$AWS_REGION \\
         --filters "Name=vpc-id,Values=\${VPC_ID}" "Name=map-public-ip-on-launch,Values=true" \\
         --query "Subnets[*].SubnetId" \\
         --output text)
     
     for SUBNET_ID in \$PUBLIC_SUBNETS; do
         echo "Tagging public subnet: \$SUBNET_ID"
-        aws ec2 create-tags --resources \$SUBNET_ID --tags Key=kubernetes.io/role/elb,Value=1 >> /app/tmp/dependency-install.log 2>&1 || echo "Failed to tag \$SUBNET_ID"
+        aws ec2 create-tags --region \$AWS_REGION --resources \$SUBNET_ID --tags Key=kubernetes.io/role/elb,Value=1 >> /app/tmp/dependency-install.log 2>&1 || echo "Failed to tag \$SUBNET_ID"
     done
 
     # 安装AWS Load Balancer Controller

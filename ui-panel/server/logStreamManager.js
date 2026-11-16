@@ -7,8 +7,6 @@
  * - GET /:jobName/:podName - 获取完整日志文件
  * - GET /:jobName/:podName/download - 下载日志文件
  * - GET /:jobName/:podName/info - 获取日志文件信息
- *
- * 注意: 集群创建日志 (/api/cluster/logs/*) 由 multiClusterAPIs 模块处理
  */
 
 const express = require('express');

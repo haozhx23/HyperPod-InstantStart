@@ -980,11 +980,11 @@ class InferenceOperatorManager {
     }
     // 启用 encryption
     await execAsync(
-      `aws s3api put-bucket-encryption --bucket ${bucket} --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'`
+      `aws s3api put-bucket-encryption --region ${region} --bucket ${bucket} --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'`
     );
     // Block public access
     await execAsync(
-      `aws s3api put-public-access-block --bucket ${bucket} --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"`
+      `aws s3api put-public-access-block --region ${region} --bucket ${bucket} --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"`
     );
     console.log(`[InferenceOperator][bucket] Created TLS bucket: ${bucket}`);
     return bucket;

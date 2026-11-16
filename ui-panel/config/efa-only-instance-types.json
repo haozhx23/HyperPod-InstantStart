@@ -1,5 +1,5 @@
 {
-  "_comment": "HyperPod instance types eligible for EFA-only network interface (NetworkInterface.InterfaceType=efa-only). Criterion: EFA-supported AND multi-EFA-card (NetworkInfo.EfaInfo.MaximumEfaInterfaces > 1). efa-only cannot be the primary NIC, so single-EFA-card types are intentionally excluded. Source: aws ec2 describe-instance-types (network-info.efa-supported / MaximumNetworkCards / EfaInfo.MaximumEfaInterfaces), 2026-06, intersected with instance-type-options.json. p6-b200/b300 added per EC2 EFA docs (not enumerable in us-east-1/us-west-2). trn1/trn1n/trn2 are eligible but not in instance-type-options.json yet.",
+  "_comment": "HyperPod instance types eligible for EFA-only network interface (NetworkInterface.InterfaceType=efa-only). Criterion: EFA-supported AND multi-EFA-card (NetworkInfo.EfaInfo.MaximumEfaInterfaces > 1). efa-only cannot be the primary NIC, so single-EFA-card types are intentionally excluded. Source: aws ec2 describe-instance-types (network-info.efa-supported / MaximumNetworkCards / EfaInfo.MaximumEfaInterfaces), 2026-06, intersected with instance-type-options.json. p6-b200/b300 added per EC2 EFA docs (not enumerable in us-east-1/us-west-2). g7 re-checked 2026-11 (us-east-1): only g7.48xlarge has MaximumEfaInterfaces=2; g7.8x/12x/24xlarge have 1. trn1/trn1n/trn2 are eligible but not in instance-type-options.json yet.",
   "instanceTypes": [
     "ml.p4d.24xlarge",
     "ml.p4de.24xlarge",
@@ -10,6 +10,7 @@
     "ml.p6-b300.48xlarge",
     "ml.g6e.24xlarge",
     "ml.g6e.48xlarge",
+    "ml.g7.48xlarge",
     "ml.g7e.24xlarge",
     "ml.g7e.48xlarge"
   ]

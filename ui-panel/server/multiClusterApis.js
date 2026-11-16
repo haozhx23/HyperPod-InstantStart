@@ -4,7 +4,6 @@ const { exec } = require('./utils/exec');
 const { runKubectl } = require('./utils/kubectl');
 const kubectlContext = require('./utils/kubectlContext');
 const ClusterManager = require('./clusterManager');
-const MultiClusterLogManager = require('./multiClusterLogManager');
 const { getCurrentIdentity, extractRoleArn } = require('./utils/awsHelpers');
 const { collectInvalid, rejectInvalid } = require('./utils/validateInput');
 
@@ -175,77 +174,6 @@ class MultiClusterAPIs {
     return res.status(410).json({ success: false, error: 'This API endpoint is deprecated.' });
   }
 
-  // 获取日志内容 - 支持多集群
-  async handleGetLogs(req, res) {
-    try {
-      const { step } = req.params;
-
-      // step 会拼进 `path.join(currentDir, `${step}.log`)`（multiClusterLogManager.js:52），
-      // 和 S4 的日志接口是同一种形态：Express 在取 req.params 时会把 %2f 解码成 `/`，
-      // 于是 `..%2f..%2f` 能读到 logs 目录之外的任意 .log 文件。原报告没记这一处。
-      const problems = collectInvalid([['step', step, 'token', { maxLength: 64 }]]);
-      if (problems.length > 0) return rejectInvalid(res, problems, 'GET /cluster/logs/:step');
-
-      const offset = parseInt(req.query.offset) || 0;
-      const activeCluster = this.clusterManager.getActiveCluster();
-      
-      if (!activeCluster) {
-        return res.json({
-          success: true,
-          data: { content: '', offset: 0, exists: false },
-          message: 'No active cluster'
-        });
-      }
-
-      const logManager = new MultiClusterLogManager(activeCluster);
-      const result = logManager.readLogContent(step, offset);
-      
-      res.json({
-        success: true,
-        data: result,
-        clusterTag: activeCluster
-      });
-
-    } catch (error) {
-      console.error('Error getting logs:', error);
-      res.status(500).json({
-        success: false,
-        error: error.message
-      });
-    }
-  }
-
-  // 获取历史日志列表 - 支持多集群
-  async handleGetLogsHistory(req, res) {
-    try {
-      const activeCluster = this.clusterManager.getActiveCluster();
-      
-      if (!activeCluster) {
-        return res.json({
-          success: true,
-          data: [],
-          message: 'No active cluster'
-        });
-      }
-
-      const logManager = new MultiClusterLogManager(activeCluster);
-      const logFiles = logManager.getLogHistory();
-      
-      res.json({
-        success: true,
-        data: logFiles,
-        clusterTag: activeCluster
-      });
-
-    } catch (error) {
-      console.error('Error getting log history:', error);
-      res.status(500).json({
-        success: false,
-        error: error.message
-      });
-    }
-  }
-
   // 手动切换kubectl配置
   async handleSwitchKubectlConfig(req, res) {
     try {
@@ -277,8 +205,34 @@ class MultiClusterAPIs {
     }
   }
 
+  /**
+   * 根据 `describe-cluster` 的 resourcesVpcConfig 判断面板能否经公网访问 EKS API。
+   *
+   * 面板的所有 kubectl 调用都走 EKS API endpoint。集群与面板主机在不同 region（或不同 VPC）时，
+   * 只开私有 endpoint 的集群从面板访问不到，除非网络另行打通；公网 endpoint 限制了来源 CIDR 时，
+   * 主机出口 IP 也必须在列表里。这里只给出提示、不阻断：主机就在集群 VPC 内时私有 endpoint 也能用。
+   *
+   * @param {object} vpcConfig cluster.resourcesVpcConfig
+   * @returns {string|null}
+   */
+  static endpointAccessWarning(vpcConfig) {
+    if (!vpcConfig) return null;
+    if (vpcConfig.endpointPublicAccess === false) {
+      return 'The EKS API endpoint has public access disabled. The panel can reach it only if its host ' +
+        'is inside the cluster VPC or has a private network path to it (for example through Transit Gateway or a VPN).';
+    }
+    const cidrs = Array.isArray(vpcConfig.publicAccessCidrs) ? vpcConfig.publicAccessCidrs : [];
+    if (vpcConfig.endpointPublicAccess === true && cidrs.length > 0 && !cidrs.includes('0.0.0.0/0')) {
+      return `The EKS API public endpoint only accepts ${cidrs.join(', ')}. ` +
+        "Make sure the panel host's public egress IP is in this list.";
+    }
+    return null;
+  }
+
   // 导入现有集群
   async handleImportCluster(req, res) {
+    // 声明在 try 外：endpoint 不可达时失败发生在后面的 kubectl 步骤，报错里要带上这条提示
+    let endpointWarning = null;
     try {
       const { eksClusterName, awsRegion, hyperPodClusters, computeSecurityGroup } = req.body;
 
@@ -290,7 +244,7 @@ class MultiClusterAPIs {
       // EKS 集群名上限 100 字符。
       const importProblems = collectInvalid([
         ['eksClusterName', eksClusterName, 'token', { maxLength: 100 }],
-        ['awsRegion', awsRegion, 'token', { maxLength: 32 }],
+        ['awsRegion', awsRegion, 'region'],
       ]);
       // hyperPodClusters 是逗号分隔的名字列表；给了就每一段都要干净
       if (hyperPodClusters && String(hyperPodClusters).trim()) {
@@ -326,6 +280,8 @@ class MultiClusterAPIs {
           error: `Cluster verification failed: ${clusterExists.error}`
         });
       }
+      endpointWarning = clusterExists.endpointWarning || null;
+      if (endpointWarning) console.warn(`Import ${eksClusterName}: ${endpointWarning}`);
 
       // 2. 确保当前EC2 role有集群访问权限
       const accessResult = await this.ensureClusterAccess(eksClusterName, awsRegion);
@@ -391,14 +347,15 @@ class MultiClusterAPIs {
         clusterTag: eksClusterName,
         nodeCount,
         accessInfo: accessResult,
-        detectedState: detectedState
+        detectedState: detectedState,
+        warnings: endpointWarning ? [endpointWarning] : []
       });
 
     } catch (error) {
       console.error('Error importing cluster:', error);
       res.status(500).json({
         success: false,
-        error: error.message
+        error: endpointWarning ? `${error.message} (${endpointWarning})` : error.message
       });
     }
   }
@@ -411,7 +368,7 @@ class MultiClusterAPIs {
       // 与 import 同一条 `aws eks describe-cluster` 路径
       const problems = collectInvalid([
         ['eksClusterName', eksClusterName, 'token', { maxLength: 100 }],
-        ['awsRegion', awsRegion, 'token', { maxLength: 32 }],
+        ['awsRegion', awsRegion, 'region'],
       ]);
       if (problems.length > 0) return rejectInvalid(res, problems, 'POST /cluster/test-connection');
 
@@ -445,11 +402,13 @@ class MultiClusterAPIs {
           });
         } else {
           try {
-            const context = JSON.parse(stdout).cluster?.arn;
+            const cluster = JSON.parse(stdout).cluster;
+            const context = cluster?.arn;
             if (!kubectlContext.isValidContextName(context)) throw new Error('EKS response is missing a valid cluster ARN');
             resolve({
               success: true,
               context,
+              endpointWarning: MultiClusterAPIs.endpointAccessWarning(cluster?.resourcesVpcConfig),
               message: `Cluster ${eksClusterName} exists and is accessible`
             });
           } catch (parseError) {
@@ -802,8 +761,11 @@ class MultiClusterAPIs {
         }
 
         let targetContext;
+        let endpointWarning = null;
         try {
-          targetContext = JSON.parse(stdout).cluster?.arn;
+          const cluster = JSON.parse(stdout).cluster;
+          targetContext = cluster?.arn;
+          endpointWarning = MultiClusterAPIs.endpointAccessWarning(cluster?.resourcesVpcConfig);
           if (!kubectlContext.isValidContextName(targetContext)) throw new Error('EKS response is missing a valid cluster ARN');
         } catch (parseError) {
           resolve({ success: false, error: parseError.message });
@@ -842,16 +804,18 @@ class MultiClusterAPIs {
               }
 
               if (nodeError) {
+                const hint = endpointWarning ? ` (${endpointWarning})` : '';
                 resolve({
                   success: false,
-                  error: `Failed to connect to cluster: ${nodeError.message}`
+                  error: `Failed to connect to cluster: ${nodeError.message}${hint}`
                 });
               } else {
                 resolve({
                   success: true,
                   nodeCount,
                   message: `Successfully connected to cluster with ${nodeCount} nodes`,
-                  warning: originalContext ? 'Kubectl context restored to original' : 'No original context to restore'
+                  warning: originalContext ? 'Kubectl context restored to original' : 'No original context to restore',
+                  endpointWarning
                 });
               }
             };

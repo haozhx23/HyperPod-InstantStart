@@ -3,12 +3,10 @@ import { Row, Col, Card, Tabs, Space } from 'antd';
 import { useSelector, useDispatch } from 'react-redux';
 import {
   RocketOutlined,
-  CloudOutlined,
   ClusterOutlined,
   ApartmentOutlined,
 } from '@ant-design/icons';
 import PageHeader from '../components/PageHeader';
-import SageMakerJobPanel from '../components/SageMakerJobPanel';
 import HyperPodJobPanel from '../components/HyperPodJobPanel';
 import RayJobPanel from '../components/RayJobPanel';
 import TrainingMonitorPanel from '../components/TrainingMonitorPanelRedux';
@@ -40,11 +38,6 @@ export default function TrainingJobsPage() {
       key: 'rayjob',
       label: <Space><ApartmentOutlined />Ray Job</Space>,
       children: <RayJobPanel {...recipeCommon} />,
-    },
-    isTabVisible('sagemaker') && {
-      key: 'sagemaker',
-      label: <Space><CloudOutlined />SageMaker Job</Space>,
-      children: <SageMakerJobPanel onLaunch={onLaunch} />,
     },
   ].filter(Boolean);
 

@@ -1,6 +1,5 @@
 const { execFileSync } = require('child_process');
-const { promisify } = require('util');
-const exec = promisify(require('child_process').exec);
+const { execAsync: exec } = require('./exec');
 
 // Import existing subnet managers
 const SubnetManager = require('./subnetManager');
@@ -248,11 +247,12 @@ class NetworkManager {
   /**
    * Get subnet's availability zone
    * @param {string} subnetId - Subnet ID
+   * @param {string} region - Region of the subnet (the cluster's Region, not the panel host's)
    * @returns {string|null} AZ name or null
    */
-  static getSubnetAvailabilityZone(subnetId) {
+  static getSubnetAvailabilityZone(subnetId, region) {
     try {
-      const cmd = ['ec2', 'describe-subnets', '--subnet-ids', subnetId, '--query', 'Subnets[0].AvailabilityZone', '--output', 'text'];
+      const cmd = ['ec2', 'describe-subnets', '--region', region, '--subnet-ids', subnetId, '--query', 'Subnets[0].AvailabilityZone', '--output', 'text'];
       const az = execFileSync('aws', cmd, { encoding: 'utf8', timeout: 10000 }).trim();
       return az && az !== 'None' ? az : null;
     } catch (error) {

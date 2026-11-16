@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import operationRefreshManager from '../hooks/useOperationRefresh';
+import AwsRegionInput, { AWS_REGION_PATTERN, awsRegionRules } from './AwsRegionInput';
 import {
   Card,
   Form,
@@ -375,16 +376,18 @@ const EksClusterCreationPanel = () => {
                 <Col span={12}>
                   <Form.Item
                     name="awsRegion"
-                    label="AWS Region"
-                    rules={[{ required: true, message: 'Please enter AWS region' }]}
+                    label={<span>AWS Region {metadataLoading ? <Spin size="small" /> : null}</span>}
+                    rules={awsRegionRules()}
+                    extra="Defaults to the panel host's Region; the cluster can be created in another Region."
                   >
-                    <Input
-                      suffix={metadataLoading ? <Spin size="small" /> : null}
-                      placeholder={metadataLoading ? "Loading metadata..." : "e.g. us-west-2"}
+                    <AwsRegionInput
+                      placeholder={metadataLoading ? "Loading metadata..." : "e.g. us-east-1"}
+                      // region 改变后需按新 region 重新生成 CIDR(避开该 region 已用网段)；
+                      // 从下拉里选中时不一定触发 blur，所以 onSelect 也要处理
+                      onSelect={(r) => { if (AWS_REGION_PATTERN.test(r)) generateCidrConfig(r); }}
                       onBlur={(e) => {
                         const r = e.target.value && e.target.value.trim();
-                        // region 改变后需按新 region 重新生成 CIDR(避开该 region 已用网段)
-                        if (r) generateCidrConfig(r);
+                        if (r && AWS_REGION_PATTERN.test(r)) generateCidrConfig(r);
                       }}
                     />
                   </Form.Item>
