@@ -1,6 +1,6 @@
 # agentic-rl-verl-project
 
-把本地的 veRL agentic-RL 训练任务（`tmp-devs/260602-rl-agentic-on-aws`）跑到 HyperPod InstantStart 上，
+把本地的 veRL agentic-RL 训练项目 `rl-agentic-on-aws`（下文称“原项目”）跑到 HyperPod InstantStart 上，
 **通过 UI 的 Verl Recipe 通道提交**（`VerlRecipePanel` → `/launch-verl-training` → `templates/verl-training-template.yaml`，KubeRay `RayJob`）。
 
 ```
@@ -62,7 +62,7 @@ bash build-and-push.sh          # 输出形如:
 
 ```bash
 cd train-recipes/agentic-rl-verl-project
-bash sync-to-fsx.sh
+SRC_PROJECT=/path/to/rl-agentic-on-aws bash sync-to-fsx.sh   # SRC_PROJECT 必填：原项目的本地路径
 # 模型：用 UI 的「HuggingFace 下载到 FSx」下到 /fsx/models/Qwen3-0.6B
 ```
 

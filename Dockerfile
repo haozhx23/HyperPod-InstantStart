@@ -9,8 +9,8 @@
 # 2026-06-01 (nodejs/Release schedule.json). Keep both stages on the same major.
 #
 # Base images come from the ECR Public mirror of Docker Official Images rather
-# than Docker Hub (compliance rule bosco/non-ecr-docker-image). It is the same
-# image: on 2026-11-08 node:26-slim had index digest
+# than Docker Hub, so that every image this project uses is pulled from ECR. It
+# is the same image: on 2026-11-08 node:26-slim had index digest
 # sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072 on both.
 # A stale `docker login public.ecr.aws` makes even these public pulls fail with
 # 403; build.sh and start-prod.sh check for that before building.

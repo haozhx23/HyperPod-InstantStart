@@ -1,0 +1,26 @@
+# Not needed by the Dockerfile
+.git
+.claude
+.kiro
+.mcp.json
+README.md
+resources
+train-recipes
+
+# Dependencies are installed with npm ci inside the image; a local copy would
+# overwrite them through COPY ui-panel/client/
+**/node_modules
+ui-panel/client/build
+
+# Python bytecode, logs and backups
+**/__pycache__
+**/*.py[cod]
+**/*.log
+**/*.bak
+
+# Runtime state, mounted into the container by start-prod.sh
+ui-panel/config/auth.json
+ui-panel/logs
+ui-panel/tmp
+ui-panel/deployments
+ui-panel/managed_clusters_info
