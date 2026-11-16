@@ -8,11 +8,12 @@ Kubernetes credentials out of the GPU training pods.
 
 from __future__ import annotations
 
+import hmac
 import os
 import time
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 from kubernetes.stream import stream
@@ -24,6 +25,12 @@ DEFAULT_IMAGE = os.environ.get("SANDBOX_IMAGE_DEFAULT", "ubuntu:22.04")
 POD_TIMEOUT_SECONDS = int(os.environ.get("SANDBOX_POD_TIMEOUT_SECONDS", "180"))
 CPU_REQUEST = os.environ.get("SANDBOX_CPU_REQUEST", "500m")
 MEMORY_REQUEST = os.environ.get("SANDBOX_MEMORY_REQUEST", "1Gi")
+API_TOKEN = os.environ.get("SANDBOX_API_TOKEN", "")
+
+
+def require_api_token(x_api_key: str = Header(default="")) -> None:
+    if not API_TOKEN or not hmac.compare_digest(x_api_key, API_TOKEN):
+        raise HTTPException(status_code=401, detail="unauthorized")
 
 try:
     config.load_incluster_config()
@@ -102,7 +109,7 @@ def healthz() -> dict[str, str]:
     return {"status": "ok", "namespace": NAMESPACE}
 
 
-@app.post("/sessions")
+@app.post("/sessions", dependencies=[Depends(require_api_token)])
 def create_session(req: CreateRequest) -> dict[str, Any]:
     name = _pod_name(req.session_id)
     image = req.image or DEFAULT_IMAGE
@@ -154,7 +161,7 @@ def create_session(req: CreateRequest) -> dict[str, Any]:
     return {"session_id": req.session_id, "pod": name, "workdir": req.workdir, "image": image}
 
 
-@app.post("/sessions/{session_id}/exec")
+@app.post("/sessions/{session_id}/exec", dependencies=[Depends(require_api_token)])
 def exec_session(session_id: str, req: ExecRequest) -> dict[str, Any]:
     name = _pod_name(session_id)
     try:
@@ -164,7 +171,7 @@ def exec_session(session_id: str, req: ExecRequest) -> dict[str, Any]:
     return {"output": output, "exit_code": exit_code}
 
 
-@app.delete("/sessions/{session_id}")
+@app.delete("/sessions/{session_id}", dependencies=[Depends(require_api_token)])
 def delete_session(session_id: str) -> dict[str, str]:
     name = _pod_name(session_id)
     try:
