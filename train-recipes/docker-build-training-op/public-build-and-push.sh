@@ -3,12 +3,15 @@
 # 设置错误时退出
 set -e
 
-algorithm_name=hypd-training-op-torch26-pub
+algorithm_name=hypd-training-op-torch210-pub
 docker_filename=Dockerfile.torch
 # algorithm_name=hypd-training-op-torch26-msswift-put
 # docker_filename=Dockerfile.ms-swift
+# Verl recipe 镜像（同样用 img_version=v1118）：
+# algorithm_name=hypd-verl-torch210-pub
+# docker_filename=Dockerfile.verl
 
-img_version=v0110
+img_version=v1118
 
 region=$(aws configure get region)
 account=$(aws sts get-caller-identity --query Account --output text)

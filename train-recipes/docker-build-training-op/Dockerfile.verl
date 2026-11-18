@@ -1,20 +1,39 @@
-# FROM 763104351884.dkr.ecr.us-west-2.amazonaws.com/pytorch-training:2.6.0-gpu-py312-cu126-ubuntu22.04-ec2
-FROM 763104351884.dkr.ecr.us-west-2.amazonaws.com/pytorch-training:2.8.0-gpu-py312-cu129-ubuntu22.04-ec2
+# FROM 763104351884.dkr.ecr.us-west-2.amazonaws.com/pytorch-training:2.8.0-gpu-py312-cu129-ubuntu22.04-ec2
+FROM 763104351884.dkr.ecr.us-west-2.amazonaws.com/pytorch-training:2.10.0-gpu-py313-cu130-ubuntu22.04-ec2
 
 # https://verl.readthedocs.io/en/latest/start/install.html
+#
+# 版本约束（基础镜像为 torch 2.10.0+cu130 / Python 3.13，已含 flash-attn 2.8.3、EFA、aws-ofi-nccl）：
+# - verl v0.9.0：v0.9.1 起要求 Python <3.13；v0.8.x 及更早只支持 vllm<=0.12（torch 2.9）
+# - vllm 0.19.1：固定 torch==2.10.0 的 vLLM 中，只有它允许 verl v0.9.0 要求的 transformers>=5.5.3（0.18.x/0.19.0 要求 <5）；
+#   PyPI 默认 wheel 按 CUDA 12 编译（运行时找 libcudart.so.12），按 vLLM 文档改装 release 里的 +cu130 wheel
+# - transformers 5.9.0：verl v0.9.1 锁定的版本，同时满足 verl v0.9.0（>=5.5.3,<5.11）与 vllm 0.19.1
+# - 不装 SGLang：没有固定 torch 2.10 的版本（0.5.10 为 2.9.1，0.5.11 为 2.11.0），装上会替换 torch；verl 也要求只选一个推理引擎
 
 WORKDIR /verl_workspace
 
 RUN python -m pip install --upgrade pip
-RUN git clone -b v0.6.1 https://github.com/volcengine/verl.git
-RUN pip install -e ./verl
-RUN pip install vllm==0.10.2
-# RUN pip install vllm==0.8.3
-ENV VLLM_USE_V1=1
-RUN pip install sglang[all]==0.5.2
-RUN pip install --no-build-isolation flash-attn==2.8.3
-RUN pip install --no-cache-dir "torch-memory-saver==0.0.9rc1"
-RUN pip install wandb
+RUN git clone -b v0.9.0 https://github.com/volcengine/verl.git
+# requirements.txt 是 verl 的完整运行依赖；setup.py 的 install_requires 只是子集（缺 TransferQueue 等，main_ppo 会直接 import）
+RUN pip install -r ./verl/requirements.txt && pip install -e ./verl
+ARG VLLM_VERSION=0.19.1
+RUN pip install https://github.com/vllm-project/vllm/releases/download/v${VLLM_VERSION}/vllm-${VLLM_VERSION}+cu130-cp38-abi3-manylinux_2_35_x86_64.whl \
+    --extra-index-url https://download.pytorch.org/whl/cu130 transformers==5.9.0
+# verl/utils/tracking.py 无条件 import orjson，但 v0.9.0 的 setup.py 没有声明（verl 文档的 ROCm Dockerfile 依赖清单里列了它）
+RUN pip install orjson
 RUN pip install boto3
-RUN pip install huggingface-hub==0.34.0
 RUN pip install hf_transfer hf_xet
+
+# 上面任何一步若替换了 DLC 自带的 CUDA 版 torch，这里直接失败
+RUN python -c "import torch, vllm, transformers, verl; \
+assert torch.__version__ == '2.10.0+cu130', torch.__version__; \
+assert vllm.__version__.startswith('0.19.1'), vllm.__version__; \
+assert transformers.__version__ == '5.9.0', transformers.__version__; \
+print('torch', torch.__version__, 'vllm', vllm.__version__, 'transformers', transformers.__version__, 'verl', verl.__version__)"
+
+# vLLM 的 C 扩展只在 GPU 上才加载，import 测不出 CUDA 版本不匹配；这里用 ldd 检查。torch/lib 运行时已由 import torch 载入，
+# 检查时加进 LD_LIBRARY_PATH；libcuda.so.1 由节点驱动提供，不计入
+RUN export LD_LIBRARY_PATH="$(python -c 'import os, torch; print(os.path.join(os.path.dirname(torch.__file__), "lib"))'):${LD_LIBRARY_PATH}"; \
+    missing=$(find "$(python -c 'import os, vllm; print(os.path.dirname(vllm.__file__))')" -name '*.so' -exec ldd {} \; \
+        | grep 'not found' | grep -v 'libcuda.so.1' | sort -u); \
+    if [ -n "$missing" ]; then echo "vLLM shared libraries missing: $missing"; exit 1; fi

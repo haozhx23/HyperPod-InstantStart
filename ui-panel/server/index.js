@@ -1121,6 +1121,11 @@ jobsRoutes.initialize({ executeKubectl });
 app.use('/api', jobsRoutes.router);
 console.log('Jobs routes loaded');
 
+// Training Goodput 路由（/api/training-jobs/:jobName/goodput）— 只读 HyperPod Observability 的 Training Metrics Agent
+const trainingGoodputRoutes = require('./routes/trainingGoodput');
+app.use('/api', trainingGoodputRoutes.router);
+console.log('Training goodput routes loaded');
+
 // SGLang Router 路由（/api/routers*, /api/router-services）— 注入 broadcast（Phase 3 波4）
 const routingRoutes = require('./routes/routing');
 routingRoutes.initialize({ broadcast });

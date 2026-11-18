@@ -1,6 +1,7 @@
 #!/bin/bash
 
-set -x
+# 训练失败时让 RayJob 也失败，而不是继续执行到最后一行 echo 并以 0 退出
+set -ex
 
 echo "=== Starting VeRL Training on KubeRay ==="
 # pip install huggingface-hub==0.34.0
@@ -11,7 +12,7 @@ VERL_DIR=/verl_workspace
 
 cd $VERL_DIR
 mkdir -p data
-python3 verl/examples/data_preprocess/gsm8k.py --local_dir data/gsm8k
+python3 verl/examples/data_preprocess/gsm8k.py --local_save_dir data/gsm8k
 
 python3 -c "import ray; print(f'Ray initialized: {ray.is_initialized()}'); print(f'Ray nodes: {len(ray.nodes()) if ray.is_initialized() else 0}')"
 # export VLLM_ATTENTION_BACKEND=XFORMERS

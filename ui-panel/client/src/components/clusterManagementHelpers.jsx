@@ -10,7 +10,7 @@
  * ClusterManagementRedux is the most sentinel-dense component (7 release-gated
  * feature toggles interwoven into one JSX tree); only these sentinel-free pure
  * helpers are extracted. Deeper structural decomposition is intentionally
- * deferred — see REFACTOR.md.
+ * deferred — see ui-panel/developer-docs/260618-refactor-roadmap.md.
  */
 import React from 'react';
 import { Typography, Tag } from 'antd';

@@ -1,1 +1,4 @@
 pandas
+# HyperPod Goodput training events (hyperpod_training_events.py); exporter and SDK versions must match
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2

@@ -40,6 +40,7 @@ import {
   selectActiveJob,
   selectJobLogs
 } from '../store/selectors';
+import TrainingGoodputStrip from './TrainingGoodputStrip';
 
 const { Option } = Select;
 const { Text, Title } = Typography;
@@ -78,6 +79,7 @@ const TrainingMonitorPanelRedux = () => {
   const [connectionStatus, setConnectionStatus] = useState('connecting');
   const [autoScroll, setAutoScroll] = useState(true); // Auto-scroll toggle
   const logContainerRef = useRef(null);
+  const selectedJobInfo = trainingJobs.find(job => job.name === selectedJob);
 
   // Create WebSocket connection
   useEffect(() => {
@@ -681,6 +683,14 @@ const TrainingMonitorPanelRedux = () => {
               );
             })}
           </Row>
+
+          {/* Goodput（仅 HPTO 任务；数值来自 HyperPod Observability） */}
+          {selectedJobInfo?.type === 'hyperpod' && (
+            <TrainingGoodputStrip
+              jobName={selectedJob}
+              jobCreatedAt={selectedJobInfo.creationTimestamp}
+            />
+          )}
 
           {/* 日志显示部分 */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>

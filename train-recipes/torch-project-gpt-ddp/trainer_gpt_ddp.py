@@ -18,6 +18,9 @@ from transformers import (
 )
 import logging
 
+# HyperPod Goodput 训练事件（rank 0 通过 OTLP 发送；未配置或不可达时自动关闭，不影响训练）
+from hyperpod_training_events import TrainingEvents, HyperPodEventsCallback, checkpoint_events
+
 # 设置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -148,6 +151,8 @@ def main():
         push_to_hub=False,
     )
     
+    events = TrainingEvents.create()
+
     # 创建Trainer
     trainer = Trainer(
         model=model,
@@ -155,15 +160,21 @@ def main():
         train_dataset=train_dataset,
         data_collator=data_collator,
         tokenizer=tokenizer,
+        callbacks=[HyperPodEventsCallback(events)],
     )
-    
-    # 开始训练
-    logger.info("开始训练...")
-    train_result = trainer.train()
-    
-    # 保存最终模型
-    trainer.save_model(f"{args.output_dir}/final_model")
-    tokenizer.save_pretrained(f"{args.output_dir}/final_model")
+
+    try:
+        # 开始训练
+        logger.info("开始训练...")
+        train_result = trainer.train()
+
+        # 保存最终模型（Trainer 循环之外的保存，同样记为一次 checkpoint）
+        with checkpoint_events(events, trainer.state.global_step):
+            trainer.save_model(f"{args.output_dir}/final_model")
+            tokenizer.save_pretrained(f"{args.output_dir}/final_model")
+    finally:
+        if events:
+            events.close()
 
 if __name__ == "__main__":
     main()

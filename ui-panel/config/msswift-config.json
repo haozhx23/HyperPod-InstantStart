@@ -1,7 +1,7 @@
 {
   "trainingJobName": "msswift-1",
   "instanceType": "ml.g6.12xlarge",
-  "dockerImage": "public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110",
+  "dockerImage": "public.ecr.aws/t5u4s6i0/hypd-training-op-torch210-pub:v1118",
   "efaCount": 1,
   "nprocPerNode": 4,
   "replicas": 2,

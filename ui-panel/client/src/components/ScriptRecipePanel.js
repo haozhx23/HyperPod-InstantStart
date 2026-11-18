@@ -93,7 +93,7 @@ const ScriptRecipePanel = ({ onLaunch, hyperPodInstanceTypes, instanceTypesLoadi
         onFinish={handleSubmit}
         initialValues={{
           trainingJobName: 'hypd-recipe-script-1',
-          dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110',
+          dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch210-pub:v1118',
           instanceType: '',
           nprocPerNode: 1,
           replicas: 1,
@@ -164,7 +164,7 @@ const ScriptRecipePanel = ({ onLaunch, hyperPodInstanceTypes, instanceTypesLoadi
           name="dockerImage"
           rules={[{ required: true, message: 'Please input docker image!' }]}
         >
-          <Input placeholder="public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110" />
+          <Input placeholder="public.ecr.aws/t5u4s6i0/hypd-training-op-torch210-pub:v1118" />
         </Form.Item>
 
         {/* 资源配置 */}

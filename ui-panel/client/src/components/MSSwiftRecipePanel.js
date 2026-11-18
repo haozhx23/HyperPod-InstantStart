@@ -198,7 +198,7 @@ const MSSwiftRecipePanel = ({ onLaunch, hyperPodInstanceTypes, instanceTypesLoad
           name="dockerImage"
           rules={[{ required: true, message: 'Please input docker image!' }]}
         >
-          <Input placeholder="public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110" />
+          <Input placeholder="public.ecr.aws/t5u4s6i0/hypd-training-op-torch210-pub:v1118" />
         </Form.Item>
 
         {/* 资源配置 */}

@@ -1,4 +1,4 @@
-FROM 763104351884.dkr.ecr.us-west-2.amazonaws.com/pytorch-training:2.6.0-gpu-py312-cu126-ubuntu22.04-ec2
+FROM 763104351884.dkr.ecr.us-west-2.amazonaws.com/pytorch-training:2.10.0-gpu-py313-cu130-ubuntu22.04-ec2
 
 # ENV DEBIAN_FRONTEND=noninteractive
 # ENV PYTHONUNBUFFERED=TRUE
@@ -12,17 +12,25 @@ RUN pip install --upgrade pip
 
 RUN pip install hyperpod-elastic-agent
 
-RUN pip install deepspeed==0.16.4 transformers==4.50.0 datasets==3.2.0 
-RUN pip install mlflow>=3.0.0 sagemaker-mlflow>=0.2.0
+# transformers 取 LLaMA-Factory v0.9.4（<=4.57.1）与 ms-swift v3.11.1（<4.58）的共同上限
+RUN pip install deepspeed==0.16.4 transformers==4.57.1 datasets==3.2.0
+RUN pip install "mlflow>=3.0.0" "sagemaker-mlflow>=0.2.0"
 RUN pip install PyYAML msgspec
 
-RUN git clone --depth 1 -b v0.9.3 https://github.com/hiyouga/LLaMA-Factory.git
-RUN cd LLaMA-Factory && pip install -e ".[torch,metrics]" --no-build-isolation
+# v0.9.3 固定 numpy<2.0.0，在 Python 3.13 上无法安装；v0.9.4 起支持 3.13。仓库已改名为 LlamaFactory，
+# 目录名保持 LLaMA-Factory（lmf_recipe_dist_run.sh 按这个路径找 launcher）。v0.9.4 起 torch 是必需依赖，不再有 [torch] extra
+# v0.9.4 的构建后端是 hatchling（editable 安装还要 editables）；--no-build-isolation 要求两者预先装好（运行时 lmf_recipe_dist_run.sh 重装同样需要）
+RUN git clone --depth 1 -b v0.9.4 https://github.com/hiyouga/LlamaFactory.git LLaMA-Factory
+RUN pip install hatchling editables && cd LLaMA-Factory && pip install -e ".[metrics]" --no-build-isolation
 
-RUN pip install ms-swift
+# 与 msswift_recipe_dist_run.sh 运行时安装的版本一致
+RUN pip install ms-swift==3.11.1
 
 # RUN pip install flash-attn==2.7.2.post1
 # pip uninstall -y ninja && pip install ninja
+
+# 上面任何一步若把 DLC 自带的 CUDA 版 torch 换掉，这里直接失败
+RUN python -c "import torch; assert torch.__version__ == '2.10.0+cu130', torch.__version__"
 
 COPY lmf_process_train_yaml.py ./lmf_process_train_yaml.py
 COPY lmf_recipe_dist_run.sh ./lmf_recipe_dist_run.sh

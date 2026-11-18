@@ -1,7 +1,7 @@
 {
   "jobName": "d-training-n1",
   "instanceType": "ml.g6.12xlarge",
-  "dockerImage": "public.ecr.aws/t5u4s6i0/hypd-verl-torch28-pub:v1217a",
+  "dockerImage": "public.ecr.aws/t5u4s6i0/hypd-verl-torch210-pub:v1118",
   "entryPointPath": "/s3/train-recipes/verl-v061-project/qwen-06b-grpo-kuberay.sh",
   "workerReplicas": 1,
   "gpuPerNode": 4,

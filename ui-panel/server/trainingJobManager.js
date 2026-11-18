@@ -147,7 +147,7 @@ router.post('/launch-torch-training', async (req, res) => {
 
     const {
       trainingJobName,
-      dockerImage = 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110',
+      dockerImage = 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch210-pub:v1118',
       instanceType = 'ml.g5.12xlarge',
       nprocPerNode = 1,
       replicas = 1,
@@ -630,7 +630,7 @@ router.post('/launch-script-training', async (req, res) => {
 
     const {
       trainingJobName,
-      dockerImage = 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110',
+      dockerImage = 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch210-pub:v1118',
       instanceType = 'ml.g5.12xlarge',
       nprocPerNode = 1,
       replicas = 1,
@@ -1064,7 +1064,7 @@ function makeConfigRoutes(slug, defaults) {
 
 makeConfigRoutes('hyperpodrun-job-config', {
   jobName: 'hyperpodrun-job-1',
-  dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110',
+  dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch210-pub:v1118',
   instanceType: '',
   entryScriptPath: '/fsx/my-project/run.sh',
   replicas: 1,
@@ -1131,7 +1131,7 @@ router.get('/llamafactory-config/load', async (req, res) => {
     if (!fs.existsSync(configPath)) {
       const defaultConfig = {
         trainingJobName: 'lmf-v1',
-        dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110',
+        dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch210-pub:v1118',
         instanceType: 'ml.g6.12xlarge',
         nprocPerNode: 4,
         replicas: 1,
@@ -1209,7 +1209,7 @@ router.get('/msswift-config/load', async (req, res) => {
     if (!fs.existsSync(configPath)) {
       const defaultConfig = {
         trainingJobName: 'msswift-1',
-        dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110',
+        dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch210-pub:v1118',
         instanceType: 'ml.g6.12xlarge',
         nprocPerNode: 4,
         replicas: 1,
@@ -1321,7 +1321,7 @@ router.get('/script-config/load', async (req, res) => {
     if (!fs.existsSync(configPath)) {
       const defaultConfig = {
         trainingJobName: 'hypd-recipe-script-1',
-        dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110',
+        dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch210-pub:v1118',
         instanceType: 'ml.g5.12xlarge',
         nprocPerNode: 1,
         replicas: 1,
@@ -1399,7 +1399,7 @@ router.get('/torch-config/load', async (req, res) => {
     if (!fs.existsSync(configPath)) {
       const defaultConfig = {
         trainingJobName: 'hypd-recipe-torch-1',
-        dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch26-pub:v0110',
+        dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-training-op-torch210-pub:v1118',
         instanceType: 'ml.g5.12xlarge',
         nprocPerNode: 1,
         replicas: 1,
@@ -1480,7 +1480,7 @@ router.get('/verl-config/load', async (req, res) => {
         jobName: 'verl-training-a1',
         instanceType: 'ml.g5.12xlarge',
         entryPointPath: 'verl-project/src/qwen-3b-grpo-kuberay.sh',
-        dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-verl-torch28-pub:v1217a',
+        dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-verl-torch210-pub:v1118',
         workerReplicas: 1,
         gpuPerNode: 4,
         efaPerNode: 1

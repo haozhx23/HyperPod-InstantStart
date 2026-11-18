@@ -14,10 +14,10 @@ cp -r ${LMF_RECIPE_RUN_PATH%/}/* ./
 
 if [ ! -d "LLaMA-Factory" ]; then
     echo "LLaMA-Factory directory not found, cloning from GitHub..."
-    git clone --depth 1 -b v0.9.3 https://github.com/hiyouga/LLaMA-Factory.git
+    git clone --depth 1 -b v0.9.4 https://github.com/hiyouga/LlamaFactory.git LLaMA-Factory
 fi
 
-cd LLaMA-Factory && pip install -e ".[torch,metrics]" --no-build-isolation
+cd LLaMA-Factory && pip install -e ".[metrics]" --no-build-isolation
 cd ..
 
 echo "LlamaFactory Yaml adapt"

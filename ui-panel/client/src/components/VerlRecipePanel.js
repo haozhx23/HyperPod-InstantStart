@@ -90,7 +90,7 @@ const VerlRecipePanel = ({ onLaunch, hyperPodInstanceTypes, instanceTypesLoading
           jobName: 'verl-training-a1',
           instanceType: '',
           entryPointPath: '/s3/train-recipes/verl-project/src/qwen-3b-grpo-kuberay.sh',
-          dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-verl-torch28-pub:v1217a',
+          dockerImage: 'public.ecr.aws/t5u4s6i0/hypd-verl-torch210-pub:v1118',
           workerReplicas: 1,
           gpuPerNode: 4,
           efaPerNode: 1,
@@ -158,7 +158,7 @@ const VerlRecipePanel = ({ onLaunch, hyperPodInstanceTypes, instanceTypesLoading
           name="dockerImage"
           rules={[{ required: true, message: 'Please input docker image!' }]}
         >
-          <Input placeholder="public.ecr.aws/t5u4s6i0/hypd-verl-torch28-pub:v1217a" />
+          <Input placeholder="public.ecr.aws/t5u4s6i0/hypd-verl-torch210-pub:v1118" />
         </Form.Item>
 
         {/* 挂载选择：S3 默认勾选，FSx 可选；勾选项会注入到 RayJob YAML 的 volumes/volumeMounts */}

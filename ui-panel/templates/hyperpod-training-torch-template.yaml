@@ -73,6 +73,10 @@ spec:
                   value: "${TORCH_RECIPE_PY_PATH}"
                 - name: TORCH_RECIPE_PY_PARAMS
                   value: "${TORCH_RECIPE_PY_PARAMS}"
+                # HyperPod Goodput 训练事件的接收地址（HyperPod Observability 的 OTLP Logs 接口）。
+                # recipe 中的 hyperpod_training_events.py 读取它；地址解析不到（未装 add-on）时只打一条警告，训练照常进行。
+                - name: OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
+                  value: "http://hyperpod-otel-collector.hyperpod-observability.svc:4318/v1/logs"
               command: ["bash", "/docker_workspace/torch_recipe_dist_run.sh"]
               volumeMounts:
                 - name: persistent-storage-s3
