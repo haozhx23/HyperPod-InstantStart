@@ -60,13 +60,35 @@ export function goodputLevel(percent) {
   return GOODPUT_LEVELS.find(level => percent >= level.min) || GOODPUT_LEVELS[GOODPUT_LEVELS.length - 1];
 }
 
-/** 任务创建时间晚于窗口起点时，窗口覆盖整个任务。 */
-export function windowCaption(window, jobCreatedAt, now = Date.now()) {
-  const created = Date.parse(jobCreatedAt);
-  if (window?.hours && Number.isFinite(created) && now - created < window.hours * 3600 * 1000) {
-    return 'Since job start';
+/** 数值覆盖的时间范围，由后端按任务状态决定（见 utils/trainingGoodput.js 的 resolveJobGoodput）。 */
+export function scopeCaption(data) {
+  if (data.scope === 'whole_job') return 'Whole job';
+  if (data.scope === 'since_job_start') return 'Since job start';
+  return `Last ${data.window?.label || '24h'}`;
+}
+
+function scopeTooltip(data) {
+  if (data.source === 'amp') {
+    return `Read from Amazon Managed Service for Prometheus: the value HyperPod Observability computed at ${new Date(data.evaluatedAt).toLocaleString()}, when its rolling ${data.window.label} window still covered the whole job.`;
   }
-  return `Last ${window?.label || '24h'}`;
+  if (data.scope === 'whole_job') {
+    return `The rolling ${data.window.label} window computed by HyperPod Observability still covers the whole job; matches the training dashboard in Grafana.`;
+  }
+  return `Rolling ${data.window.label} window computed by HyperPod Observability; matches the training dashboard in Grafana.`;
+}
+
+// status === 'unavailable' 时的说明；不显示数字，避免把已知偏差的值当成结果
+export const UNAVAILABLE_MESSAGES = {
+  failed_job: 'Goodput is not shown for failed jobs: HyperPod Observability keeps counting training time after a failed job stops, so its value is overstated.',
+  longer_than_window: data => `Whole-job Goodput is not available: the job ran longer than the ${data.window?.label || '24h'} window HyperPod Observability computes.`,
+  no_history: 'Whole-job Goodput is not available: Amazon Managed Service for Prometheus has no training metrics for this job (older than its retention period, or the add-on was not running then).',
+  history_not_configured: 'Whole-job Goodput is not available: HyperPod Observability is not writing to Amazon Managed Service for Prometheus, so finished jobs cannot be looked up.',
+};
+
+export function unavailableMessage(data) {
+  const message = UNAVAILABLE_MESSAGES[data.unavailableReason];
+  if (!message) return `Goodput is not available (${data.unavailableReason}).`;
+  return typeof message === 'function' ? message(data) : message;
 }
 
 const lineStyle = { fontSize: 12, color: INK.secondary };
@@ -149,7 +171,11 @@ function GoodputDetails({ data }) {
       <div style={{ fontSize: 11, color: INK.secondary, lineHeight: 1.5 }}>
         <div>Goodput = T / (T + A + M + D + S + R), the same expression as the HyperPod Observability training dashboard.</div>
         <div>Checkpoint and evaluation time is already excluded from T and is not counted as lost time. Goodput is not GPU utilization.</div>
-        <div>Computed by HyperPod Observability over a rolling {data.window.label} window (recomputed every 5 minutes by default). Values can still change for about 10 minutes after the job ends.</div>
+        {data.source === 'amp' ? (
+          <div>Read from Amazon Managed Service for Prometheus ({data.historySource?.workspaceId}) at {new Date(data.evaluatedAt).toLocaleString()}, 20 minutes after the job ended, when HyperPod Observability's rolling {data.window.label} window still covered the whole job.</div>
+        ) : (
+          <div>Computed by HyperPod Observability over a rolling {data.window.label} window (recomputed every 5 minutes by default). Values can still change for about 20 minutes after the job ends.</div>
+        )}
         <div style={{ color: INK.muted, marginTop: 4 }}>Fetched {new Date(data.fetchedAt).toLocaleTimeString()}</div>
       </div>
     </div>
@@ -157,18 +183,20 @@ function GoodputDetails({ data }) {
 }
 
 /**
- * HPTO 任务的 Goodput 条：数值来自 HyperPod Observability 的 Training Metrics Agent。
+ * HPTO 任务的 Goodput 条：数值来自 HyperPod Observability 的 Training Metrics Agent
+ * （已结束的任务读它写入 AMP 的历史结果）。
  * 周期刷新挂在全局 refreshManager 上（useAutoRefresh），不自建定时器。
  */
-const TrainingGoodputStrip = ({ jobName, jobCreatedAt }) => {
+const TrainingGoodputStrip = ({ jobName, namespace }) => {
   const [state, setState] = useState({ loading: true, data: null, error: null });
   const requestSeq = useRef(0);
 
   const load = useCallback(async () => {
     if (!jobName) return;
     const seq = ++requestSeq.current;
+    const query = namespace ? `?namespace=${encodeURIComponent(namespace)}` : '';
     try {
-      const response = await fetch(`/api/training-jobs/${encodeURIComponent(jobName)}/goodput`);
+      const response = await fetch(`/api/training-jobs/${encodeURIComponent(jobName)}/goodput${query}`);
       const body = await response.json().catch(() => ({}));
       if (!response.ok || body.success === false) {
         throw new Error(body.error || `HTTP ${response.status}`);
@@ -177,7 +205,7 @@ const TrainingGoodputStrip = ({ jobName, jobCreatedAt }) => {
     } catch (error) {
       if (seq === requestSeq.current) setState(prev => ({ loading: false, data: prev.data, error: error.message }));
     }
-  }, [jobName]);
+  }, [jobName, namespace]);
 
   useEffect(() => {
     setState({ loading: true, data: null, error: null });
@@ -209,6 +237,13 @@ const TrainingGoodputStrip = ({ jobName, jobCreatedAt }) => {
       </StatusLine>
     );
   }
+  if (data.status === 'unavailable') {
+    return (
+      <StatusLine icon={<InfoCircleOutlined />}>
+        <span data-testid="training-goodput-unavailable">{unavailableMessage(data)}</span>
+      </StatusLine>
+    );
+  }
 
   const segments = GOODPUT_SEGMENTS.map(segment => ({ ...segment, ms: segment.ms(data.terms) || 0 }));
   const total = segments.reduce((sum, segment) => sum + segment.ms, 0);
@@ -236,9 +271,14 @@ const TrainingGoodputStrip = ({ jobName, jobCreatedAt }) => {
           </Tooltip>
         )}
         {level && <Tag color={level.color} icon={level.icon} style={{ margin: 0 }}>{level.label}</Tag>}
-        <Tooltip title={`Rolling ${data.window.label} window computed by HyperPod Observability; matches the training dashboard in Grafana.`}>
-          <Text style={{ fontSize: 12, color: INK.muted }}>{windowCaption(data.window, jobCreatedAt)}</Text>
+        <Tooltip title={scopeTooltip(data)}>
+          <Text style={{ fontSize: 12, color: INK.muted }}>{scopeCaption(data)}</Text>
         </Tooltip>
+        {data.finalizing && (
+          <Tooltip title="The job ended less than 20 minutes ago. HyperPod Observability may not have received all of its events yet, so the value can still change.">
+            <Tag style={{ margin: 0 }}>Finalizing</Tag>
+          </Tooltip>
+        )}
         {!data.trainingEventsReceived && (
           <Tooltip title="No training-side events (BATCH_*, TRAINING_START) have been received for this job. Fault detection, restart and recompute time cannot be measured, so Goodput may be overstated. Emit HyperPod training events from the training code to measure them.">
             <Tag style={{ margin: 0 }}>Lifecycle events only</Tag>

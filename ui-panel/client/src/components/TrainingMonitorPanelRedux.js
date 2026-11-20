@@ -688,7 +688,7 @@ const TrainingMonitorPanelRedux = () => {
           {selectedJobInfo?.type === 'hyperpod' && (
             <TrainingGoodputStrip
               jobName={selectedJob}
-              jobCreatedAt={selectedJobInfo.creationTimestamp}
+              namespace={selectedJobInfo.namespace}
             />
           )}
 
